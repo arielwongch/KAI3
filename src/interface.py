@@ -5,4 +5,5 @@ class Interface:
     def retrieve(self, query, k):
         pass
 
-    def write(self, )
+    def write(self, entry):
+        pass
