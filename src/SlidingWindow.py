@@ -12,5 +12,5 @@ class SlidingWindow(MemoryModule):
             self.buffer.pop(0)
 
     def retrieve(self, query: str, k: int = 5) -> list[MemoryEntry]:
-        # sliding-window ignores the query entirely — it just returns recent turns
+        # sliding-window ignores the query entirely, it just returns recent turns
         return self.buffer[-k:]
