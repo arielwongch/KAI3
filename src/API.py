@@ -43,6 +43,11 @@ def print_header():
     print("────────────────────────────────────────────────────────────") 
     print()
 
+def print_next_line():
+    print()
+    print("────────────────────────────────────────────────────────────")
+    print()
+
 def print_performance_metrics(metrics: list[PerformanceMetric]):
 
     if not metrics:
@@ -58,9 +63,23 @@ def print_performance_metrics(metrics: list[PerformanceMetric]):
     print(f"  Average Latency: {avg_latency:.4f} seconds")
     print(f"  Total Latency: {total_latency:.4f} seconds")
     print(f"  Number of Requests: {len(metrics)}")
-    print()
-    print("────────────────────────────────────────────────────────────")
-    print()
+
+def print_performance_metrics_summary(metrics: list[PerformanceMetric]):
+    if not metrics:
+        print("No performance metrics to display.")
+        return
+
+    total_tokens = sum(metric.token_usage for metric in metrics)
+    total_latency = sum(metric.latency for metric in metrics)
+    avg_latency = total_latency / len(metrics)
+
+    print("===============================================")
+    print("Performance Metrics Summary:")
+    print(f"  Total Token Usage: {total_tokens}")
+    print(f"  Average Latency: {avg_latency:.4f} seconds")
+    print(f"  Total Latency: {total_latency:.4f} seconds")
+    print(f"  Number of Requests: {len(metrics)}")
+    print("===============================================")
 
 # ==============================================
 # CONVO
@@ -88,6 +107,7 @@ while True:
             continue
         if user_input.lower() == "metrics":
             print_performance_metrics(PerformanceMetrics)
+            print_next_line()
             continue
     except KeyboardInterrupt:
         print()
@@ -123,7 +143,6 @@ while True:
     messages.append(response.choices[0].message)
     print(f"AI Assistant\n> {response.choices[0].message.content}")
     print(f"{response_time.strftime('%Y-%m-%d %H:%M:%S')} (UTC+8)")
-    print()
-    print("────────────────────────────────────────────────────────────")
-    print()
+    print_next_line()
 
+print_performance_metrics_summary(PerformanceMetrics)
