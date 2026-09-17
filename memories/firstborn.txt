@@ -1,0 +1,215 @@
+(.venv) @julian9605 ➜ /workspaces/KAI3 (main) $ /workspaces/KAI3/.venv/bin/python /workspaces/KAI3/src/API.py
+
+╭──────────────────────────────────────────────────────────╮
+│                                                          │
+│                      DEEPSEEK CHAT                       │
+│                  Terminal AI Assistant                   │
+│                                                          │
+╰──────────────────────────────────────────────────────────╯
+ Press Ctrl+C to exit the chat or type 'exit', 'quit', or 'q' to quit.
+ Type 'metrics' to view performance metrics.
+────────────────────────────────────────────────────────────
+
+You
+> hi, who are you
+2026-09-18 00:52:01 (UTC+8)
+
+AI Assistant
+> Hi! I’m an AI assistant designed to help with questions, explanations, writing, coding, brainstorming, and more. I don’t have a personal identity or feelings, but I’m here to assist you. What would you like to do?
+2026-09-18 00:52:04 (UTC+8)
+
+────────────────────────────────────────────────────────────
+
+You
+> who is your creator
+2026-09-18 00:52:11 (UTC+8)
+
+AI Assistant
+> I was created by **DeepSeek (深度求索)**, an AI research company. I’m an AI assistant built on one of their large language models.
+2026-09-18 00:52:14 (UTC+8)
+
+────────────────────────────────────────────────────────────
+
+You
+> who made you
+2026-09-18 00:52:24 (UTC+8)
+
+AI Assistant
+> I was made by **DeepSeek**, an AI research company. They developed the model and technology that power me.
+2026-09-18 00:52:26 (UTC+8)
+
+────────────────────────────────────────────────────────────
+
+You
+> what is sqrt(2)
+2026-09-18 00:52:49 (UTC+8)
+
+AI Assistant
+> \(\sqrt{2}\) is the positive number that, when multiplied by itself, equals 2.
+
+Its value is approximately:
+
+\[
+\sqrt{2} \approx 1.41421356237
+\]
+
+It is an **irrational number**, meaning it cannot be written exactly as a simple fraction.
+2026-09-18 00:52:51 (UTC+8)
+
+────────────────────────────────────────────────────────────
+
+You
+> how many r's in strawberry
+2026-09-18 00:53:12 (UTC+8)
+
+AI Assistant
+> There are **3** r’s in **“strawberry.”**
+2026-09-18 00:53:13 (UTC+8)
+
+────────────────────────────────────────────────────────────
+
+You
+> skibidi toilet rizz
+2026-09-18 00:53:33 (UTC+8)
+
+AI Assistant
+> Ah, the sacred combo: **Skibidi Toilet + rizz**. Translation: **maximum brainrot charisma** 😂
+
+You’re either about to summon the Gen Alpha council or start a meme war. What’s the move?
+2026-09-18 00:53:36 (UTC+8)
+
+────────────────────────────────────────────────────────────
+
+You
+> metrics
+Performance Metrics:
+  Total Token Usage: 2646
+  Average Latency: 2.1843 seconds
+  Total Latency: 13.1059 seconds
+  Number of Requests: 6
+
+────────────────────────────────────────────────────────────
+
+You
+> how do you implement a sliding window memory module to your api
+2026-09-18 00:55:26 (UTC+8)
+
+AI Assistant
+> I don’t have a public API you can attach modules to directly, but if you’re building an API that calls an LLM, the usual pattern is: **APIs are stateless, so you store conversation history yourself and keep only a sliding window of recent messages/tokens.**
+
+Here’s how to implement a sliding window memory module.
+
+## 1. Core idea
+
+For each session/user:
+
+1. Load stored history.
+2. Append the new user message.
+3. Trim oldest messages until you’re under your token limit.
+4. Send `[system prompt] + recent messages` to the LLM.
+5. Append the assistant reply.
+6. Save the trimmed history.
+
+You can trim by:
+- **message count** — keep last `k` messages/exchanges, or
+- **token count** — keep as many recent messages as fit in `max_tokens`.
+
+Token-based is usually better because it respects the model’s context window.
+
+## 2. Minimal Python example
+
+```python
+import tiktoken
+from collections import deque
+
+class SlidingWindowMemory:
+    def __init__(self, max_tokens=3000, model="gpt-4o-mini", system_prompt=None):
+        self.max_tokens = max_tokens
+        self.enc = tiktoken.encoding_for_model(model)
+        self.system = {"role": "system", "content": system_prompt} if system_prompt else None
+        self.messages = deque()
+
+    def _count(self, msg):
+        # content tokens + rough chat overhead
+        return len(self.enc.encode(msg["content"])) + 4
+
+    def _total_tokens(self):
+        total = self._count(self.system) if self.system else 0
+        total += sum(self._count(m) for m in self.messages)
+        return total
+
+    def add(self, role, content):
+        self.messages.append({"role": role, "content": content})
+
+        # slide the window: drop oldest until we fit
+        while self._total_tokens() > self.max_tokens and len(self.messages) > 1:
+            self.messages.popleft()
+
+    def get_messages(self):
+        msgs = []
+        if self.system:
+            msgs.append(self.system)
+        msgs.extend(self.messages)
+        return msgs
+```
+
+## 3. Using it in a FastAPI endpoint
+
+```python
+from fastapi import FastAPI
+
+app = FastAPI()
+sessions = {}  # better: Redis in production
+
+@app.post("/chat")
+def chat(session_id: str, message: str):
+    if session_id not in sessions:
+        sessions[session_id] = SlidingWindowMemory(
+            max_tokens=3000,
+            system_prompt="You are a helpful assistant."
+        )
+
+    mem = sessions[session_id]
+    mem.add("user", message)
+
+    reply = call_llm(mem.get_messages())  # your LLM API call
+
+    mem.add("assistant", reply)
+    return {"reply": reply}
+```
+
+`call_llm` is a placeholder for whatever API you use.
+
+## 4. Production notes
+
+- **Use Redis or a DB** instead of in-memory dict, with a TTL per session.
+- **Lock per session** if concurrent requests can hit the same user.
+- **Always keep the system prompt** outside the sliding window.
+- **Handle oversized single messages** — if one message alone exceeds the limit, truncate it or return an error.
+- **Consider summarization** for older context: keep last N tokens verbatim + a running summary of what was dropped.
+- **LangChain alternative**:
+
+```python
+from langchain.memory import ConversationBufferWindowMemory
+
+memory = ConversationBufferWindowMemory(k=5, return_messages=True)
+```
+
+That keeps the last 5 exchanges, but it’s message-based, not token-based.
+
+So the short version: **store history per session, trim from the oldest side until you fit your token budget, and prepend the system prompt on every call.**
+2026-09-18 00:55:42 (UTC+8)
+
+────────────────────────────────────────────────────────────
+
+You
+> metrics
+Performance Metrics:
+  Total Token Usage: 6880
+  Average Latency: 4.0904 seconds
+  Total Latency: 28.6330 seconds
+  Number of Requests: 7
+
+────────────────────────────────────────────────────────────
+
+You
