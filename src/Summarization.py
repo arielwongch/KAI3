@@ -7,7 +7,7 @@ class Summarization(MemoryModule):
         self.memory = deque(maxlen=k)
     
     def generate_summary(self, new_entry):
-
+        pass
 
         
         
