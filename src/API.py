@@ -87,9 +87,11 @@ def print_performance_metrics_summary(metrics: list[PerformanceMetric]):
 
 print_header()
 
-messages = [
+init_message = [
     {"role": "system", "content": "You are a helpful assistant"},
 ]
+
+memory = []
 
 # Create a timezone object for UTC+8
 utc_8 = timezone(timedelta(hours=8))
@@ -118,7 +120,10 @@ while True:
     print(f"{user_input_time.strftime('%Y-%m-%d %H:%M:%S')} (UTC+8)")
     print()
 
-    messages.append({"role": "user", "content": user_input})
+    # sliding window implementation
+    memory.append({"role": "user", "content": user_input})
+
+    messages = init_message + memory
 
     start_time = time.perf_counter()
 
@@ -140,7 +145,7 @@ while True:
         latency=latency
     ))
 
-    messages.append(response.choices[0].message)
+    memory.append(response.choices[0].message)
     print(f"AI Assistant\n> {response.choices[0].message.content}")
     print(f"{response_time.strftime('%Y-%m-%d %H:%M:%S')} (UTC+8)")
     print_next_line()
