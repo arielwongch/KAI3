@@ -1,6 +1,7 @@
 from typing import Any
 from dataclasses import dataclass, field
 
+@dataclass
 class MemoryEntry:
     """A single unit written to or retrieved from memory.
  
