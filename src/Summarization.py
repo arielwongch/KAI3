@@ -3,7 +3,7 @@ from MemoryEntry import MemoryEntry
 from MemoryModule import MemoryModule
 
 class Summarization(MemoryModule):
-    def __init__(self, summary_limit: int = 2000):
+    def __init__(self, summary_limit: int = 10000):
         if summary_limit < 1:
             raise ValueError("summary_limit must be greater than zero")
 
@@ -34,12 +34,10 @@ class Summarization(MemoryModule):
         return self.summary
 
     def retrieve(self, query: str = "", k: int = 1) -> list[MemoryEntry]:
-        if not self.summary or k < 1:
-            return []
+        if not self.summary or k != 1:
+            raise ValueError("Summarization module can only return the latest summary as a single entry.")  
 
         return [MemoryEntry(
             text=self.summary,
-            session_id="summary",
-            turn_id=0,
-            role="summary",
+            metadata={"type": "summary"}
         )]
