@@ -23,7 +23,7 @@ class Summarization(MemoryModule):
         )
         user_input = (
             f"Previous summary:\n{self.summary or '(none)'}\n\n"
-            f"New interaction ({new_entry.role}):\n{new_entry.text}"
+            f"New interaction:\n{new_entry.text}"
         )
 
         new_summary, _, _ = call_api(system_prompt, user_input)
