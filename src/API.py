@@ -17,10 +17,10 @@ client = OpenAI(
 )
 
 # ==============================================
-# ReAct FUNCTION
+# Call API FUNCTION
 # ==============================================
 
-def run_ReAct(system_prompt:str,user_input:str):
+def call_api(system_prompt:str,user_input:str):
 
     messages = [
         {"role": "system", "content": system_prompt},
