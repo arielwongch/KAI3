@@ -19,8 +19,11 @@ class FakeCompletions:
 
     def create(self, **kwargs):
         self.owner.calls.append(kwargs)
+        response_text = self.owner.response_text
+        if isinstance(response_text, list):
+            response_text = response_text.pop(0)
         return SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content=self.owner.response_text))],
+            choices=[SimpleNamespace(message=SimpleNamespace(content=response_text))],
             usage=SimpleNamespace(total_tokens=7),
         )
 
@@ -77,6 +80,23 @@ class MemoryIntegrationTests(unittest.TestCase):
     def test_memory_arguments_are_mutually_exclusive(self):
         with self.assertRaises(ValueError):
             ReAct.run_ReAct("request", memory=["context"], memory_module=SlidingWindow())
+
+    def test_malformed_response_is_rejected_and_retried(self):
+        fake_client = FakeOpenAIClient([
+            "I can help with that.",
+            "Thought: I have the final answer.\nFinal Answer: done",
+        ])
+
+        with patch.object(ReAct, "client", fake_client):
+            result, _, _ = ReAct.run_ReAct("request")
+
+        self.assertIn("Task completed successfully.", result)
+        self.assertEqual(len(fake_client.calls), 2)
+        self.assertTrue(any(
+            isinstance(message, dict)
+            and "did not match the required format" in message.get("content", "")
+            for message in fake_client.calls[1]["messages"]
+        ))
 
     def test_memory_module_type_is_validated(self):
         with self.assertRaises(TypeError):

@@ -18,6 +18,15 @@ client = OpenAI(
     base_url="https://api.deepseek.com"
 )
 
+ACTION_RESPONSE = re.compile(
+    r"\AThought:\s*.+\nAction:\s*([^:\n]+):\s*(.+)\Z",
+    re.DOTALL,
+)
+FINAL_RESPONSE = re.compile(
+    r"\AThought:\s*I have the final answer\.\s*\nFinal Answer:\s*(.+)\Z",
+    re.DOTALL,
+)
+
 # ==============================================
 # ReAct FUNCTION
 # ==============================================
@@ -85,10 +94,11 @@ def run_ReAct(
 
         messages.append(response.choices[0].message)
         response_text = response.choices[0].message.content
+        response_text = response_text.strip()
         
         result.append(f"Response: {response_text}")
 
-        if "Final Answer:" in response_text:
+        if FINAL_RESPONSE.fullmatch(response_text):
             result.append("Task completed successfully.")
             if memory_module is not None:
                 memory_module.write(MemoryEntry(
@@ -97,10 +107,22 @@ def run_ReAct(
                 ))
             return "\n".join(result), latency, total_tokens
 
-        observation = re.search(r"Action:\s*(.*)", response_text)
+        observation = ACTION_RESPONSE.fullmatch(response_text)
 
         if observation:
-            messages.append({"role": "user", "content": f"Observation: {observation.group(1)}"})
+            messages.append({"role": "user", "content": f"Observation: {observation.group(2)}"})
+        else:
+            messages.append({
+                "role": "user",
+                "content": (
+                    "Your previous response did not match the required format. "
+                    "Reply with exactly one of these formats and no extra text:\n"
+                    "Thought: [brief reasoning]\n"
+                    "Action: [action]: [argument]\n\n"
+                    "Thought: I have the final answer.\n"
+                    "Final Answer: [your response]"
+                ),
+            })
 
     result.append("Max iterations reached without finding a final answer.")
 
