@@ -40,10 +40,10 @@ def get_reply():
                 return jsonify({'error': 'The memory module cannot be changed during a chat.'}), 409
 
         result, latency, total_tokens = run_ReAct(message, memory_module=module)
-        final_answer = re.search(r'Final Answer:\s*(.*)', result, re.DOTALL)
-        reply = final_answer.group(1).strip() if final_answer else result
+        # final_answer = re.search(r'Final Answer:\s*(.*)', result, re.DOTALL)
+        # reply = final_answer.group(1).strip() if final_answer else result
         return jsonify({
-            'reply': reply,
+            'reply': result,
             'latency': round(latency, 2),
             'tokens': total_tokens,
             'memory_module': module.__class__.__name__,

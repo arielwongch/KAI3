@@ -104,7 +104,7 @@ def run_ReAct(
                     text=f"User: {user_input}\nAssistant: {response_text}",
                     metadata={"type": "conversation"},
                 ))
-            return "\n".join(result), latency, total_tokens
+            return "\n\n".join(result), latency, total_tokens
 
         observation = ACTION_RESPONSE.fullmatch(response_text)
 
