@@ -2,6 +2,9 @@
 
 ```bash
 cp src/.env.example src/.env
+python -m venv venv
+source venv/bin/activate
+python src/app.py
 ```
 
 ## Agent memory modes
