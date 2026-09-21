@@ -33,21 +33,20 @@ FINAL_RESPONSE = re.compile(
 
 def run_ReAct(
     user_input: str,
-    memory: list[str] | None = None,
     max_iterations: int = 10,
     memory_module: MemoryModule | None = None,
 ):
-    if memory_module is not None and memory is not None:
-        raise ValueError("Pass either memory or memory_module, not both")
+    if memory_module is None:
+        raise ValueError("Please provide a valid memory_module instance.")
 
     if memory_module is not None and not isinstance(memory_module, MemoryModule):
-        raise TypeError("memory_module must implement MemoryModule")
+        raise TypeError("memory_module must be of type - MemoryModule")
 
     if memory_module is not None:
         memory_entries = memory_module.retrieve(query=user_input, k=5)
         memory_text = "\n".join(entry.text for entry in memory_entries)
     else:
-        memory_text = "\n".join(memory) if memory else ""
+        memory_text = ""
 
     system_prompt = f"""
     You are a helpful assistant. You must solve the user's request by looping through three stages: Thought, Action, and Observation.
@@ -126,11 +125,10 @@ def run_ReAct(
 
     result.append("Max iterations reached without finding a final answer.")
 
-    if memory_module is not None:
-        memory_module.write(MemoryEntry(
-            text=f"User: {user_input}\nAssistant: {response_text}",
-            metadata={"type": "conversation", "completed": False},
-        ))
+    memory_module.write(MemoryEntry(
+        text=f"User: {user_input}\nAssistant: {response_text}",
+        metadata={"type": "conversation", "completed": False},
+    ))
 
     return "\n".join(result), latency, total_tokens
         
