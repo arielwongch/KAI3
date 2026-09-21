@@ -3,8 +3,8 @@ from MemoryModule import MemoryModule
 from MemoryEntry import MemoryEntry
 
 class SlidingWindow(MemoryModule):
-    def __init__(self, max_turns: int = 10):
-        self.buffer = deque(maxlen=max_turns)
+    def __init__(self, max_items: int = 10):
+        self.buffer = deque(maxlen=max_items)
 
     def write(self, entry: MemoryEntry) -> None:
         self.buffer.append(entry)

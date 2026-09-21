@@ -6,9 +6,9 @@ class MemoryModule(ABC):
         pass
 
     @abstractmethod
-    def retrieve(self, query: str, k: int) -> list[MemoryEntry]:
+    def retrieve(query: str, k: int) -> list[MemoryEntry]:
         pass
 
     @abstractmethod
-    def write(self, entry: MemoryEntry):
+    def write(entry: MemoryEntry) -> None:
         pass
