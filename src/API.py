@@ -1,7 +1,6 @@
 # Please install OpenAI SDK first: `pip3 install openai`
 import os
 import time
-import re
 from dotenv import load_dotenv
 from openai import OpenAI
 
@@ -17,10 +16,10 @@ client = OpenAI(
 )
 
 # ==============================================
-# ReAct FUNCTION
+# Call API FUNCTION
 # ==============================================
 
-def run_ReAct(system_prompt:str,user_input:str):
+def call_api(system_prompt:str,user_input:str):
 
     messages = [
         {"role": "system", "content": system_prompt},
