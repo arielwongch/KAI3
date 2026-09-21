@@ -19,8 +19,6 @@ client = OpenAI(
 
 def run_ReAct(user_input:str, memory:list[str]=[""],max_iterations:int=10):
 
-    utc_8 = timezone(timedelta(hours=8))
-
     memory_text = "\n".join(memory) if memory else ""
 
     system_prompt = f"""
@@ -76,7 +74,8 @@ def run_ReAct(user_input:str, memory:list[str]=[""],max_iterations:int=10):
 
         observation = re.search(r"Action:\s*(.*)", response_text)
 
-        messages.append({"role": "user", "content": f"Observation: {observation.group(1)}"})
+        if observation:
+            messages.append({"role": "user", "content": f"Observation: {observation.group(1)}"})
 
     result.append("Max iterations reached without finding a final answer.")
     
