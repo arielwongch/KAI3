@@ -4,7 +4,6 @@ import time
 import re
 from dotenv import load_dotenv
 from openai import OpenAI
-from datetime import datetime, timezone, timedelta
 
 # ==============================================
 # ENV CONFIG
@@ -16,6 +15,10 @@ client = OpenAI(
     api_key=os.environ.get('DEEPSEEK_API_KEY'),
     base_url="https://api.deepseek.com"
 )
+
+# ==============================================
+# ReAct FUNCTION
+# ==============================================
 
 def run_ReAct(user_input:str, memory:list[str]=[""],max_iterations:int=10):
 
