@@ -7,9 +7,12 @@ from ReAct import run_ReAct
 
 app = Flask(__name__, template_folder='.', static_folder='.', static_url_path='')
 
+AVAILABLE_MEMORY_MODULES = ['sliding_window', 'summarization']
+chat_memory_modules = {}
+
 @app.route('/', methods=['GET'])
 def home():
-    return render_template('index.html')
+    return render_template('index.html', memory_modules=AVAILABLE_MEMORY_MODULES)
 
 
 @app.route('/get', methods=['POST'])
@@ -19,20 +22,24 @@ def get_reply():
     if not message:
         return jsonify({'error': 'Message is required.'}), 400
 
-    module_type = payload.get('memory_module', 'sliding_window')
-    if module_type not in {'sliding_window', 'summarization'}:
+    chat_id = payload.get('chat_id', '').strip()
+    module_type = payload.get('memory_module', '')
+    if not chat_id or not module_type:
+        return jsonify({'error': 'Choose a memory module before sending a message.'}), 400
+    if module_type not in AVAILABLE_MEMORY_MODULES:
         return jsonify({'error': 'Unknown memory module.'}), 400
 
-    history = payload.get('history', [])
-    memory = [
-        f"{item.get('role', 'user').title()}: {item.get('content', '')}"
-        for item in history[-10:]
-        if isinstance(item, dict) and item.get('content')
-    ]
-
     try:
-        module = MemoryFactory.create_memory_module(module_type)
-        result, latency, total_tokens = run_ReAct(message, memory=memory)
+        chat_memory = chat_memory_modules.get(chat_id)
+        if chat_memory is None:
+            module = MemoryFactory.create_memory_module(module_type)
+            chat_memory_modules[chat_id] = (module_type, module)
+        else:
+            selected_module_type, module = chat_memory
+            if selected_module_type != module_type:
+                return jsonify({'error': 'The memory module cannot be changed during a chat.'}), 409
+
+        result, latency, total_tokens = run_ReAct(message, memory_module=module)
         final_answer = re.search(r'Final Answer:\s*(.*)', result, re.DOTALL)
         reply = final_answer.group(1).strip() if final_answer else result
         return jsonify({
