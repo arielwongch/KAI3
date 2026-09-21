@@ -9,7 +9,6 @@ import ReAct
 import Summarization as summarization_module
 from MemoryEntry import MemoryEntry
 from MemoryFactory import MemoryFactory
-from SlidingWindow import SlidingWindow
 from Summarization import Summarization
 
 
@@ -68,18 +67,9 @@ class MemoryIntegrationTests(unittest.TestCase):
         self.assertEqual(module.retrieve("", 5)[0].text, "remembered context")
         self.assertIn("(none)", mocked_summary.call_args.args[1])
 
-    def test_legacy_memory_list_remains_supported(self):
-        fake_client = FakeOpenAIClient()
-
-        with patch.object(ReAct, "client", fake_client):
-            ReAct.run_ReAct("request", memory=["legacy context"])
-
-        prompt = fake_client.calls[0]["messages"][0]["content"]
-        self.assertIn("legacy context", prompt)
-
-    def test_memory_arguments_are_mutually_exclusive(self):
+    def test_memory_module_is_required(self):
         with self.assertRaises(ValueError):
-            ReAct.run_ReAct("request", memory=["context"], memory_module=SlidingWindow())
+            ReAct.run_ReAct("request")
 
     def test_malformed_response_is_rejected_and_retried(self):
         fake_client = FakeOpenAIClient([

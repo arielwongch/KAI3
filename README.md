@@ -4,6 +4,7 @@
 cp src/.env.example src/.env
 python -m venv venv
 source venv/bin/activate
+pip install -r requirements.txt
 python src/app.py
 ```
 
@@ -32,6 +33,5 @@ memory = MemoryFactory.create_memory_module(
 ```
 
 The agent retrieves context before each run and stores the completed
-user/assistant interaction afterward. Existing callers may still pass
-`memory=["..."]`; this legacy path is used when `memory_module` is omitted.
+user/assistant interaction afterward.
 
