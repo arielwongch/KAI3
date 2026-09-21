@@ -1,13 +1,14 @@
 from abc import ABC, abstractmethod
+from MemoryEntry import MemoryEntry
 
 class MemoryModule(ABC):
     def __init__(self):
         pass
 
     @abstractmethod
-    def retrieve(self, query, k):
+    def retrieve(self, query: str, k: int) -> list[MemoryEntry]:
         pass
 
     @abstractmethod
-    def write(self, entry):
+    def write(self, entry: MemoryEntry):
         pass
