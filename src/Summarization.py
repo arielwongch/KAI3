@@ -34,8 +34,11 @@ class Summarization(MemoryModule):
         return self.summary
 
     def retrieve(self, query: str = "", k: int = 1) -> list[MemoryEntry]:
-        if not self.summary or k != 1:
-            raise ValueError("Summarization module can only return the latest summary as a single entry.")  
+        if not self.summary:
+            return []
+
+        if k < 1:
+            raise ValueError("k must be greater than zero")
 
         return [MemoryEntry(
             text=self.summary,

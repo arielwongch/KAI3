@@ -4,6 +4,8 @@ import time
 import re
 from dotenv import load_dotenv
 from openai import OpenAI
+from MemoryEntry import MemoryEntry
+from MemoryModule import MemoryModule
 
 # ==============================================
 # ENV CONFIG
@@ -20,9 +22,23 @@ client = OpenAI(
 # ReAct FUNCTION
 # ==============================================
 
-def run_ReAct(user_input:str, memory:list[str]=[""],max_iterations:int=10):
+def run_ReAct(
+    user_input: str,
+    memory: list[str] | None = None,
+    max_iterations: int = 10,
+    memory_module: MemoryModule | None = None,
+):
+    if memory_module is not None and memory is not None:
+        raise ValueError("Pass either memory or memory_module, not both")
 
-    memory_text = "\n".join(memory) if memory else ""
+    if memory_module is not None and not isinstance(memory_module, MemoryModule):
+        raise TypeError("memory_module must implement MemoryModule")
+
+    if memory_module is not None:
+        memory_entries = memory_module.retrieve(query=user_input, k=5)
+        memory_text = "\n".join(entry.text for entry in memory_entries)
+    else:
+        memory_text = "\n".join(memory) if memory else ""
 
     system_prompt = f"""
     You are a helpful assistant. You must solve the user's request by looping through three stages: Thought, Action, and Observation.
@@ -47,6 +63,7 @@ def run_ReAct(user_input:str, memory:list[str]=[""],max_iterations:int=10):
     result = []
     latency = 0.0
     total_tokens = 0
+    response_text = ""
 
     result.append("Starting Agent Task:")
     start_time = time.perf_counter()
@@ -73,6 +90,11 @@ def run_ReAct(user_input:str, memory:list[str]=[""],max_iterations:int=10):
 
         if "Final Answer:" in response_text:
             result.append("Task completed successfully.")
+            if memory_module is not None:
+                memory_module.write(MemoryEntry(
+                    text=f"User: {user_input}\nAssistant: {response_text}",
+                    metadata={"type": "conversation"},
+                ))
             return "\n".join(result), latency, total_tokens
 
         observation = re.search(r"Action:\s*(.*)", response_text)
@@ -81,6 +103,12 @@ def run_ReAct(user_input:str, memory:list[str]=[""],max_iterations:int=10):
             messages.append({"role": "user", "content": f"Observation: {observation.group(1)}"})
 
     result.append("Max iterations reached without finding a final answer.")
-    
+
+    if memory_module is not None:
+        memory_module.write(MemoryEntry(
+            text=f"User: {user_input}\nAssistant: {response_text}",
+            metadata={"type": "conversation", "completed": False},
+        ))
+
     return "\n".join(result), latency, total_tokens
         
