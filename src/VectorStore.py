@@ -1,3 +1,5 @@
+from dataclasses import asdict
+from Embeddings import MODEL_NAME
 from copy import deepcopy
 from threading import RLock
 
@@ -40,3 +42,8 @@ class VectorStore(MemoryModule):
                 reverse=True,
             )
             return [deepcopy(record[0]) for _, record in ranked[:k]]
+
+
+    def inspect(self):
+        with self._lock:
+            return {"config": {"embedding_model": MODEL_NAME}, "entries": [dict(asdict(deepcopy(e)), chunk_count=len(v)) for e, v in self._records]}

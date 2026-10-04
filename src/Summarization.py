@@ -1,4 +1,8 @@
+from dataclasses import asdict
+from copy import deepcopy
+from Embeddings import MODEL_NAME
 from API import call_api
+from Diagnostics import record_memory_call
 from MemoryEntry import MemoryEntry
 from MemoryModule import MemoryModule
 
@@ -26,7 +30,12 @@ class Summarization(MemoryModule):
             f"New interaction:\n{new_entry.text}"
         )
 
-        new_summary, _, _ = call_api(system_prompt, user_input)
+        try:
+            new_summary, _, tokens = call_api(system_prompt, user_input)
+        except Exception:
+            record_memory_call(None)
+            raise
+        record_memory_call(tokens)
         if not isinstance(new_summary, str):
             raise TypeError("call_api must return summary text")
 
@@ -44,3 +53,6 @@ class Summarization(MemoryModule):
             text=self.summary,
             metadata={"type": "summary"}
         )]
+
+    def inspect(self):
+        return {"config": {"summary_limit": self.summary_limit}, "entries": [{"text": self.summary, "metadata": {"type": "summary"}}] if self.summary else []}

@@ -77,3 +77,18 @@ Returned entries are copies; callers cannot mutate stored records through them.
 
 Conversation state is in-process only, without persistence or eviction. Embedding
 weights are cached separately. The existing agent metrics exclude memory work.
+
+
+## Inspection and diagnostics
+
+Every built-in module exposes `inspect() -> dict` with `config` and `entries`.
+Snapshots are detached and contain no embedding arrays. They do not retrieve,
+embed, or invoke an LLM. Each entry contains text and metadata; vector entries
+also include chunk counts. Callers coordinating writes must serialize inspection
+with those writes, as the Flask session lock does.
+
+`run_ReAct` accepts optional `diagnostics=dict` and `write_back=False` while
+retaining its `(result, latency, tokens)` return tuple. Diagnostics capture the
+retrieved entries, counts, status, final answer, per-stage seconds, and separate
+agent/memory LLM accounting. The default still writes interactions to memory.
+Benchmark ingestion uses the context-local accounting collector independently.

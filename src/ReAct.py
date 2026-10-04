@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 from MemoryEntry import MemoryEntry
 from MemoryModule import MemoryModule
+from Diagnostics import collector, entries_json
 
 # ==============================================
 # ENV CONFIG
@@ -31,10 +32,11 @@ FINAL_RESPONSE = re.compile(
 # ReAct FUNCTION
 # ==============================================
 
-def run_ReAct(
+def _run_ReAct(
     user_input: str,
     max_iterations: int = 10,
     memory_module: MemoryModule | None = None,
+    diagnostics=None, write_back=True,
 ):
     if memory_module is None:
         raise ValueError("Please provide a valid memory_module instance.")
@@ -43,7 +45,13 @@ def run_ReAct(
         raise TypeError("memory_module must be of type - MemoryModule")
 
     if memory_module is not None:
-        memory_entries = memory_module.retrieve(query=user_input, k=5)
+        retrieval_start = time.perf_counter()
+        try:
+            memory_entries = memory_module.retrieve(query=user_input, k=5)
+        finally:
+            diagnostics["retrieval_seconds"] = time.perf_counter() - retrieval_start
+        diagnostics["retrieved"] = entries_json(memory_entries)
+        diagnostics["retrieved_count"] = len(memory_entries)
         memory_text = "\n".join(entry.text for entry in memory_entries)
     else:
         memory_text = ""
@@ -74,22 +82,30 @@ def run_ReAct(
     response_text = ""
 
     result.append("Starting Agent Task:")
-    start_time = time.perf_counter()
-
     for i in range(max_iterations):
 
         result.append(f"Iteration {i+1}:")
 
-        response = client.chat.completions.create(
-            model="deepseek-flash",
-            messages=messages,
-            stream=False,
-            reasoning_effort="high",
-            extra_body={"thinking": {"type": "enabled"}}
-        )
-
-        latency += time.perf_counter() - start_time
-        total_tokens += response.usage.total_tokens
+        call_start = time.perf_counter()
+        diagnostics["agent_llm_calls"] += 1
+        try:
+            response = client.chat.completions.create(
+                model="deepseek-flash", messages=messages, stream=False,
+                reasoning_effort="high", extra_body={"thinking": {"type": "enabled"}},
+            )
+        except Exception:
+            diagnostics["agent_tokens"] = None
+            raise
+        finally:
+            latency += time.perf_counter() - call_start
+            diagnostics["agent_seconds"] = latency
+        tokens = getattr(getattr(response, "usage", None), "total_tokens", None)
+        if tokens is None:
+            diagnostics["agent_tokens"] = None
+        else:
+            total_tokens += tokens
+            if diagnostics["agent_tokens"] is not None:
+                diagnostics["agent_tokens"] = total_tokens
 
         messages.append(response.choices[0].message)
         response_text = response.choices[0].message.content
@@ -99,8 +115,10 @@ def run_ReAct(
 
         if FINAL_RESPONSE.fullmatch(response_text):
             result.append("Task completed successfully.")
-            if memory_module is not None:
-                memory_module.write(MemoryEntry(
+            diagnostics["status"] = "completed"
+            diagnostics["final_answer"] = FINAL_RESPONSE.fullmatch(response_text).group(1)
+            if write_back:
+                _write(memory_module, diagnostics, MemoryEntry(
                     text=f"User: {user_input}\nAssistant: {response_text}",
                     metadata={"type": "conversation", "user_text": user_input,
                               "assistant_text": FINAL_RESPONSE.fullmatch(response_text).group(1)},
@@ -126,10 +144,46 @@ def run_ReAct(
 
     result.append("Max iterations reached without finding a final answer.")
 
-    memory_module.write(MemoryEntry(
-        text=f"User: {user_input}\nAssistant: {response_text}",
-        metadata={"type": "conversation", "completed": False,
-                  "user_text": user_input, "assistant_text": response_text},
-    ))
+    diagnostics["status"] = "incomplete"
+    if write_back:
+        _write(memory_module, diagnostics, MemoryEntry(
+            text=f"User: {user_input}\nAssistant: {response_text}",
+            metadata={"type": "conversation", "completed": False,
+                      "user_text": user_input, "assistant_text": response_text},
+        ))
 
     return "\n".join(result), latency, total_tokens
+
+
+
+def _write(module, diagnostics, entry):
+    started = time.perf_counter()
+    try:
+        module.write(entry)
+    finally:
+        diagnostics["write_seconds"] += time.perf_counter() - started
+
+
+def run_ReAct(user_input, max_iterations=10, memory_module=None, diagnostics=None, write_back=True):
+    """Keep the legacy return tuple while optionally collecting detached diagnostics."""
+    d = diagnostics if diagnostics is not None else {}
+    d.update(status="running", query=user_input, final_answer=None, retrieved=[],
+             retrieved_count=0, retrieval_seconds=0.0, agent_seconds=0.0, write_seconds=0.0,
+             agent_tokens=0, memory_tokens=0, agent_llm_calls=0, memory_llm_calls=0)
+    started = time.perf_counter()
+    token = collector.set(d)
+    valid = isinstance(memory_module, MemoryModule)
+    try:
+        if valid:
+            d["stored_before"] = len(memory_module.inspect()["entries"])
+        return _run_ReAct(user_input, max_iterations, memory_module, d, write_back)
+    except Exception as error:
+        d.update(status="error", error=str(error))
+        raise
+    finally:
+        try:
+            if valid:
+                d["stored_after"] = len(memory_module.inspect()["entries"])
+        finally:
+            d["total_seconds"] = time.perf_counter() - started
+            collector.reset(token)

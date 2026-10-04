@@ -12,3 +12,7 @@ class MemoryModule(ABC):
     @abstractmethod
     def write(self, entry: MemoryEntry) -> None:
         pass
+
+    def inspect(self) -> dict:
+        """Return a detached snapshot without retrieval or model calls."""
+        raise NotImplementedError

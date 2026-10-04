@@ -117,3 +117,22 @@ Model, embedding, extraction, or server failures return HTTP 503 with an error m
 - `src/index.html`: page structure, interaction logic, localStorage handling, API calls, Markdown rendering, and loading states.
 - `src/style.css`: theme, layout, responsive container queries, scrolling behavior, controls, message styling, code blocks, and animations.
 - `src/app.py`: Flask page route and JSON chat endpoint consumed by the frontend.
+
+
+## Session workspace and testing
+
+`src/workspace.js` owns versioned browser session state and migrates the legacy
+single-chat keys. Sidebar entries switch active sessions. Restored histories
+check the server before enabling the composer; lost memory requires a new chat.
+
+The header's Memory & metrics control opens a responsive panel with Contents,
+Retrieved context, and Metrics views, a turn selector, refresh, and JSON export.
+It consumes `/api/chats/<chat_id>/diagnostics` and refreshes after failed turns
+as well as successful ones. Inspected data is rendered with text nodes.
+
+The Testing view submits uploaded LoCoMo JSON to `/api/benchmarks`, polls the
+returned run ID, and offers cancellation and export. Module/conversation/category
+filters and question limits configure a shared backend/CLI runner. Benchmark
+memory snapshots and QA diagnostics use the same inspector. Runs default to all
+modules, the first conversation, and ten questions per conversation. The All
+conversations checkbox plus a zero question limit selects a full dataset run.

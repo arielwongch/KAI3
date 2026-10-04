@@ -20,50 +20,38 @@
             <div class="sidebar-footer"><div class="profile-avatar">A</div><div><strong>Local workspace</strong><small>Memory connected</small></div><span class="online-dot"></span></div>
         </aside>
         <main class="main-stage">
-            <header class="topbar"><button class="icon-button mobile-menu" id="openSidebar" type="button" aria-label="Open sidebar" title="Open sidebar">☰</button><div class="model-label"><span class="status-dot"></span><span>KAI3 / <b>DeepSeek Flash</b></span></div></header>
+            <header class="topbar"><button class="icon-button mobile-menu" id="openSidebar" type="button" aria-label="Open sidebar" title="Open sidebar">☰</button><div class="model-label"><span class="status-dot"></span><span>KAI3 / <b>DeepSeek Flash</b></span></div><div class="workspace-controls"><button id="openTesting" type="button">Testing</button><button id="openInspector" type="button">Memory &amp; metrics</button></div></header>
             <section class="conversation" id="conversation">
                 <div class="empty-state" id="emptyState"><div class="spark">✦</div><p class="eyebrow">MEMORY-FIRST INTELLIGENCE</p><h1>What are we thinking<br><em>about today?</em></h1><p class="empty-copy">Choose how KAI3 should remember this chat.</p><div class="memory-choices" id="memoryChoices">{% for module in memory_modules %}<button type="button" class="memory-choice" data-module="{{ module }}">{{ module.replace('_', ' ')|title }}</button>{% endfor %}</div></div>
                 <div class="messages" id="chatMessages" aria-live="polite"></div>
             </section>
             <section class="composer-wrap"><form class="composer" id="chatForm"><textarea id="userInput" rows="1" placeholder="Choose a memory module to begin..." autocomplete="off" required disabled></textarea><div class="composer-toolbar"><span class="module-status" id="moduleStatus">No memory module selected</span><span class="composer-hint">Shift + Enter for new line</span><button class="send-button" id="sendButton" type="submit" aria-label="Send message" title="Send message" disabled><span>↑</span></button></div></form><p class="disclaimer">KAI3 can make mistakes. Check important information.</p></section>
         </main>
+        <aside id="inspector" class="inspector" hidden aria-label="Memory inspector">
+            <div class="panel-heading"><h2>Memory &amp; metrics</h2><button id="closeInspector" type="button" aria-label="Close inspector">×</button></div>
+            <p id="inspectionStatus" role="status"></p>
+            <div class="panel-actions"><button id="refreshInspector" type="button">Refresh</button><button id="exportInspector" type="button">Export JSON</button></div>
+            <nav class="inspection-tabs" aria-label="Inspector views"><button data-tab="contents" type="button">Contents</button><button data-tab="retrieved" type="button">Retrieved context</button><button data-tab="metrics" type="button">Metrics</button></nav>
+            <label for="turnSelector">Turn / question</label><select id="turnSelector"></select>
+            <div id="inspectionBody"></div>
+        </aside>
+        <section id="testing" class="testing-view" hidden aria-label="LoCoMo testing">
+            <div class="panel-heading"><h2>LoCoMo QA testing</h2><button id="closeTesting" type="button">Back to chat</button></div>
+            <p>Direct conversation ingestion · retrieval k=5 · no QA write-back</p>
+            <form id="benchmarkForm">
+                <label>LoCoMo JSON <input id="datasetFile" type="file" accept=".json,application/json" required></label>
+                <fieldset><legend>Memory modules</legend>{% for module in memory_modules %}<label><input type="checkbox" name="benchmarkModule" value="{{ module }}" checked> {{ module.replace('_', ' ')|title }}</label>{% endfor %}</fieldset>
+                <label><input id="allConversations" type="checkbox"> All conversations</label>
+                <label>Conversation IDs (comma-separated; blank = first) <input id="sampleIds" type="text"></label>
+                <label>Categories (comma-separated; blank = all 1–5) <input id="categories" type="text"></label>
+                <label>Questions per conversation <input id="questionLimit" type="number" value="10" min="0" required> <small>0 runs all matching questions</small></label>
+                <button id="runBenchmark" type="submit">Run benchmark</button>
+                <button id="cancelBenchmark" type="button" disabled>Cancel run</button>
+                <button id="exportBenchmark" type="button" disabled>Export results</button>
+            </form>
+            <p id="benchmarkStatus" role="status"></p><div id="benchmarkResults"></div>
+        </section>
     </div>
-    <script>
-        const chatMessages = document.getElementById('chatMessages');
-        const emptyState = document.getElementById('emptyState');
-        const chatForm = document.getElementById('chatForm');
-        const userInput = document.getElementById('userInput');
-        const historyList = document.getElementById('chatHistory');
-        const storageKey = 'kai3-chat-history';
-        const chatIdKey = 'kai3-chat-id';
-        const moduleKey = 'kai3-memory-module';
-        let messages = JSON.parse(localStorage.getItem(storageKey) || '[]');
-        let chatId = localStorage.getItem(chatIdKey) || crypto.randomUUID();
-        let selectedModule = localStorage.getItem(moduleKey) || null;
-        let busy = false;
-        function saveMessages() { localStorage.setItem(storageKey, JSON.stringify(messages)); localStorage.setItem(chatIdKey, chatId); if (selectedModule) localStorage.setItem(moduleKey, selectedModule); else localStorage.removeItem(moduleKey); }
-        function renderMarkdown(text) { return DOMPurify.sanitize(marked.parse(text)); }
-        function addCopyButtons(container) { container.querySelectorAll('pre').forEach((block) => { const button = document.createElement('button'); button.className = 'copy-button'; button.textContent = 'Copy'; button.addEventListener('click', async () => { await navigator.clipboard.writeText(block.querySelector('code').innerText); button.textContent = 'Copied'; setTimeout(() => button.textContent = 'Copy', 1400); }); block.appendChild(button); }); }
-        function renderHistory() { historyList.innerHTML = ''; const first = messages.find((message) => message.role === 'user'); if (first) { const item = document.createElement('button'); item.className = 'history-item active'; item.textContent = first.content; historyList.appendChild(item); } document.getElementById('historyCount').textContent = first ? '1' : '0'; }
-        function updateModuleUI() { document.querySelectorAll('.memory-choice').forEach((button) => { button.disabled = Boolean(selectedModule); button.classList.toggle('selected', button.dataset.module === selectedModule); }); userInput.disabled = !selectedModule; sendButton.disabled = !selectedModule; userInput.placeholder = selectedModule ? 'Ask anything, or tell KAI3 what to remember...' : 'Choose a memory module to begin...'; moduleStatus.textContent = selectedModule ? selectedModule.replace('_', ' ') : 'No memory module selected'; }
-        function renderMessages() { chatMessages.innerHTML = ''; emptyState.hidden = messages.length > 0 && Boolean(selectedModule); messages.forEach((message) => { const row = document.createElement('article'); row.className = `message-row ${message.role}`; row.innerHTML = `<div class="message-avatar">${message.role === 'user' ? 'A' : '✦'}</div><div class="message-content"><div class="message-label">${message.role === 'user' ? 'You' : 'KAI3'}</div><div class="message-body">${message.role === 'user' ? DOMPurify.sanitize(message.content).replace(/\n/g, '<br>') : renderMarkdown(message.content)}</div></div>`; chatMessages.appendChild(row); addCopyButtons(row); }); chatMessages.scrollTop = chatMessages.scrollHeight; renderHistory(); updateModuleUI(); }
-        function appendMessage(content, role) { messages.push({ content, role }); saveMessages(); renderMessages(); }
-        async function sendMessageToFlask(userMessage) { busy = true; document.body.classList.add('is-loading'); const loader = document.createElement('div'); loader.className = 'typing-row'; loader.innerHTML = '<div class="message-avatar">✦</div><div class="typing-dots"><i></i><i></i><i></i></div>'; chatMessages.appendChild(loader); chatMessages.scrollTop = chatMessages.scrollHeight; try { const response = await fetch('/get', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: userMessage, chat_id: chatId, memory_module: selectedModule }) }); if (!response.ok) throw new Error((await response.json()).error || 'Network response error'); const data = await response.json(); loader.remove(); appendMessage(data.reply, 'assistant'); } catch (error) { loader.remove(); appendMessage(`I couldn't reach the model: ${error.message}`, 'assistant'); } finally { busy = false; document.body.classList.remove('is-loading'); userInput.focus(); } }
-        chatForm.addEventListener('submit', (event) => { event.preventDefault(); if (busy || !selectedModule) return; const messageText = userInput.value.trim(); if (!messageText) return; appendMessage(messageText, 'user'); userInput.value = ''; sendMessageToFlask(messageText); });
-        userInput.addEventListener('keydown', (event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); chatForm.requestSubmit(); } });
-        const sendButton = document.getElementById('sendButton');
-        const moduleStatus = document.getElementById('moduleStatus');
-        document.querySelectorAll('.memory-choice').forEach((button) => button.addEventListener('click', () => { if (selectedModule) return; selectedModule = button.dataset.module; saveMessages(); updateModuleUI(); userInput.focus(); }));
-        document.getElementById('newChat').addEventListener('click', () => { messages = []; chatId = crypto.randomUUID(); selectedModule = null; saveMessages(); renderMessages(); userInput.focus(); });
-        const collapseSidebar = document.getElementById('collapseSidebar');
-        collapseSidebar.addEventListener('click', () => {
-            const collapsed = document.body.classList.toggle('sidebar-collapsed');
-            collapseSidebar.textContent = collapsed ? '>' : '<';
-            collapseSidebar.setAttribute('aria-label', collapsed ? 'Expand sidebar' : 'Collapse sidebar');
-            collapseSidebar.title = collapsed ? 'Expand sidebar' : 'Collapse sidebar';
-        });
-        document.getElementById('openSidebar').addEventListener('click', () => document.body.classList.toggle('sidebar-open'));
-        renderMessages();
-    </script>
+    <script src="/workspace.js"></script>
 </body>
 </html>

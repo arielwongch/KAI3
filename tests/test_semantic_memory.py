@@ -193,7 +193,8 @@ class SemanticMemoryTests(unittest.TestCase):
         module = FactStore(FakeEmbeddings(), Mock(return_value=extraction({"op": "add", "text": "cat"})))
         module.write(MemoryEntry("cat"))
         module.extractor.return_value = ("bad JSON", 0, 0)
-        web.chat_memory_modules["failure"] = ("fact_store", module)
+        with patch.object(web.MemoryFactory, "create_memory_module", return_value=module):
+            web.chat_memory_modules["failure"] = web.ChatSession("fact_store")
         with patch.object(ReAct, "client", FakeOpenAIClient()), patch.object(web.app.logger, "exception"):
             response = web.app.test_client().post("/get", json={"chat_id": "failure", "memory_module": "fact_store", "message": "new"})
         self.assertEqual(response.status_code, 503)

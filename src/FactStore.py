@@ -1,8 +1,11 @@
+from dataclasses import asdict
+from Embeddings import MODEL_NAME
 from copy import deepcopy
 import json
 from threading import RLock
 
 from API import call_api
+from Diagnostics import record_memory_call
 from Embeddings import LocalEmbeddings, embed_checked, similarity, validate_k
 from MemoryEntry import MemoryEntry
 from MemoryModule import MemoryModule
@@ -47,7 +50,12 @@ class FactStore(MemoryModule):
                 "user_text": user_text,
                 "assistant_context": entry.metadata.get("assistant_text", ""),
             }
-            response, _, _ = self.extractor(FACT_PROMPT, json.dumps(payload))
+            try:
+                response, _, tokens = self.extractor(FACT_PROMPT, json.dumps(payload))
+            except Exception:
+                record_memory_call(None)
+                raise
+            record_memory_call(tokens)
             operations = self._validate(response)
             pending = deepcopy(self._facts)
             next_id = self._next_id
@@ -119,3 +127,8 @@ class FactStore(MemoryModule):
             ranked = sorted(enumerate(self._facts.values()), key=lambda item: (
                 similarity(vector, item[1][1]), item[1][2], item[0]), reverse=True)
             return [deepcopy(record[0]) for _, record in ranked[:k]]
+
+
+    def inspect(self):
+        with self._lock:
+            return {"config": {"embedding_model": MODEL_NAME}, "entries": [asdict(deepcopy(r[0])) for r in self._facts.values()]}
