@@ -40,8 +40,11 @@ The available memory modes are:
 
 - `sliding_window`
 - `summarization`
+- `vector_store`
+- `fact_store`
 
-The selected mode is sent with each chat request.
+The mode is selected before the first message and locked for that chat. The
+selected mode and chat ID are sent with each request.
 
 ## Messages
 
@@ -86,15 +89,14 @@ Request payload:
 ```json
 {
   "message": "User message",
-  "history": [
-    {"role": "user", "content": "Previous message"},
-    {"role": "assistant", "content": "Previous reply"}
-  ],
+  "chat_id": "browser-generated-chat-id",
   "memory_module": "sliding_window"
 }
 ```
 
-The Flask route validates the message and memory mode, converts recent browser history into agent memory context, and invokes `run_ReAct`.
+The Flask route validates the message, chat ID, and memory mode, reuses or creates
+a memory instance for that chat, and invokes `run_ReAct`. Server memory is isolated
+by chat ID and cleared on process restart; browser history is not replayed.
 
 Successful responses include:
 
@@ -107,7 +109,8 @@ Successful responses include:
 }
 ```
 
-Invalid requests return HTTP 400. Model or server failures return HTTP 503 with an error message.
+Invalid requests return HTTP 400. Changing a chat's memory mode returns HTTP 409.
+Model, embedding, extraction, or server failures return HTTP 503 with an error message.
 
 ## Frontend Files
 

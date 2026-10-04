@@ -1,9 +1,11 @@
 import sys
+import os
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, "src")
+os.environ.setdefault("DEEPSEEK_API_KEY", "test-only")
 
 import ReAct
 import Summarization as summarization_module
@@ -78,7 +80,9 @@ class MemoryIntegrationTests(unittest.TestCase):
         ])
 
         with patch.object(ReAct, "client", fake_client):
-            result, _, _ = ReAct.run_ReAct("request")
+            result, _, _ = ReAct.run_ReAct(
+                "request", memory_module=MemoryFactory.create_memory_module("sliding_window")
+            )
 
         self.assertIn("Task completed successfully.", result)
         self.assertEqual(len(fake_client.calls), 2)

@@ -102,7 +102,8 @@ def run_ReAct(
             if memory_module is not None:
                 memory_module.write(MemoryEntry(
                     text=f"User: {user_input}\nAssistant: {response_text}",
-                    metadata={"type": "conversation"},
+                    metadata={"type": "conversation", "user_text": user_input,
+                              "assistant_text": FINAL_RESPONSE.fullmatch(response_text).group(1)},
                 ))
             return "\n\n".join(result), latency, total_tokens
 
@@ -127,8 +128,8 @@ def run_ReAct(
 
     memory_module.write(MemoryEntry(
         text=f"User: {user_input}\nAssistant: {response_text}",
-        metadata={"type": "conversation", "completed": False},
+        metadata={"type": "conversation", "completed": False,
+                  "user_text": user_input, "assistant_text": response_text},
     ))
 
     return "\n".join(result), latency, total_tokens
-        

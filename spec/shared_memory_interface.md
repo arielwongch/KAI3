@@ -44,3 +44,36 @@ and observations are not persisted as long-term conversation memory.
 An empty module returns no context. The summarization module makes an
 additional LLM API call when an interaction is written, while the sliding
 window module stores entries locally.
+
+## Semantic modules
+
+`MemoryFactory.create_memory_module("vector_store", embedder=None)` stores
+original interactions, embedding overlapping tokenizer-sized chunks. Retrieval
+ranks each interaction by its best chunk and returns it once, preserving metadata.
+
+`MemoryFactory.create_memory_module("fact_store", embedder=None, extractor=None)`
+stores current atomic user facts. The default extractor is `API.call_api`; injected
+extractors take `(system_prompt, user_input)` and return `(text, latency, tokens)`.
+It returns JSON `{"operations": [...]}` with `add` (`text`), `replace` (`id`,
+`text`), or `remove` (`id`) operations. Existing IDs may be targeted once per
+write. Invalid responses fail the whole write. Repeated facts are suppressed;
+explicit corrections retain the existing fact ID. Retractions remove the fact.
+Paraphrase deduplication and semantic correction decisions rely on the extractor.
+
+Agent writes include `user_text` and `assistant_text` in metadata. Fact extraction
+uses only user assertions as evidence; assistant text is context. Direct callers
+without these fields must provide user-only `entry.text`. Entries marked
+`completed=False` are ignored by the fact store. Returned facts have `type=fact`,
+`fact_id`, `source` metadata, and `source_text` provenance.
+
+Both modules accept an injectable embedder with `embed(list[str]) -> list[list[float]]`;
+vector memory also requires `chunks(str) -> list[str]`. The default helper loads
+the shared local English MiniLM model lazily. Embeddings are normalized and searched
+exactly using cosine similarity; ties favor recently written/updated records.
+Retrieval returns up to `k` records without a similarity cutoff. Blank queries and
+empty stores return `[]`; nonpositive or noninteger `k` raises `ValueError`.
+Blank writes are ignored. Writes prepare embeddings before committing state.
+Returned entries are copies; callers cannot mutate stored records through them.
+
+Conversation state is in-process only, without persistence or eviction. Embedding
+weights are cached separately. The existing agent metrics exclude memory work.

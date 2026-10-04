@@ -7,7 +7,7 @@ from ReAct import run_ReAct
 
 app = Flask(__name__, template_folder='.', static_folder='.', static_url_path='')
 
-AVAILABLE_MEMORY_MODULES = ['sliding_window', 'summarization']
+AVAILABLE_MEMORY_MODULES = ['sliding_window', 'summarization', 'vector_store', 'fact_store']
 chat_memory_modules = {}
 
 @app.route('/', methods=['GET'])
