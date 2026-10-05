@@ -1,0 +1,77 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const vm = require('node:vm');
+class Node {
+  constructor(tag='div'){this.tag=tag;this.children=[];this.value=tag==='select'?'all':'';this.hidden=false;this.disabled=false;this.style={};this.dataset={};this.classList={toggle(){},add(){},remove(){}};}
+  append(...items){this.children.push(...items);}
+  replaceChildren(...items){this.children=items;}
+  querySelectorAll(){return [];}
+  setAttribute(){}
+  click(){if(this.onclick)return this.onclick();}
+}
+const nodes={};let requests=0;const downloaded=[];const storage={};
+const context=vm.createContext({
+  document:{getElementById:id=>nodes[id]??=new Node(),createElement:tag=>new Node(tag),querySelectorAll:()=>[],body:new Node()},
+  localStorage:{getItem:k=>storage[k]??null,setItem:(k,v)=>storage[k]=v,removeItem:k=>delete storage[k]},
+  crypto:{randomUUID:()=> 'test-id'},setTimeout:()=>1,clearTimeout(){},
+  fetch(){requests++;throw new Error('Import must not use the network');},
+  Blob:class {constructor(parts){downloaded.push(parts.join(''));}},
+  URL:{createObjectURL:()=> 'blob:test',revokeObjectURL(){}},
+});
+// Skip page startup to isolate import actions from the initial dataset request.
+const source=fs.readFileSync('src/workspace.js','utf8');
+vm.runInContext(source.slice(0,source.lastIndexOf("if(page==='chat'){save();")),context);
+const run=code=>vm.runInContext(code,context);
+const text=node=>[node.textContent??'',...node.children.map(text)].join(' ');
+const fixture={schema_version:1,status:'completed',config:{modules:['no_memory']},scores:[
+  {category:4,mean_qa_score:1,mean_judge:2,answer_count:1,judge_count:1},
+  {category:'overall',mean_qa_score:1,mean_judge:2,answer_count:1,judge_count:1}],
+  cases:[{question:'<script>untrusted question</script>',category:4,answer:'Rome',prediction:'Rome',
+    score:1,token_f1:1,judge:{overall:2},diagnostics:{answer_seconds:1.5,answer_tokens:7,
+      retrieved:[{text:'Alice lives in Rome.',metadata:{speaker:'Alice'}}]}}]};
+context.fixture=fixture;
+run("showImportedBenchmark(fixture,'legacy.json')");
+assert.equal(requests,0);
+assert.equal(nodes.benchmarkReport.hidden,false);
+assert.equal(nodes.benchmarkSetup.hidden,true);
+assert.equal(nodes.resumeBenchmark.hidden,true);
+assert.equal(nodes.reviewFile.disabled,true);
+assert.equal(run('runId'),null);
+assert.equal(fixture.cases[0].question_index,undefined); // original unchanged
+assert.match(text(nodes.benchmarkResults),/Single-hop/);
+assert.match(text(nodes.benchmarkResults),/Unavailable in this export/);
+assert.match(text(nodes.benchmarkResults),/Judge rubric/);
+assert.match(text(nodes.benchmarkResults),/Alice lives in Rome/);
+assert.match(text(nodes.benchmarkResults),/answer_seconds/);
+assert.match(text(nodes.benchmarkResults),/<script>untrusted question<\/script>/);
+run("$('exportBenchmark').onclick(); $('resumeBenchmark').onclick(); $('exportReview').onclick()");
+assert.equal(requests,0);
+assert.deepEqual(JSON.parse(downloaded[0]),fixture);
+for(const value of [[],{}, {cases:'wrong'}, {schema_version:99,cases:[]}, {cases:[{question:'Q',category:9}]}, {cases:[{question:'Q',category:4,token_f1:'bad'}]}, {cases:[],scores:[{category:'overall',accuracy:'bad'}]}]){
+  context.invalid=value;
+  assert.throws(()=>run('showImportedBenchmark(invalid,"bad.json")'),/Cannot import results/);
+  assert.equal(run('benchmark.cases.length'),1);
+}
+const modern=JSON.parse(JSON.stringify(fixture));modern.scores[1].accuracy=1;modern.scores[1].correct_count=1;modern.scores[1].scored_count=1;
+context.modern=modern;run("showImportedBenchmark(modern,'modern.json')");
+assert.match(text(nodes.benchmarkResults),/1 \/ 1 correct/);
+// Exercise the file input handler and malformed JSON recovery.
+(async()=>{
+  nodes.resultsFile.files=[{name:'bad.json',text:async()=>'{broken'}];
+  await run("$('resultsFile').onchange()");
+  assert.match(nodes.reportStatus.textContent,/not valid JSON/);
+  nodes.resultsFile.files=[{name:'legacy.json',text:async()=> '\uFEFF'+JSON.stringify(fixture)}];
+  await run("$('resultsFile').onchange()");
+  assert.equal(nodes.resultsFile.value,'');
+  assert.match(nodes.reportSubtitle.textContent,/legacy.json/);
+  assert.equal(requests,0);
+  if(process.argv[2]){
+    context.actual=JSON.parse(fs.readFileSync(process.argv[2],'utf8').replace(/^\uFEFF/,''));
+    run("showImportedBenchmark(actual,'no_mem_locomo.json')");
+    assert.equal(run('benchmark.cases.length'),100);
+    assert.match(text(nodes.benchmarkResults),/Scores by category/);
+    assert.equal(requests,0);
+    console.log('Actual 100-question export rendered successfully.');
+  }
+  console.log('Result import tests passed: legacy/current reports, validation, rendering, local export, no network.');
+})().catch(error=>{console.error(error);process.exitCode=1;});

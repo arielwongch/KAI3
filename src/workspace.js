@@ -15,6 +15,7 @@ if (!workspace || workspace.version !== 1 || !Array.isArray(workspace.sessions) 
 }
 let busy = false, unavailable = false, checking = false;
 let inspection = null, inspectionTab = 'contents', inspectionSource = 'chat', selectedRecord = null;
+let importedBenchmark = false, importedOriginal = null;
 let benchmark = null, runId = null, pollTimer = null, inspectionRequest = 0, previewDataset = null;
 const page = typeof location !== 'undefined' && location.pathname === '/benchmark' ? 'benchmark' : 'chat';
 $('chatWorkspace').hidden = page !== 'chat';
@@ -167,14 +168,70 @@ $('closeInspector').onclick=()=>{ $('inspector').hidden=true; document.body.clas
 $('refreshInspector').onclick=refreshInspection; $('turnSelector').onchange=drawInspection;
 document.querySelectorAll('[data-tab]').forEach(button=>button.onclick=()=>{inspectionTab=button.dataset.tab;drawInspection();});
 $('memorySearch').oninput=drawInspection;
+function downloadJSON(data, filename){const url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download=filename;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
+function normalizeBenchmarkImport(value){
+    const object=v=>v!==null&&typeof v==='object'&&!Array.isArray(v);
+    const fail=message=>{throw new Error(`Cannot import results: ${message}`);};
+    if(!object(value)||!Array.isArray(value.cases))fail('choose a benchmark results export, not a LoCoMo dataset or review labels.');
+    if(value.schema_version!=null&&value.schema_version!==1)fail('unsupported results schema version.');
+    const report=JSON.parse(JSON.stringify(value));
+    for(const field of ['scores','memories','errors','efficiency']){if(report[field]==null)report[field]=[];if(!Array.isArray(report[field]))fail(`${field} must be an array.`);}
+    if(report.config!=null&&!object(report.config))fail('config must be an object.');
+    report.config=report.config||{};
+    for(const field of ['modules','sample_ids','categories']){if(report.config[field]==null)report.config[field]=[];if(!Array.isArray(report.config[field]))fail(`config.${field} must be an array.`);}
+    const metricFields=['score','exact_match','token_f1','evidence_recall','correct'];
+    report.cases.forEach((c,i)=>{
+        if(!object(c)||typeof c.question!=='string'||![1,2,3,4,5].includes(c.category))fail(`question ${i+1} needs question text and a category from 1 to 5.`);
+        if(c.prediction!=null&&typeof c.prediction!=='string')fail(`question ${i+1} has an invalid prediction.`);
+        for(const field of metricFields)if(c[field]!=null&&(typeof c[field]!=='number'||!Number.isFinite(c[field])))fail(`question ${i+1} has an invalid ${field}.`);
+        if(c.judge!=null&&!object(c.judge))fail(`question ${i+1} has an invalid judge assessment.`);
+        if(c.diagnostics!=null&&!object(c.diagnostics))fail(`question ${i+1} has invalid diagnostics.`);
+        c.diagnostics=c.diagnostics||{};
+        if(c.diagnostics.retrieved==null)c.diagnostics.retrieved=[];
+        if(!Array.isArray(c.diagnostics.retrieved)||c.diagnostics.retrieved.some(e=>!object(e)||typeof e.text!=='string'||(e.metadata!=null&&!object(e.metadata))))fail(`question ${i+1} has invalid retrieved records.`);
+        if(c.question_index==null)c.question_index=i;
+        if(!Number.isInteger(c.question_index)||c.question_index<0)fail(`question ${i+1} has an invalid question index.`);
+    });
+    report.scores.forEach(row=>{
+        if(!object(row)||!['1','2','3','4','5','overall'].includes(String(row.category)))fail('invalid category score row.');
+        for(const field of ['mean_qa_score','mean_exact_match','mean_token_f1','mean_judge','accuracy','answer_count','judge_count','correct_count','scored_count','unscored_count'])if(row[field]!=null&&(typeof row[field]!=='number'||!Number.isFinite(row[field])))fail(`invalid score field: ${field}.`);
+    });
+    report.memories.forEach(m=>{
+        if(!object(m)||!object(m.memory)||!Array.isArray(m.memory.entries)||m.memory.entries.some(e=>!object(e)||typeof e.text!=='string'))fail('invalid memory snapshot.');
+        m.memory.config=m.memory.config||{};m.ingestion=m.ingestion||{};
+    });
+    if(report.efficiency.some(e=>!object(e)))fail('invalid efficiency report.');
+    if(!report.config.modules.length)report.config.modules=[...new Set(report.cases.map(c=>c.module).filter(Boolean))];
+    if(!report.config.sample_ids.length)report.config.sample_ids=[...new Set(report.cases.map(c=>c.sample_id).filter(v=>v!=null))];
+    if(!report.config.categories.length)report.config.categories=[...new Set(report.cases.map(c=>c.category))];
+    return report;
+}
+function showImportedBenchmark(value,filename){
+    if(benchmark&&['queued','running'].includes(benchmark.status)&&!importedBenchmark)throw new Error('Finish or cancel the active benchmark before importing results.');
+    const report=normalizeBenchmarkImport(value);
+    importedOriginal=value;importedBenchmark=true;benchmark=report;clearTimeout(pollTimer);runId=null;
+    localStorage.removeItem('kai3-benchmark-run');
+    $('benchmarkSetup').hidden=true;$('benchmarkRunning').hidden=true;$('benchmarkReport').hidden=false;
+    $('reportTitle').textContent='Imported benchmark results';
+    $('reportSubtitle').textContent=`${filename} ? ${report.status||'Saved report'} ? ${report.cases.length} question results`;
+    $('reportStatus').textContent=report.error?displayFailure(report.error):'Read-only report. No API calls are made when importing results.';
+    $('resumeBenchmark').hidden=true;$('exportReview').hidden=true;$('reviewFile').disabled=true;
+    drawBenchmark();
+}
+$('resultsFile').onchange=async()=>{
+    const file=$('resultsFile').files?.[0];if(!file)return;
+    try{showImportedBenchmark(JSON.parse((await file.text()).replace(/^\uFEFF/,'')),file.name);}
+    catch(error){const message=error instanceof SyntaxError?'Cannot import results: the file is not valid JSON.':error.message;$(benchmark&&!$('benchmarkReport').hidden?'reportStatus':'benchmarkStatus').textContent=message;}
+    finally{$('resultsFile').value='';}
+};
 function download(url) { const a=document.createElement('a');a.href=url;a.download='';a.click(); }
-$('exportInspector').onclick=()=>{if(inspection)download(inspectionSource==='chat'?`/api/chats/${encodeURIComponent(active().id)}/export`:`/api/benchmarks/${runId}/export`);};
+$('exportInspector').onclick=()=>{if(inspection&&importedBenchmark&&inspectionSource==='benchmark'){downloadJSON(inspection,'imported-memory.json');return;}if(inspection)download(inspectionSource==='chat'?`/api/chats/${encodeURIComponent(active().id)}/export`:`/api/benchmarks/${runId}/export`);};
 $('cancelBenchmark').onclick=async()=>{try{await jsonRequest(`/api/benchmarks/${runId}/cancel`,{method:'POST'});}catch(e){$('reportStatus').textContent=e.message;}};
-$('exportBenchmark').onclick=()=>download(`/api/benchmarks/${runId}/export`);
-$('exportReview').onclick=()=>download(`/api/benchmarks/${runId}/review`);
-$('reviewFile').onchange=async()=>{try{const data=JSON.parse(await $('reviewFile').files[0].text());const reviews=data.reviews||data.cases.filter(c=>c.ratings).map(c=>({case_index:c.case_index,ratings:c.ratings,notes:c.notes}));const result=await jsonRequest(`/api/benchmarks/${runId}/review`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reviews})});benchmark.calibration=result.calibration;drawBenchmark();$('reportStatus').textContent='Human labels imported and agreement updated.';}catch(error){$('reportStatus').textContent=error.message;}};
-$('resumeBenchmark').onclick=async()=>{try{if(!previewDataset)await loadDefaultDataset();const result=await jsonRequest(`/api/benchmarks/${runId}/resume`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({dataset:previewDataset})});runId=result.run_id;pollBenchmark();}catch(error){$('reportStatus').textContent=error.message;}};
-$('newBenchmarkRun').onclick=()=>{clearTimeout(pollTimer);benchmark=null;runId=null;localStorage.removeItem('kai3-benchmark-run');$('benchmarkReport').hidden=true;$('benchmarkRunning').hidden=true;$('benchmarkSetup').hidden=false;$('reportStatus').textContent='';};
+$('exportBenchmark').onclick=()=>importedBenchmark?downloadJSON(importedOriginal,'imported-results.json'):download(`/api/benchmarks/${runId}/export`);
+$('exportReview').onclick=()=>{if(importedBenchmark)return;download(`/api/benchmarks/${runId}/review`);};
+$('reviewFile').onchange=async()=>{if(importedBenchmark)return;try{const data=JSON.parse(await $('reviewFile').files[0].text());const reviews=data.reviews||data.cases.filter(c=>c.ratings).map(c=>({case_index:c.case_index,ratings:c.ratings,notes:c.notes}));const result=await jsonRequest(`/api/benchmarks/${runId}/review`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reviews})});benchmark.calibration=result.calibration;drawBenchmark();$('reportStatus').textContent='Human labels imported and agreement updated.';}catch(error){$('reportStatus').textContent=error.message;}};
+$('resumeBenchmark').onclick=async()=>{if(importedBenchmark)return;try{if(!previewDataset)await loadDefaultDataset();const result=await jsonRequest(`/api/benchmarks/${runId}/resume`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({dataset:previewDataset})});runId=result.run_id;pollBenchmark();}catch(error){$('reportStatus').textContent=error.message;}};
+$('newBenchmarkRun').onclick=()=>{importedBenchmark=false;importedOriginal=null;$('exportReview').hidden=false;$('reviewFile').disabled=false;clearTimeout(pollTimer);benchmark=null;runId=null;localStorage.removeItem('kai3-benchmark-run');$('benchmarkReport').hidden=true;$('benchmarkRunning').hidden=true;$('benchmarkSetup').hidden=false;$('reportStatus').textContent='';};
 $('toggleAdvanced').onclick=()=>{const details=$('advancedDetails'),open=details.hidden;details.hidden=!open;$('toggleAdvanced').setAttribute('aria-expanded',String(open));$('toggleAdvanced').lastElementChild.textContent=open?'−':'＋';};
 function selectedCategories(){return [...document.querySelectorAll('[name=category]:checked')].map(input=>Number(input.value));}
 function selectedSamples(){return [...$('sampleIds').selectedOptions].map(option=>option.value);}
@@ -208,19 +265,23 @@ $('allConversations').onchange=()=>{updateConversationChoices();updateRunSummary
 $('sampleIds').onchange=updateRunSummary;$('questionLimit').oninput=updateRunSummary;
 document.querySelectorAll('[name=category],[name=benchmarkModule]').forEach(input=>input.onchange=updateRunSummary);
 $('benchmarkForm').onsubmit=async event=>{
-    event.preventDefault();if(!previewDataset)return;
-    $('benchmarkSetup').hidden=true;$('benchmarkRunning').hidden=false;$('benchmarkReport').hidden=true;$('progressTitle').textContent='Starting benchmark';$('progressDetail').textContent='Preparing the selected memory architecture.';
+    event.preventDefault();if(!previewDataset)return;importedBenchmark=false;importedOriginal=null;$('exportReview').hidden=false;
+    $('resultsFile').disabled=true;$('benchmarkSetup').hidden=true;$('benchmarkRunning').hidden=false;$('benchmarkReport').hidden=true;$('progressTitle').textContent='Starting benchmark';$('progressDetail').textContent='Preparing the selected memory architecture.';
     try{
         const options={module:document.querySelector('[name=benchmarkModule]:checked').value,sample_ids:$('allConversations').checked?previewDataset.map(s=>String(s.sample_id)):selectedSamples(),categories:selectedCategories(),no_memory_context:$('noMemoryContext').value,question_limit:Number($('questionLimit').value)};
         const result=await jsonRequest('/api/benchmarks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({dataset:previewDataset,options})});
         runId=result.run_id;localStorage.setItem('kai3-benchmark-run',runId);pollBenchmark();
-    }catch(error){$('benchmarkSetup').hidden=false;$('benchmarkRunning').hidden=true;$('benchmarkStatus').textContent=error.message;}
+    }catch(error){$('resultsFile').disabled=false;$('benchmarkSetup').hidden=false;$('benchmarkRunning').hidden=true;$('benchmarkStatus').textContent=error.message;}
 };
 function categoryName(value){return ({'1':'Multi-hop','2':'Temporal','3':'Open-domain','4':'Single-hop','5':'Adversarial',overall:'Overall'})[String(value)]||String(value);}
 async function pollBenchmark(){
     clearTimeout(pollTimer);
+    if(importedBenchmark)return;
+    const requestedRun=runId;
     try{
-        benchmark=await jsonRequest(`/api/benchmarks/${runId}`);const running=['queued','running'].includes(benchmark.status);
+        const result=await jsonRequest(`/api/benchmarks/${requestedRun}`);
+        if(importedBenchmark||requestedRun!==runId)return;
+        benchmark=result;const running=['queued','running'].includes(benchmark.status);$('resultsFile').disabled=running;
         $('benchmarkSetup').hidden=true;$('benchmarkRunning').hidden=!running;$('benchmarkReport').hidden=running;
         const progress=benchmark.progress||{completed:0,total:0},percent=progress.total?Math.round(100*progress.completed/progress.total):0;
         $('progressBar').style.width=`${percent}%`;$('progressCount').textContent=`${progress.completed} / ${progress.total} questions`;
@@ -233,7 +294,7 @@ async function pollBenchmark(){
         $('resumeBenchmark').hidden=benchmark.status==='completed'&&benchmark.cases.every(c=>c.correct!=null||c.diagnostics?.status==='context_limit_exceeded');
         $('exportReview').disabled=!benchmark.cases.some(c=>c.prediction!=null);$('reviewFile').disabled=!benchmark.cases.some(c=>c.prediction!=null);
         if(running){pollTimer=setTimeout(pollBenchmark,1200);}else drawBenchmark();
-    }catch(error){$('benchmarkRunning').hidden=true;$('benchmarkSetup').hidden=false;if(error.status===404){localStorage.removeItem('kai3-benchmark-run');runId=null;$('benchmarkStatus').textContent='That saved run is no longer available. Start a new benchmark; completed runs are now saved across server restarts.';}else{$('benchmarkStatus').textContent=error.message;}}
+    }catch(error){if(importedBenchmark||requestedRun!==runId)return;$('resultsFile').disabled=false;$('benchmarkRunning').hidden=true;$('benchmarkSetup').hidden=false;if(error.status===404){localStorage.removeItem('kai3-benchmark-run');runId=null;$('benchmarkStatus').textContent='That saved run is no longer available. Start a new benchmark; completed runs are now saved across server restarts.';}else{$('benchmarkStatus').textContent=error.message;}}
 }
 function metricCard(label,value,note){const card=document.createElement('article');card.className='metric-card';const name=document.createElement('span');name.textContent=label;const number=document.createElement('strong');number.textContent=typeof value==='number'?value.toFixed(3):String(value??'—');const hint=document.createElement('small');hint.textContent=note;card.append(name,number,hint);return card;}
 function detailRow(label,value,parent){const row=document.createElement('div');row.className='case-detail-row';const name=document.createElement('strong');name.textContent=label;const content=document.createElement('div');content.textContent=value==null||value===''?'—':typeof value==='string'?value:JSON.stringify(value,null,2);row.append(name,content);parent.append(row);}
@@ -242,10 +303,10 @@ function displayFailure(error){const text=String(error||'');if(/(?:Error code:\s
 function drawBenchmark(){
     const body=$('benchmarkResults');body.replaceChildren();const overall=(benchmark.scores||[]).find(s=>s.category==='overall')||{};
     const metrics=document.createElement('div');metrics.className='metric-grid';
-    metrics.append(metricCard('LoCoMo score',overall.mean_qa_score,`${overall.answer_count||0} answers scored`),metricCard('Exact match',overall.mean_exact_match,'Normalized reference match'),metricCard('Token F1',overall.mean_token_f1,'Stemmed token overlap'),metricCard('Accuracy',overall.accuracy,`${overall.correct_count||0} / ${overall.scored_count||0} correct ? ${overall.unscored_count||0} unscored`));body.append(metrics);
+    metrics.append(metricCard('LoCoMo score',overall.mean_qa_score,`${overall.answer_count||0} answers scored`),metricCard('Exact match',overall.mean_exact_match,'Normalized reference match'),metricCard('Token F1',overall.mean_token_f1,'Stemmed token overlap'),metricCard('Accuracy',overall.accuracy,overall.accuracy==null?'Unavailable in this export':`${overall.correct_count??0} / ${overall.scored_count??0} correct ? ${overall.unscored_count??0} unscored`),metricCard('Judge rubric',overall.mean_judge,'Saved 0?2 diagnostic rating'));body.append(metrics);
     const summary=document.createElement('section');summary.className='report-section';const title=document.createElement('h3');title.textContent='Scores by category';summary.append(title);
-    const table=document.createElement('table');table.className='report-table';table.innerHTML='<thead><tr><th>Category</th><th>LoCoMo score</th><th>Exact match</th><th>Token F1</th><th>Accuracy</th><th>Answered / judged</th></tr></thead>';
-    const rows=document.createElement('tbody');(benchmark.scores||[]).filter(s=>s.category!=='overall').forEach(s=>{const tr=document.createElement('tr');[`${categoryName(s.category)} · ${s.category}`,s.mean_qa_score,s.mean_exact_match,s.mean_token_f1,s.accuracy,`${s.answer_count} / ${s.judge_count}`].forEach((v,i)=>{const td=document.createElement('td');td.textContent=typeof v==='number'?v.toFixed(3):String(v??'—');tr.append(td);});rows.append(tr);});table.append(rows);summary.append(table);body.append(summary);
+    const table=document.createElement('table');table.className='report-table';table.innerHTML='<thead><tr><th>Category</th><th>LoCoMo score</th><th>Exact match</th><th>Token F1</th><th>Accuracy</th><th>Judge rubric</th><th>Answered / judged</th></tr></thead>';
+    const rows=document.createElement('tbody');(benchmark.scores||[]).filter(s=>s.category!=='overall').forEach(s=>{const tr=document.createElement('tr');[`${categoryName(s.category)} · ${s.category}`,s.mean_qa_score,s.mean_exact_match,s.mean_token_f1,s.accuracy,s.mean_judge,`${s.answer_count??'?'} / ${s.judge_count??'?'}`].forEach((v,i)=>{const td=document.createElement('td');td.textContent=typeof v==='number'?v.toFixed(3):String(v??'—');tr.append(td);});rows.append(tr);});table.append(rows);summary.append(table);body.append(summary);
     const efficiency=(benchmark.efficiency||[])[0];
     if(efficiency){const section=document.createElement('section');section.className='report-section';const title=document.createElement('h3');title.textContent='Memory efficiency and latency';section.append(title);[['Evidence recall',efficiency.mean_evidence_recall],['Evidence cases',efficiency.evidence_count],['Mean retrieved token budget (conservative)',efficiency.mean_retrieved_token_budget],['Mean retrieval seconds',efficiency.mean_retrieval_seconds],['Mean answer seconds',efficiency.mean_answer_seconds]].forEach(([k,v])=>addField(section,k,v??'Unavailable'));(benchmark.memories||[]).forEach(m=>{addField(section,`Conversation ${m.sample_id} ? final storage`,m.ingestion.final_storage);addField(section,`Conversation ${m.sample_id} ? ingestion seconds`,m.ingestion.total_seconds);});body.append(section);}
     const config=document.createElement('section');config.className='report-section report-config';const configTitle=document.createElement('h3');configTitle.textContent='Run configuration';config.append(configTitle);const configGrid=document.createElement('div');configGrid.className='config-grid';
@@ -258,7 +319,7 @@ function drawBenchmark(){
     filterBar.append(categoryFilter,statusFilter);cases.append(filterBar);const list=document.createElement('div');list.className='case-list';cases.append(list);body.append(cases);
     function renderCases(){list.replaceChildren();const selectedCategory=categoryFilter.value,selectedStatus=statusFilter.value;
         benchmark.cases.filter(c=>(selectedCategory==='all'||String(c.category)===selectedCategory)&&(selectedStatus==='all'||(selectedStatus==='answered'?!!c.prediction:selectedStatus==='failed'?!!c.error:selectedStatus==='judge-error'?!!c.judge_error:!!c.judge?.uncertain))).forEach(c=>{
-            const item=document.createElement('details');item.className='question-item';const head=document.createElement('summary');const question=document.createElement('span');question.textContent=c.question;const badge=document.createElement('small');badge.textContent=`${categoryName(c.category)} · Q${c.question_index+1}`;const score=document.createElement('b');score.textContent=c.error?'Failed':`F1 ${(c.token_f1??0).toFixed(2)} · Judge ${c.judge?.overall??'—'}`;head.append(badge,question,score);item.append(head);
+            const item=document.createElement('details');item.className='question-item';const head=document.createElement('summary');const question=document.createElement('span');question.textContent=c.question;const badge=document.createElement('small');badge.textContent=`${categoryName(c.category)} · Q${c.question_index+1}`;const score=document.createElement('b');score.textContent=c.error?'Failed':`F1 ${c.token_f1==null?'Unavailable':c.token_f1.toFixed(2)} · Judge ${c.judge?.overall??'—'}`;head.append(badge,question,score);item.append(head);
             const detail=document.createElement('div');detail.className='question-detail';
             if(c.error){const failure=document.createElement('div');failure.className='case-error';failure.textContent=displayFailure(c.error);detail.append(failure);}
             detailRow('Reference answer',c.answer,detail);detailRow('Prediction',c.prediction,detail);detailRow('LoCoMo score',c.score,detail);detailRow('Exact match',c.exact_match,detail);detailRow('Token F1',c.token_f1,detail);

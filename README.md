@@ -272,3 +272,9 @@ py src/Benchmark.py --dataset data/locomo/locomo10.json --output recovered_resul
 ```
 
 Resume validates the dataset hash and model/prompt compatibility, keeps fully scored cases (including incorrect answers), and reuses saved predictions when only judging failed. Failed cases are replaced rather than appended. External-memory stores are rebuilt for unfinished conversations; summary/fact ingestion may incur additional calls and generate different memories. Prior ingestion snapshots are retained for auditing. Full-context/question-only baselines need no memory rebuild. Keep the original dataset loaded for frontend resume after a server restart. API keys remain server-side and are read from `src/.env` (environment variables take precedence).
+
+### Import saved benchmark reports
+
+On **Test Benchmark**, choose **Import results JSON** in the top bar and select a previously exported results file. The browser restores score tables, question details, retrieved evidence, memory snapshots, and timing fields locally without API calls. Older exports display their saved judge rubric; absent binary accuracy or newer metrics remain unavailable. Dataset files and malformed exports receive a clear validation message.
+
+Imported reports are read-only: resume and human-label uploads are disabled. **Export JSON** downloads the original imported data locally. Choose **New run** to return to normal benchmarking. To view an imported report after refreshing the page, select the file again. The source file and server runs are unchanged.
