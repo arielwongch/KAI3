@@ -219,3 +219,14 @@ button:disabled { opacity: .5; cursor: default; }
 .result-library-picker label { color:var(--muted); font-size:11px; }
 .result-library-picker select { max-width:260px; min-width:150px; padding:8px; background:var(--panel); border:1px solid var(--line); border-radius:6px; font-size:12px; }
 .benchmark-topbar { flex-wrap:wrap; }
+
+.headline-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.report-details > summary { cursor: pointer; color: #c8cbd0; font-size: 13px; font-weight: 500; padding: 3px 0; }
+.report-details[open] > summary { margin-bottom: 18px; }
+.summary-note { color: var(--muted); font-size: 11px; line-height: 1.5; }
+.failure-notice > summary { color: #e4b78e; }
+.report-more-actions { position: relative; }
+.report-more-actions > summary { list-style: none; cursor: pointer; }
+.report-more-actions > summary::-webkit-details-marker { display: none; }
+.report-more-menu { position: absolute; z-index: 2; right: 0; top: calc(100% + 8px); min-width: 200px; padding: 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel); box-shadow: 0 10px 25px #0005; display: grid; gap: 8px; }
+@media (max-width: 600px) { .headline-metrics { grid-template-columns: 1fr; } }

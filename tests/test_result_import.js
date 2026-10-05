@@ -44,8 +44,14 @@ assert.equal(nodes.resumeBenchmark.hidden,true);
 assert.equal(nodes.reviewFile.disabled,true);
 assert.equal(run('runId'),null);
 assert.equal(fixture.cases[0].question_index,undefined); // original unchanged
+assert.equal(nodes.benchmarkResults.children[0].children.length,3);
+const folds=nodes.benchmarkResults.children.filter(n=>n.tag==='details');
+assert.equal(folds.length,5);
+assert.ok(folds.every(n=>!n.open));
+assert.equal(nodes.reportMoreActions.hidden,true);
+assert.match(text(nodes.benchmarkResults.children[0]),/LoCoMo score/);
 assert.match(text(nodes.benchmarkResults),/Single-hop/);
-assert.match(text(nodes.benchmarkResults),/Unavailable in this export/);
+assert.match(text(nodes.benchmarkResults),/binary accuracy unavailable/);
 assert.match(text(nodes.benchmarkResults),/Judge rubric/);
 assert.match(text(nodes.benchmarkResults),/Alice lives in Rome/);
 assert.match(text(nodes.benchmarkResults),/answer_seconds/);
