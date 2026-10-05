@@ -17,6 +17,7 @@ from MemoryEntry import MemoryEntry
 from MemoryFactory import MemoryFactory
 from NoMemory import NoMemory
 from RequestPolicy import completion, fatal_provider_error, status_code, cancel_event
+from SlidingWindow import SlidingWindow
 
 MODULES = ['sliding_window', 'summarization', 'vector_store', 'fact_store', 'no_memory']
 STEMMER = PorterStemmer()
@@ -113,7 +114,8 @@ def ingestion_batches(conversation, batch_size=1, max_chars=12000):
 def direct_answer(module, question, diagnostics, conversation_text=None,
                   context_limit=1_000_000, max_output_tokens=8192):
     started = time.perf_counter()
-    entries = [] if conversation_text is not None else module.retrieve(query=question, k=5)
+    k = module.buffer.maxlen if isinstance(module, SlidingWindow) else 5
+    entries = [] if conversation_text is not None else module.retrieve(query=question, k=k)
     diagnostics['retrieval_seconds'] = time.perf_counter() - started
     diagnostics['retrieved'] = [dict(text=e.text, metadata=e.metadata, rank=i, retrieval_score=e.metadata.get('retrieval_score')) for i, e in enumerate(entries, 1)]
     diagnostics['retrieved_count'] = len(entries)
@@ -369,7 +371,7 @@ class BenchmarkJob:
                         self.live_progress(ingestion_completed=self.result['progress']['ingestion_completed'] + turns_total)
                         continue
                     self.live_progress('ingestion', sample_id=sample['sample_id'], conversation_index=conversation_index, conversation_total=len(question_sets), turn_completed=0, turn_total=turns_total)
-                    module = NoMemory() if mode == 'no_memory' else MemoryFactory.create_memory_module(mode, extractor=benchmark_extractor)
+                    module = NoMemory() if mode == 'no_memory' else MemoryFactory.create_memory_module(mode, extractor=benchmark_extractor, max_items=100)
                     ingestion = dict(memory_llm_calls=0, memory_tokens=0, write_seconds=0.0, ingested_turns=0, api_cost_usd=None, storage_growth=[dict(session=None, ingested_turns=0, **storage_metrics(module))])
                     start = time.perf_counter()
                     token = collector.set(ingestion)
