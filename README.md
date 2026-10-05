@@ -1,18 +1,57 @@
 # KAI3
 
+## Local setup
+
+Install Python 3.12 first, then run the commands below from the project folder.
+Choose the instructions for your terminal.
+
+### macOS / Linux (Bash or Zsh)
+
 ```bash
 cp src/.env.example src/.env
 python3.12 -m venv venv
 source venv/bin/activate
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 python src/app.py
 ```
+
+### Windows (PowerShell)
+
+```powershell
+Copy-Item src/.env.example src/.env
+py -3.12 -m venv venv
+.\venv\Scripts\python.exe -m pip install -r requirements.txt
+.\venv\Scripts\python.exe src/app.py
+```
+
+The Windows commands use the virtual environment's Python directly, so activation
+and PowerShell execution-policy changes are unnecessary. If `py -3.12` cannot
+find Python, install Python 3.12 and reopen your terminal.
+
+Edit `src/.env` and replace `YOUR_API_KEY` with your DeepSeek API key before using
+the chat. Copy the example file only during initial setup; copying it again
+overwrites your saved configuration.
+
+Open http://localhost:5000 after starting the app. The home page links to Chat
+and Test Benchmark. Press **Ctrl+C** to stop it.
+On subsequent runs, macOS/Linux users activate the environment and run
+`python src/app.py`; Windows users run `.\venv\Scripts\python.exe src/app.py`.
+Install dependencies again when `requirements.txt` changes.
 
 If port 5000 is occupied (for example by macOS Control Center/AirPlay), choose
 another port:
 
+macOS / Linux, with the virtual environment activated:
+
 ```bash
-PORT=5001 python3 src/app.py
+PORT=5001 python src/app.py
+```
+
+Windows PowerShell:
+
+```powershell
+$env:PORT = "5001"
+.\venv\Scripts\python.exe src/app.py
 ```
 
 Then open http://localhost:5001. The default remains port 5000.
@@ -51,7 +90,8 @@ memory = MemoryFactory.create_memory_module("vector_store")
 memory = MemoryFactory.create_memory_module("fact_store")
 ```
 
-All four modes are available in the chat UI. Each chat keeps its selected mode
+All five modes are available in the chat UI, including **No memory** for a
+baseline that stores and retrieves nothing. Each chat keeps its selected mode
 and isolated memory for the lifetime of the server process. Restarting the server
 clears memory; browser history does not restore it.
 
@@ -83,8 +123,10 @@ HTTP 503 response; previous stored memory is preserved.
 
 ## Session inspector and LoCoMo QA testing
 
-Use **Memory & metrics** in the chat header to inspect current stored contents,
-select a turn's exact retrieved context, or inspect timing and token metrics.
+Use **Memory database** in the chat header to browse stored records in a
+database-style table, search record text and metadata, inspect a selected
+record, view a turn's exact retrieved context, or inspect timing and token
+metrics.
 Snapshots do not perform searches, model calls, or embedding work. Vector memory
 shows chunk counts rather than embedding arrays; fact memory shows provenance.
 **Export JSON** downloads a versioned snapshot with diagnostics.
@@ -109,9 +151,15 @@ Session endpoints:
 - `POST /get` retains its existing response fields and adds `turn_id`. Restored
   clients send `requires_existing: true` to reject silent memory recreation.
 
-Open **Testing** to upload the official LoCoMo JSON dataset, select modules,
-conversation IDs and categories, and launch a run. Defaults are all four modules,
-the first conversation, all categories, and ten questions per conversation.
+Open **Test Benchmark** to use the bundled dataset under `data/` or upload
+another LoCoMo JSON dataset, select one memory architecture, conversation IDs
+and categories, and launch a run. The default is sliding window, the first
+conversation, all categories, and ten questions per conversation. Run separate
+jobs to compare architectures. No memory is available as a zero-storage,
+zero-retrieval baseline. Each QA
+answer uses one direct conversational API call with retrieved context; it does
+not use the ReAct loop or write answers back into memory. A separate DeepSeek
+judge call evaluates every answer.
 A question limit of zero evaluates every matching question. API calls during
 benchmark execution use the configured DeepSeek credentials. Only one frontend
 benchmark runs at a time; cancellation takes effect between operations.
@@ -120,7 +168,7 @@ The same runner is available from the terminal:
 
 ```bash
 python src/Benchmark.py --dataset /path/to/locomo10.json \
-  --output /path/to/results.json --modules sliding_window vector_store \
+  --output /path/to/results.json --modules sliding_window \
   --sample-ids conv-26 --categories 1 2 3 4 5 --question-limit 10
 ```
 
@@ -129,36 +177,49 @@ first conversation. Use `--all-conversations --question-limit 0` for the full
 dataset, or select **All conversations** and set the question limit to zero in
 the frontend. The CLI writes partial results if interrupted.
 
+Frontend benchmark snapshots are saved under `src/instance/benchmark_runs/`.
+Completed runs remain available after a server restart. Runs interrupted by a
+restart are restored with their last saved partial results and marked
+`interrupted`; they are not resumed automatically. Export completed results as
+JSON when you need a portable copy.
+
 The protocol directly writes one speaker-labelled, timestamped entry per dataset
-turn, in numeric session order, into fresh memory for each module/conversation.
+turn, in numeric session order, into fresh memory for the selected
+module/conversation.
 Supplied image captions are included; images are not fetched. Fact extraction
 uses a benchmark-only adapter that preserves speaker names and accepts assertions
 from both participants. Live chat still extracts only user assertions. Questions
-run through the agent with retrieval `k=5`; answers are never written back.
+retrieve `k=5` and use the normal conversational API directly; answers are never
+written back.
 Ground truth and evidence labels are used only after prediction.
 
 QA scores reproduce the category-specific deterministic rules in the
 [upstream evaluator](https://github.com/snap-research/locomo/blob/main/task_eval/evaluation.py):
 stemmed token F1, multi-answer F1 for category 1, first semicolon-delimited answer
-for category 3, and the upstream abstention phrase check for category 5. They are
-reported as mean QA scores, not exact-match accuracy. Incomplete/failed predictions
-are excluded from means and shown separately. Evidence recall is available only
+for category 3, and the upstream abstention phrase check for category 5. The
+report also includes normalized exact match, token F1, and a DeepSeek judge score
+for correctness, completeness, support, and abstention. Judge failures do not
+discard answer metrics. Incomplete/failed predictions are excluded from means
+and shown separately. Evidence recall is available only
 for window/vector retrieval with dialogue IDs and nonempty evidence; it is `null`
 for summary/fact retrieval. No LLM judge is used.
 
-Exports include dataset SHA-256 (canonicalized parsed JSON), protocol, model and
-embedding identifiers, module configuration, ingestion metrics, final memories,
-question traces, predictions, scores, and failures. Fixed model names do not imply
+Exports include dataset SHA-256 (canonicalized parsed JSON), protocol, answer and
+judge model identifiers, judge prompt version, module configuration, ingestion
+metrics, final memories, question traces, predictions, scores, and failures.
+Fixed model names do not imply
 provider-version pinning; record exports when comparing runs.
 
 Benchmark endpoints:
 
-- `POST /api/benchmarks`: `{ "dataset": [...], "options": { "modules": [...],
+- `POST /api/benchmarks`: `{ "dataset": [...], "options": { "module": "sliding_window",
   "sample_ids": [...], "categories": [...], "question_limit": 10 } }`; returns
   `run_id` with HTTP 202.
 - `GET /api/benchmarks/<run_id>`: progress and partial results.
 - `POST /api/benchmarks/<run_id>/cancel`: requests cooperative cancellation.
 - `GET /api/benchmarks/<run_id>/export`: downloads results JSON.
+- `GET /api/benchmarks/<run_id>/review`: downloads cases for manual 0–2 rubric ratings.
+- `POST /api/benchmarks/<run_id>/review`: imports human ratings and reports judge/human exact agreement.
 
 Tests use mocked models and embeddings and require no paid calls. The new scoring
 dependency, NLTK, uses its bundled Porter stemmer; no corpus downloads are needed.

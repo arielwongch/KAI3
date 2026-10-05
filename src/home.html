@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#111214"><title>KAI3 — Memory workspace</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <link rel="icon" type="image/png" href="/assets/favicon.png?v=2">
+</head>
+<body class="home-page">
+  <main class="home-shell">
+    <a class="brand home-brand" href="/"><span class="brand-mark">K</span><span>KAI3</span></a>
+    <section class="home-intro"><p class="eyebrow">MEMORY-FIRST INTELLIGENCE</p><h1>Choose your<br><em>workspace.</em></h1><p>Explore memory architectures in conversation, or evaluate them with the LoCoMo benchmark.</p></section>
+    <section class="workspace-cards" aria-label="KAI3 workspaces">
+      <a class="workspace-card" href="/chat"><span class="workspace-icon">✦</span><h2>Chat</h2><p>Talk with KAI3 using one memory architecture. Inspect stored records, retrieved context, and turn metrics.</p><span class="workspace-link">Open chat <b>→</b></span></a>
+      <a class="workspace-card" href="/benchmark"><span class="workspace-icon">▦</span><h2>Test Benchmark</h2><p>Run LoCoMo with one memory architecture and review answer scores, judge evaluations, and evidence.</p><span class="workspace-link">Open benchmark <b>→</b></span></a>
+    </section>
+    <footer>Local workspace · DeepSeek Flash</footer>
+  </main>
+</body>
+</html>

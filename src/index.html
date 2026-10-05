@@ -4,54 +4,62 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="theme-color" content="#111214">
-    <title>KAI3 App</title>
+    <title>KAI3 Workspace</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
     <link rel="icon" type="image/png" href="/assets/favicon.png?v=2">
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
 </head>
 <body>
-    <div class="app-shell">
-        <aside class="sidebar" id="sidebar">
-            <div class="sidebar-topline"><a class="brand" href="/" aria-label="KAI3 home"><span class="brand-mark">K</span><span>KAI3</span></a><button class="icon-button" id="collapseSidebar" type="button" aria-label="Collapse sidebar" title="Collapse sidebar">&lt;</button></div>
-            <button class="new-chat-button" id="newChat" type="button"><span>+</span> New chat</button>
-            <div class="history-heading"><span>Recent chats</span><span class="history-count" id="historyCount">0</span></div>
-            <nav class="chat-history" id="chatHistory" aria-label="Chat history"></nav>
-            <div class="sidebar-footer"><div class="profile-avatar">A</div><div><strong>Local workspace</strong><small>Memory connected</small></div><span class="online-dot"></span></div>
-        </aside>
-        <main class="main-stage">
-            <header class="topbar"><button class="icon-button mobile-menu" id="openSidebar" type="button" aria-label="Open sidebar" title="Open sidebar">☰</button><div class="model-label"><span class="status-dot"></span><span>KAI3 / <b>DeepSeek Flash</b></span></div><div class="workspace-controls"><button id="openTesting" type="button">Testing</button><button id="openInspector" type="button">Memory &amp; metrics</button></div></header>
-            <section class="conversation" id="conversation">
-                <div class="empty-state" id="emptyState"><div class="spark">✦</div><p class="eyebrow">MEMORY-FIRST INTELLIGENCE</p><h1>What are we thinking<br><em>about today?</em></h1><p class="empty-copy">Choose how KAI3 should remember this chat.</p><div class="memory-choices" id="memoryChoices">{% for module in memory_modules %}<button type="button" class="memory-choice" data-module="{{ module }}">{{ module.replace('_', ' ')|title }}</button>{% endfor %}</div></div>
-                <div class="messages" id="chatMessages" aria-live="polite"></div>
-            </section>
-            <section class="composer-wrap"><form class="composer" id="chatForm"><textarea id="userInput" rows="1" placeholder="Choose a memory module to begin..." autocomplete="off" required disabled></textarea><div class="composer-toolbar"><span class="module-status" id="moduleStatus">No memory module selected</span><span class="composer-hint">Shift + Enter for new line</span><button class="send-button" id="sendButton" type="submit" aria-label="Send message" title="Send message" disabled><span>↑</span></button></div></form><p class="disclaimer">KAI3 can make mistakes. Check important information.</p></section>
-        </main>
-        <aside id="inspector" class="inspector" hidden aria-label="Memory inspector">
-            <div class="panel-heading"><h2>Memory &amp; metrics</h2><button id="closeInspector" type="button" aria-label="Close inspector">×</button></div>
-            <p id="inspectionStatus" role="status"></p>
-            <div class="panel-actions"><button id="refreshInspector" type="button">Refresh</button><button id="exportInspector" type="button">Export JSON</button></div>
-            <nav class="inspection-tabs" aria-label="Inspector views"><button data-tab="contents" type="button">Contents</button><button data-tab="retrieved" type="button">Retrieved context</button><button data-tab="metrics" type="button">Metrics</button></nav>
-            <label for="turnSelector">Turn / question</label><select id="turnSelector"></select>
-            <div id="inspectionBody"></div>
-        </aside>
-        <section id="testing" class="testing-view" hidden aria-label="LoCoMo testing">
-            <div class="panel-heading"><h2>LoCoMo QA testing</h2><button id="closeTesting" type="button">Back to chat</button></div>
-            <p>Direct conversation ingestion · retrieval k=5 · no QA write-back</p>
-            <form id="benchmarkForm">
-                <label>LoCoMo JSON <input id="datasetFile" type="file" accept=".json,application/json" required></label>
-                <fieldset><legend>Memory modules</legend>{% for module in memory_modules %}<label><input type="checkbox" name="benchmarkModule" value="{{ module }}" checked> {{ module.replace('_', ' ')|title }}</label>{% endfor %}</fieldset>
-                <label><input id="allConversations" type="checkbox"> All conversations</label>
-                <label>Conversation IDs (comma-separated; blank = first) <input id="sampleIds" type="text"></label>
-                <label>Categories (comma-separated; blank = all 1–5) <input id="categories" type="text"></label>
-                <label>Questions per conversation <input id="questionLimit" type="number" value="10" min="0" required> <small>0 runs all matching questions</small></label>
-                <button id="runBenchmark" type="submit">Run benchmark</button>
-                <button id="cancelBenchmark" type="button" disabled>Cancel run</button>
-                <button id="exportBenchmark" type="button" disabled>Export results</button>
-            </form>
-            <p id="benchmarkStatus" role="status"></p><div id="benchmarkResults"></div>
+<div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+        <div class="sidebar-topline"><a class="brand" href="/" aria-label="KAI3 home"><span class="brand-mark">K</span><span>KAI3</span></a><button class="icon-button" id="collapseSidebar" type="button" aria-label="Collapse sidebar">‹</button></div>
+        <nav class="workspace-nav" aria-label="Workspaces"><a href="/chat" class="workspace-nav-item" data-page="chat">◉ <span>Chat</span></a><a href="/benchmark" class="workspace-nav-item" data-page="benchmark">▦ <span>Test Benchmark</span></a></nav>
+        <button class="new-chat-button" id="newChat" type="button"><span>+</span> New chat</button>
+        <div class="history-heading"><span>Recent chats</span><span class="history-count" id="historyCount">0</span></div>
+        <nav class="chat-history" id="chatHistory" aria-label="Chat history"></nav>
+        <div class="sidebar-footer"><div class="profile-avatar">K</div><div><strong>Local workspace</strong><small>Memory connected</small></div><span class="online-dot"></span></div>
+    </aside>
+
+    <main class="main-stage" id="chatWorkspace">
+        <header class="topbar"><button class="icon-button mobile-menu" id="openSidebar" type="button" aria-label="Open sidebar">☰</button><div class="page-title"><span class="status-dot"></span><span>Chat</span><small>DeepSeek Flash</small></div><button class="subtle-button" id="openInspector" type="button">▤ <span>Memory</span></button></header>
+        <section class="conversation" id="conversation">
+            <div class="empty-state" id="emptyState"><div class="spark">✦</div><p class="eyebrow">MEMORY-FIRST CHAT</p><h1>A conversation that<br><em>remembers.</em></h1><p class="empty-copy">Choose one memory architecture for this chat. It stays fixed for the conversation.</p>
+                <div class="memory-choices" id="memoryChoices">{% for module in memory_modules %}<button type="button" class="memory-choice" data-module="{{ module }}"><strong>{{ module.replace('_', ' ')|title }}</strong><span>{% if module == 'no_memory' %}Answer without storing or retrieving chat history.{% elif module == 'sliding_window' %}Recent conversation turns{% elif module == 'summarization' %}A rolling conversation summary{% elif module == 'vector_store' %}Semantic retrieval over turns{% else %}Extracted and updated facts{% endif %}</span></button>{% endfor %}</div>
+            </div>
+            <div class="messages" id="chatMessages" aria-live="polite"></div>
         </section>
-    </div>
-    <script src="/workspace.js"></script>
+        <section class="composer-wrap"><form class="composer" id="chatForm"><textarea id="userInput" rows="1" placeholder="Select a memory architecture to start" autocomplete="off" required disabled></textarea><div class="composer-toolbar"><span class="module-status" id="moduleStatus">Choose a memory architecture</span><span class="composer-hint">Enter to send · Shift + Enter for a new line</span><button class="send-button" id="sendButton" type="submit" aria-label="Send message" disabled><span>↑</span></button></div></form><p class="disclaimer">KAI3 can make mistakes. Check important information.</p></section>
+    </main>
+
+    <main id="testing" class="benchmark-workspace" hidden>
+        <header class="benchmark-topbar"><button class="icon-button mobile-menu" id="openSidebarBenchmark" type="button" aria-label="Open sidebar">☰</button><div><p class="eyebrow">EVALUATION WORKSPACE</p><h1>LoCoMo benchmark</h1></div><a class="subtle-button" href="/">← <span>Home</span></a></header>
+        <div class="benchmark-scroll">
+            <section id="benchmarkSetup" class="benchmark-view">
+                <div class="view-intro"><h2>Configure a run</h2><p>Choose one memory architecture, set the LoCoMo question range, then review the expected evaluation workload.</p></div>
+                <form id="benchmarkForm" class="benchmark-form">
+                    <section class="setup-section"><div class="section-title"><span class="step-index">01</span><div><h3>Dataset</h3><p>The bundled LoCoMo dataset loads automatically. Choose another JSON to override it.</p></div></div><label class="dataset-drop" for="datasetFile"><span class="upload-symbol">↑</span><strong id="datasetFileName">Loading bundled LoCoMo dataset…</strong><small id="datasetInfo">You can upload another JSON dataset here.</small><input id="datasetFile" type="file" accept=".json,application/json"></label></section>
+                    <section class="setup-section"><div class="section-title"><span class="step-index">02</span><div><h3>Memory architecture</h3><p>Each run tests one architecture. Start separate runs to compare them.</p></div></div><div class="architecture-grid">{% for module in memory_modules %}<label class="architecture-option"><input type="radio" name="benchmarkModule" value="{{ module }}" {% if loop.first %}checked{% endif %}><span class="architecture-radio"></span><span><strong>{{ module.replace('_', ' ')|title }}</strong><small>{% if module == 'no_memory' %}Answer with no stored or retrieved conversation context.{% elif module == 'sliding_window' %}Keep the most recent turns in context.{% elif module == 'summarization' %}Compress earlier dialogue into a rolling summary.{% elif module == 'vector_store' %}Retrieve relevant dialogue by semantic similarity.{% else %}Extract and retrieve speaker-attributed facts.{% endif %}</small></span></label>{% endfor %}</div></section>
+                    <section class="setup-section"><div class="section-title"><span class="step-index">03</span><div><h3>Question range</h3><p>Select conversations, question categories, and a per-conversation limit.</p></div></div><div class="filter-grid"><label class="check-row"><input id="allConversations" type="checkbox" checked> All conversations</label><label>Conversations<select id="sampleIds" multiple size="4" aria-label="Conversations"><option disabled>Upload a dataset to load conversations</option></select><small>Use Ctrl or ⌘ to select several, or choose all above.</small></label><fieldset class="category-fieldset"><legend>Categories</legend><div class="category-options">{% for category, name in [(1,'Multi-hop'),(2,'Single-hop'),(3,'Temporal'),(4,'Open-domain'),(5,'Adversarial')] %}<label><input type="checkbox" name="category" value="{{ category }}" checked><span>{{ name }}</span><small>{{ category }}</small></label>{% endfor %}</div></fieldset><label class="limit-field">Questions per conversation<input id="questionLimit" type="number" value="10" min="0" required><small>Set to 0 to include every matching question.</small></label></div></section>
+                    <section class="evaluation-settings"><div><span class="settings-icon">✳</span><div><strong>Evaluation protocol</strong><p>DeepSeek Flash answers and judges each question. Scores: LoCoMo category score, normalized exact match, token F1, and judge rubric.</p></div></div><button type="button" id="toggleAdvanced" aria-expanded="false">Advanced details <span>＋</span></button><div id="advancedDetails" hidden>Retrieval k=5 · direct conversational API · no answer write-back · judge rubric: correctness, completeness, support, abstention. Fact and summary architectures may make additional memory calls.</div></section>
+                    <div class="run-summary" id="runSummary" aria-live="polite"></div>
+                    <div class="setup-actions"><p id="benchmarkStatus" role="status"></p><button class="primary-action" id="runBenchmark" type="submit" disabled>Run benchmark <span>→</span></button></div>
+                </form>
+            </section>
+
+            <section id="benchmarkRunning" class="benchmark-view run-progress-view" hidden><div class="progress-mark">◌</div><p class="eyebrow">RUN IN PROGRESS</p><h2 id="progressTitle">Preparing your run</h2><p id="progressDetail">Your results will appear here as the run completes.</p><div class="progress-track"><span id="progressBar"></span></div><strong id="progressCount">0 / 0 questions</strong><div class="progress-steps"><span data-phase="ingest">Ingesting memory</span><span data-phase="answer">Answering</span><span data-phase="judge">LLM judge</span><span data-phase="finish">Finalizing</span></div><button class="secondary-action" id="cancelBenchmark" type="button">Cancel run</button></section>
+
+            <section id="benchmarkReport" class="benchmark-view" hidden><div class="report-header"><div><p class="eyebrow">RUN REPORT</p><h2 id="reportTitle">Benchmark results</h2><p id="reportSubtitle"></p></div><div class="report-actions"><button class="secondary-action" id="exportBenchmark" type="button">Export JSON</button><button class="secondary-action" id="exportReview" type="button">Review sample</button><label class="secondary-action import-review">Import labels<input id="reviewFile" type="file" accept="application/json,.json"></label><button class="primary-action" id="newBenchmarkRun" type="button">New run</button></div></div>
+                <div id="reportStatus" role="status"></div><div id="benchmarkResults"></div>
+            </section>
+        </div>
+    </main>
+
+    <section id="inspector" class="memory-workspace" hidden aria-label="Memory database">
+        <header class="memory-topbar"><div><p class="eyebrow">CHAT MEMORY</p><h1>Memory database</h1></div><div class="memory-toolbar"><span id="inspectionStatus" role="status"></span><button id="refreshInspector" class="secondary-action" type="button">Refresh</button><button id="exportInspector" class="secondary-action" type="button">Export</button><button id="closeInspector" class="icon-button" type="button" aria-label="Close memory database">×</button></div></header>
+        <div class="memory-layout"><nav class="memory-nav"><h2>Explore</h2><button data-tab="contents" type="button" class="selected">▤ <span>Stored records</span><b id="recordCount">0</b></button><button data-tab="retrieved" type="button">⌕ <span>Retrieved context</span></button><button data-tab="metrics" type="button">◷ <span>Turn metrics</span></button><div class="memory-turn-picker"><label for="turnSelector">Conversation turn</label><select id="turnSelector"></select></div><div class="memory-note">Memory lives for the current server session. Export a snapshot to keep diagnostics.</div></nav><div class="memory-content"><div class="memory-content-toolbar"><div><h2 id="memoryViewTitle">Stored records</h2><p id="memoryViewSubtitle">Browse the records currently held by this architecture.</p></div><label class="memory-search">⌕ <input id="memorySearch" type="search" placeholder="Search records and fields"></label></div><div id="inspectionBody" class="inspection-body"></div></div></div>
+    </section>
+</div>
+<script src="/workspace.js"></script>
 </body>
 </html>

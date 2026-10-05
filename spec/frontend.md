@@ -2,13 +2,13 @@
 
 ## Overview
 
-KAI3 provides a dark, memory-first chat workspace inspired by modern conversational interfaces. The frontend is served by Flask from `src/index.html` and styled in `src/style.css`.
+KAI3 provides a landing page and separate dark, memory-first Chat and Test Benchmark workspaces. Flask serves `/` from `src/home.html` and `/chat` and `/benchmark` from `src/index.html`, styled in `src/style.css`.
 
 The interface contains a compact navigation sidebar, a centered conversation view, and a persistent floating composer. The visual system uses charcoal surfaces, muted text, lime accent states, rounded controls, and subtle entrance/loading animations.
 
 ## Layout
 
-The application is organized into two primary regions:
+The home page links to two workspaces. Chat is organized into two primary regions:
 
 - **Sidebar**
   - KAI3 brand mark
@@ -38,6 +38,7 @@ The composer is the primary interaction surface and includes:
 
 The available memory modes are:
 
+- `no_memory`
 - `sliding_window`
 - `summarization`
 - `vector_store`
@@ -125,14 +126,22 @@ Model, embedding, extraction, or server failures return HTTP 503 with an error m
 single-chat keys. Sidebar entries switch active sessions. Restored histories
 check the server before enabling the composer; lost memory requires a new chat.
 
-The header's Memory & metrics control opens a responsive panel with Contents,
-Retrieved context, and Metrics views, a turn selector, refresh, and JSON export.
+The header's Memory database control opens a responsive panel with a database-
+style record grid, searchable text/metadata, record details, Retrieved context,
+and Metrics views, a turn selector, refresh, and JSON export.
 It consumes `/api/chats/<chat_id>/diagnostics` and refreshes after failed turns
 as well as successful ones. Inspected data is rendered with text nodes.
 
-The Testing view submits uploaded LoCoMo JSON to `/api/benchmarks`, polls the
-returned run ID, and offers cancellation and export. Module/conversation/category
-filters and question limits configure a shared backend/CLI runner. Benchmark
-memory snapshots and QA diagnostics use the same inspector. Runs default to all
-modules, the first conversation, and ten questions per conversation. The All
-conversations checkbox plus a zero question limit selects a full dataset run.
+The Benchmark workspace separates setup, active progress, and the final/partial
+report. Setup parses the uploaded LoCoMo dataset, exposes searchable conversation
+choices and category filters, selects one architecture, and estimates answer and
+judge calls. QA uses direct memory retrieval and one normal conversational API
+call without ReAct or memory write-back; DeepSeek judges each prediction. The
+report leads with metric cards and a category table, then provides filters and
+expandable question details. Cancellation, JSON export, human review export and
+import, and ingested-memory inspection remain available.
+
+The memory database is a full-height workspace. It provides stored records in a
+searchable table with a selected-record detail pane, plus separate retrieved
+context and metrics views tied to the selected turn. On narrow screens the
+navigation, table, and details stack vertically.
