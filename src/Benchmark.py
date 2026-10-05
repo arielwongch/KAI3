@@ -96,6 +96,20 @@ def storage_metrics(module):
                 embedding_chunks=sum(e.get('chunk_count', 0) for e in snapshot['entries']))
 
 
+def ingestion_batches(conversation, batch_size=1, max_chars=12000):
+    """Keep complete labelled turns in order, without crossing session boundaries."""
+    batch, size = [], 0
+    for entry in conversation_entries(conversation):
+        if batch and (len(batch) >= batch_size or size + 2 + len(entry.text) > max_chars
+                      or entry.metadata['session'] != batch[0].metadata['session']):
+            yield batch
+            batch, size = [], 0
+        size += len(entry.text) + (2 if batch else 0)
+        batch.append(entry)
+    if batch:
+        yield batch
+
+
 def direct_answer(module, question, diagnostics, conversation_text=None,
                   context_limit=1_000_000, max_output_tokens=8192):
     started = time.perf_counter()
@@ -199,7 +213,10 @@ def options_for(data, options):
     for field in ('review_memory', 'background'):
         if type(options.get(field, False)) is not bool:
             raise ValueError(f'{field} must be boolean.')
-    return dict(review_memory=options.get('review_memory', False), background=options.get('background', False), no_memory_context=context_mode, context_limit=context_limit, max_output_tokens=max_output_tokens, modules=list(dict.fromkeys(modules)), sample_ids=list(ids), categories=list(categories), question_limit=limit)
+    summary_batch_size = options.get('summary_batch_size', 20)
+    if type(summary_batch_size) is not int or not 1 <= summary_batch_size <= 20:
+        raise ValueError('Summary batch size must be an integer from 1 to 20.')
+    return dict(summary_batch_size=summary_batch_size, review_memory=options.get('review_memory', False), background=options.get('background', False), no_memory_context=context_mode, context_limit=context_limit, max_output_tokens=max_output_tokens, modules=list(dict.fromkeys(modules)), sample_ids=list(ids), categories=list(categories), question_limit=limit)
 
 class BenchmarkJob:
     def __init__(self, data, options=None):
@@ -222,9 +239,16 @@ class BenchmarkJob:
                            answer_prompt_version=ANSWER_PROMPT_VERSION, answer_settings=dict(thinking='enabled', reasoning_effort='high', max_tokens=self.options['max_output_tokens'], max_attempts=5, timeout_seconds=180),
                            answer_model='deepseek-flash', judge_model='deepseek-flash', judge_prompt_version=JUDGE_PROMPT_VERSION, scoring='binary-semantic-correctness',
                            progress={'completed': 0, 'total': 0}, cases=[], memories=[], errors=[])
+        if self.options['modules'] == ['summarization'] and self.options['summary_batch_size'] > 1:
+            self.result.update(
+                protocol='session-bounded-summary-batches; direct-chat-completion; retrieval-k=5; no-qa-writeback',
+                ingestion_unit='turn_batch',
+                memory_batch_settings=dict(max_turns=self.options['summary_batch_size'], max_chars=12000))
     @classmethod
     def resume(cls, data, previous):
         config = deepcopy(previous.get('config', {}))
+        # Preserve the ingestion protocol when resuming older per-turn runs.
+        config.setdefault('summary_batch_size', 1)
         if config.get('modules') == ['no_memory'] and 'no_memory_context' not in config:
             config['no_memory_context'] = 'full' if 'full-context' in previous.get('protocol', '') else 'question_only'
         job = cls(data, config)
@@ -358,7 +382,9 @@ class BenchmarkJob:
                             self.live_progress(ingestion_completed=self.result['progress']['ingestion_completed'] + turns_total, turn_completed=turns_total)
                         else:
                             current_session = None
-                            for entry in conversation_entries(sample['conversation']):
+                            batch_size = self.options['summary_batch_size'] if mode == 'summarization' else 1
+                            for batch in ingestion_batches(sample['conversation'], batch_size):
+                                entry = batch[0]
                                 if self.cancel.is_set():
                                     return
                                 if current_session is not None and entry.metadata['session'] != current_session:
@@ -366,11 +392,11 @@ class BenchmarkJob:
                                 current_session = entry.metadata['session']
                                 write_started = time.perf_counter()
                                 try:
-                                    module.write(entry)
+                                    module.write(MemoryEntry('\n\n'.join(e.text for e in batch), entry.metadata) if len(batch) > 1 else entry)
                                 finally:
                                     ingestion['write_seconds'] += time.perf_counter() - write_started
-                                ingestion['ingested_turns'] += 1
-                                self.live_progress(ingestion_completed=self.result['progress']['ingestion_completed'] + 1, turn_completed=ingestion['ingested_turns'])
+                                ingestion['ingested_turns'] += len(batch)
+                                self.live_progress(ingestion_completed=self.result['progress']['ingestion_completed'] + len(batch), turn_completed=ingestion['ingested_turns'])
                             if current_session is not None:
                                 ingestion['storage_growth'].append(dict(session=current_session, ingested_turns=ingestion['ingested_turns'], **storage_metrics(module)))
                     except Exception as error:
