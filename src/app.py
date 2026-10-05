@@ -166,6 +166,27 @@ def benchmark_status(run_id):
         response.headers['Content-Disposition'] = 'attachment; filename="locomo-results.json"'
     return response
 
+@app.post('/api/benchmarks/<run_id>/resume')
+def resume_benchmark(run_id):
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        return jsonify(error='Expected the original dataset.'), 400
+    with registry_lock:
+        previous = jobs.get(run_id)
+        if previous is None:
+            return jsonify(error='Benchmark run is unavailable.'), 404
+        if any(j.snapshot()['status'] in ('queued', 'running') for j in jobs.values()):
+            return jsonify(error='A benchmark is already running.'), 409
+        try:
+            job = BenchmarkJob.resume(payload.get('dataset') or previous.data, previous.snapshot())
+        except (ValueError, TypeError, KeyError) as error:
+            return jsonify(error=str(error)), 400
+        job.set_persistence_callback(persist_benchmark)
+        jobs[run_id] = job
+        persist_benchmark(job.snapshot())
+    Thread(target=job.run, daemon=True).start()
+    return jsonify(run_id=run_id), 202
+
 @app.post('/api/benchmarks/<run_id>/cancel')
 def cancel_benchmark(run_id):
     with registry_lock:

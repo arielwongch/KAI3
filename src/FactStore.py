@@ -126,7 +126,14 @@ class FactStore(MemoryModule):
             vector = embed_checked(self.embedder, [query])[0]
             ranked = sorted(enumerate(self._facts.values()), key=lambda item: (
                 similarity(vector, item[1][1]), item[1][2], item[0]), reverse=True)
-            return [deepcopy(record[0]) for _, record in ranked[:k]]
+            results = []
+            for rank, (_, record) in enumerate(ranked[:k], 1):
+                entry = deepcopy(record[0])
+                entry.metadata['retrieval_rank'] = rank
+                entry.metadata['retrieval_score'] = similarity(vector, record[1])
+                entry.metadata['retrieval_score_type'] = 'cosine_similarity'
+                results.append(entry)
+            return results
 
 
     def inspect(self):

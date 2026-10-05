@@ -30,6 +30,9 @@ class FakeCompletions:
 
 
 class FakeOpenAIClient:
+    def with_options(self, **kwargs):
+        return self
+
     def __init__(self, response_text="Thought: I have the final answer.\nFinal Answer: done"):
         self.response_text = response_text
         self.calls = []

@@ -155,8 +155,7 @@ Open **Test Benchmark** to use the bundled dataset under `data/` or upload
 another LoCoMo JSON dataset, select one memory architecture, conversation IDs
 and categories, and launch a run. The default is sliding window, the first
 conversation, all categories, and ten questions per conversation. Run separate
-jobs to compare architectures. No memory is available as a zero-storage,
-zero-retrieval baseline. Each QA
+jobs to compare architectures. No memory is available as a full-context, zero-storage, zero-retrieval baseline. Each QA
 answer uses one direct conversational API call with retrieved context; it does
 not use the ReAct loop or write answers back into memory. A separate DeepSeek
 judge call evaluates every answer.
@@ -180,7 +179,7 @@ the frontend. The CLI writes partial results if interrupted.
 Frontend benchmark snapshots are saved under `src/instance/benchmark_runs/`.
 Completed runs remain available after a server restart. Runs interrupted by a
 restart are restored with their last saved partial results and marked
-`interrupted`; they are not resumed automatically. Export completed results as
+`interrupted`; they are not resumed automatically; use **Resume unfinished work** with the original dataset. Export completed results as
 JSON when you need a portable copy.
 
 The protocol directly writes one speaker-labelled, timestamped entry per dataset
@@ -202,7 +201,7 @@ for correctness, completeness, support, and abstention. Judge failures do not
 discard answer metrics. Incomplete/failed predictions are excluded from means
 and shown separately. Evidence recall is available only
 for window/vector retrieval with dialogue IDs and nonempty evidence; it is `null`
-for summary/fact retrieval. No LLM judge is used.
+for summary/fact retrieval. DeepSeek supplies the binary semantic correctness judgment.
 
 Exports include dataset SHA-256 (canonicalized parsed JSON), protocol, answer and
 judge model identifiers, judge prompt version, module configuration, ingestion
@@ -228,3 +227,48 @@ For the optional DOM-free JavaScript state tests (history migration, restart
 blocking, safe text rendering, and error refresh), install `requirements-test.txt`
 and run the same unittest command. These tests use QuickJS; no browser or Node.js
 installation is required.
+
+### Binary evaluation with no memory
+
+Run all 10 bundled conversations and all questions in PowerShell:
+
+```powershell
+py src/Benchmark.py --dataset data/locomo/locomo10.json --output no_memory_results.json --modules no_memory --all-conversations --question-limit 0
+```
+
+Configure `DEEPSEEK_API_KEY` as described above. In Test Benchmark, select **No memory**, **All conversations**, all categories, and question limit **0**.
+
+In benchmarks, **No memory** defaults to a full-context, no-persistent-memory baseline. Each question gets the complete conversation in a new request, with sessions in numeric order and dates, speakers, dialogue IDs, and supplied captions. No chat history, summaries, retrieved passages, or previous answers are reused. The live chat No memory mode still retains nothing.
+
+For the question-only baseline, add `--no-memory-context question_only` or select **Question only** in the benchmark form. Exports distinguish these protocols and record the input mode.
+
+Before each answer call, the runner checks a conservative UTF-8 byte-based token budget plus framing allowance and output reserve. This is not an exact DeepSeek tokenizer count and can reject inputs that would fit. The defaults are a 1,000,000-token context limit and 8,192 output tokens, configurable using `--context-limit` and `--max-output-tokens`. Over-budget requests receive `context_limit_exceeded` without an API call, truncation, summarization, or retrieval. Results include `context_limit_count` separately from incorrect answers.
+
+Answer calls use fixed `deepseek-flash`, thinking enabled, high reasoning effort, and the recorded output limit. Temperature is omitted because thinking mode does not support it. Automatic SDK retries are disabled; the runner applies up to five attempts for transient errors with bounded backoff. Timeout/connection retries can repeat a provider request whose response was lost. Exports save raw answer responses (including API IDs and usage), latency, finish reason, actual prompt tokens when returned, prompt version, and request settings. Length-limited answers remain unscored.
+
+DeepSeek compares each prediction with the ground truth using binary semantic correctness (`correct`: 1 or 0), accepting equivalent wording and date formats. Category 5 is judged as unanswerable. Ground truth is supplied only to the judge. Exports report `accuracy = correct_count / scored_count` per category and overall (weighted by questions). Failed predictions or judge calls remain unscored, with counts reported separately; they are never silently treated as incorrect. Existing F1 and 0?2 diagnostic rubric fields remain available.
+
+### External-memory comparison
+
+Run each strategy separately with identical question selection, prompt, answer model, and decoding settings:
+
+```powershell
+py src/Benchmark.py --dataset data/locomo/locomo10.json --output facts_results.json --modules fact_store --all-conversations --question-limit 0
+py src/Benchmark.py --dataset data/locomo/locomo10.json --output retrieval_results.json --modules vector_store --all-conversations --question-limit 0
+```
+
+Every conversation creates an empty, isolated memory instance. Ingestion writes one labelled, timestamped turn at a time in numeric session order. Questions retrieve up to five entries, use the same answer prompt/settings as the full-context baseline, and never write questions or predictions back. `vector_store` is the original-turn retrieval baseline; `fact_store` and `summarization` transform dialogue into memory representations. Summary/fact extraction model settings are recorded separately.
+
+Exports include retrieved items with ranks and cosine scores for vector/fact search, ingestion/write latency, session-by-session logical storage growth, final storage size, retrieval/answer latency, API usage, and evidence recall where original dialogue IDs are available. Summary/fact provenance is not treated as proof that an annotated fact survives transformation; evidence recall remains unavailable for those representations. Retrieved token budgets use UTF-8 bytes as a conservative proxy, not exact tokenizer counts. Storage sizes describe text and JSON snapshots, excluding embedding arrays and Python overhead. Monetary costs remain `null` when pricing is unavailable. The `efficiency` report aggregates retrieval budgets, latency, and evidence recall.
+
+### Long benchmark runs and recovery
+
+HTTP 402 means insufficient DeepSeek account balance, not an invalid API key. Top up the account, then use **Resume unfinished work**. HTTP 401 requires correcting the key and restarting the server before resuming. The runner stops on permanent provider errors (400/401/402/403/422) instead of failing all later questions. Transient rate-limit/server/connection/timeout failures receive at most five attempts, a 180-second request timeout, and exponential delays capped at 60 seconds, respecting numeric Retry-After. Retry waits can be cancelled. Exhausted transient failures are saved and the run continues; resume retries those cases.
+
+Every question is checkpointed. CLI runs also checkpoint their output file while running. Resume from a saved export:
+
+```powershell
+py src/Benchmark.py --dataset data/locomo/locomo10.json --output recovered_results.json --resume results.json
+```
+
+Resume validates the dataset hash and model/prompt compatibility, keeps fully scored cases (including incorrect answers), and reuses saved predictions when only judging failed. Failed cases are replaced rather than appended. External-memory stores are rebuilt for unfinished conversations; summary/fact ingestion may incur additional calls and generate different memories. Prior ingestion snapshots are retained for auditing. Full-context/question-only baselines need no memory rebuild. Keep the original dataset loaded for frontend resume after a server restart. API keys remain server-side and are read from `src/.env` (environment variables take precedence).

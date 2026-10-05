@@ -1,6 +1,8 @@
 # Please install OpenAI SDK first: `pip3 install openai`
 import os
 import time
+from pathlib import Path
+from RequestPolicy import completion
 from dotenv import load_dotenv
 from openai import OpenAI
 
@@ -8,7 +10,7 @@ from openai import OpenAI
 # ENV CONFIG
 # ==============================================
 
-load_dotenv()
+load_dotenv(Path(__file__).with_name('.env'))
 
 client = OpenAI(
     api_key=os.environ.get('DEEPSEEK_API_KEY'),
@@ -28,7 +30,7 @@ def call_api(system_prompt:str,user_input:str):
 
     start_time = time.perf_counter()
 
-    response = client.chat.completions.create(
+    response = completion(client, phase='memory',
         model="deepseek-flash",
         messages=messages,
         stream=False,

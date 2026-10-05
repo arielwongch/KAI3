@@ -41,7 +41,14 @@ class VectorStore(MemoryModule):
                 ),
                 reverse=True,
             )
-            return [deepcopy(record[0]) for _, record in ranked[:k]]
+            results = []
+            for rank, (_, record) in enumerate(ranked[:k], 1):
+                entry = deepcopy(record[0])
+                entry.metadata['retrieval_rank'] = rank
+                entry.metadata['retrieval_score'] = max(similarity(query_vector, vector) for vector in record[1])
+                entry.metadata['retrieval_score_type'] = 'cosine_similarity'
+                results.append(entry)
+            return results
 
 
     def inspect(self):
