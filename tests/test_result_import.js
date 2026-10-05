@@ -11,6 +11,7 @@ class Node {
 }
 const nodes={};let requests=0;const downloaded=[];const storage={};
 const context=vm.createContext({
+  location:{pathname:'/benchmark'},
   document:{getElementById:id=>nodes[id]??=new Node(),createElement:tag=>new Node(tag),querySelectorAll:()=>[],body:new Node()},
   localStorage:{getItem:k=>storage[k]??null,setItem:(k,v)=>storage[k]=v,removeItem:k=>delete storage[k]},
   crypto:{randomUUID:()=> 'test-id'},setTimeout:()=>1,clearTimeout(){},
@@ -33,13 +34,24 @@ context.fixture=fixture;
 run("showImportedBenchmark(fixture,'legacy.json')");
 assert.equal(requests,0);
 assert.equal(nodes.benchmarkReport.hidden,false);
+assert.equal(nodes.newChat.hidden,true);
+assert.equal(nodes.benchmarkSidebar.hidden,false);
+assert.equal(nodes.reportMode.hidden,false);
+assert.equal(nodes.reviewLabelsControl.hidden,true);
+assert.equal(nodes.reportStatus.textContent,'');
 assert.equal(nodes.benchmarkSetup.hidden,true);
 assert.equal(nodes.resumeBenchmark.hidden,true);
 assert.equal(nodes.reviewFile.disabled,true);
 assert.equal(run('runId'),null);
 assert.equal(fixture.cases[0].question_index,undefined); // original unchanged
+assert.equal(nodes.benchmarkResults.children[0].children.length,3);
+const folds=nodes.benchmarkResults.children.filter(n=>n.tag==='details');
+assert.equal(folds.length,5);
+assert.ok(folds.every(n=>!n.open));
+assert.equal(nodes.reportMoreActions.hidden,true);
+assert.match(text(nodes.benchmarkResults.children[0]),/LoCoMo score/);
 assert.match(text(nodes.benchmarkResults),/Single-hop/);
-assert.match(text(nodes.benchmarkResults),/Unavailable in this export/);
+assert.match(text(nodes.benchmarkResults),/binary accuracy unavailable/);
 assert.match(text(nodes.benchmarkResults),/Judge rubric/);
 assert.match(text(nodes.benchmarkResults),/Alice lives in Rome/);
 assert.match(text(nodes.benchmarkResults),/answer_seconds/);
@@ -55,6 +67,29 @@ for(const value of [[],{}, {cases:'wrong'}, {schema_version:99,cases:[]}, {cases
 const modern=JSON.parse(JSON.stringify(fixture));modern.scores[1].accuracy=1;modern.scores[1].correct_count=1;modern.scores[1].scored_count=1;
 context.modern=modern;run("showImportedBenchmark(modern,'modern.json')");
 assert.match(text(nodes.benchmarkResults),/1 \/ 1 correct/);
+context.liveReport={status:'running',worker:{mode:'detached'},progress:{percent:25.5,total:10,answered:2,judged:1,phase:'ingestion',sample_id:'one',conversation_index:1,conversation_total:2,turn_completed:5,turn_total:20}};
+run('renderRunProgress(liveReport)');
+assert.equal(nodes.progressBar.style.width,'25.5%');
+assert.match(nodes.progressActivity.textContent,/Writing turn 5 of 20/);
+assert.match(nodes.progressCount.textContent,/2 answered/);
+assert.equal(nodes.continueBenchmark.hidden,true);
+context.liveReport.status='waiting_review';context.liveReport.progress.phase='review';
+run('renderRunProgress(liveReport)');
+assert.equal(nodes.continueBenchmark.hidden,false);
+assert.equal(nodes.reviewMemoryButton.hidden,false);
+assert.match(nodes.progressTitle.textContent,/Memory ready for review/);
+context.usageFixture={cases:[
+ {prediction:'A',judge:{overall:2},diagnostics:{total_seconds:10,answer_seconds:6,judge_seconds:3,retrieval_seconds:1,answer_tokens:100,judge_tokens:20}},
+ {prediction:'B',judge:{overall:2},diagnostics:{total_seconds:20,answer_seconds:12,judge_seconds:6,retrieval_seconds:2,answer_tokens:200,judge_tokens:40}},
+ {error:'failed',diagnostics:{answer_tokens:0,judge_tokens:0}}],memories:[{ingestion:{memory_tokens:30,total_seconds:5}}]};
+assert.equal(run('benchmarkUsage(usageFixture).meanRuntime'),15);
+assert.equal(run('benchmarkUsage(usageFixture).meanQuestionTokens'),180);
+assert.equal(run('benchmarkUsage(usageFixture).totalTokens'),390);
+assert.equal(run('benchmarkUsage(usageFixture).recordedSeconds'),35);
+assert.equal(run('benchmarkUsage(usageFixture).answerFailures'),1);
+assert.equal(run('benchmarkUsage({cases:[]}).meanRuntime'),null);
+assert.match(text(nodes.benchmarkResults),/Average question runtime/);
+assert.match(text(nodes.benchmarkResults),/Average tokens per question/);
 // Exercise the file input handler and malformed JSON recovery.
 (async()=>{
   nodes.resultsFile.files=[{name:'bad.json',text:async()=>'{broken'}];
@@ -73,5 +108,11 @@ assert.match(text(nodes.benchmarkResults),/1 \/ 1 correct/);
     assert.equal(requests,0);
     console.log('Actual 100-question export rendered successfully.');
   }
+  context.fetch=async url=>({ok:true,status:200,json:async()=>url==='/api/benchmarks'?{runs:[]}:({...context.liveReport,config:{modules:['no_memory']},cases:[],review:{token:'token'}})});
+  run("importedBenchmark=false;runId='test-run';");
+  await run('pollBenchmark()');
+  assert.equal(nodes.benchmarkRunning.hidden,false);
+  assert.equal(nodes.reportMode.hidden,true);
+  assert.equal(nodes.continueBenchmark.hidden,false);
   console.log('Result import tests passed: legacy/current reports, validation, rendering, local export, no network.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

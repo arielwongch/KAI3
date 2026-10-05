@@ -196,7 +196,10 @@ def options_for(data, options):
     max_output_tokens = options.get('max_output_tokens', 8192)
     if any(type(v) is not int or v <= 0 for v in (context_limit, max_output_tokens)) or max_output_tokens >= context_limit:
         raise ValueError('Token limits must be positive integers with output smaller than context.')
-    return dict(no_memory_context=context_mode, context_limit=context_limit, max_output_tokens=max_output_tokens, modules=list(dict.fromkeys(modules)), sample_ids=list(ids), categories=list(categories), question_limit=limit)
+    for field in ('review_memory', 'background'):
+        if type(options.get(field, False)) is not bool:
+            raise ValueError(f'{field} must be boolean.')
+    return dict(review_memory=options.get('review_memory', False), background=options.get('background', False), no_memory_context=context_mode, context_limit=context_limit, max_output_tokens=max_output_tokens, modules=list(dict.fromkeys(modules)), sample_ids=list(ids), categories=list(categories), question_limit=limit)
 
 class BenchmarkJob:
     def __init__(self, data, options=None):
@@ -206,6 +209,8 @@ class BenchmarkJob:
         self.lock = threading.RLock()
         self.cancel = threading.Event()
         self._persistence_callback = None
+        self.review_continue = threading.Event()
+        self.review_waiter = None
         self.result = dict(schema_version=1, run_id=str(uuid4()), status='queued',
                            dataset_hash=hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest(),
                            config=self.options, model='deepseek-flash', embedding_model=MODEL_NAME,
@@ -246,7 +251,7 @@ class BenchmarkJob:
         job.cancel = threading.Event()
         job._persistence_callback = None
         job.result = deepcopy(result)
-        if job.result.get('status') in ('queued', 'running'):
+        if job.result.get('status') in ('queued', 'running', 'waiting_review'):
             job.result['status'] = 'interrupted'
             job.result['error'] = 'The server restarted while this run was active. Partial results are available.'
         return job
@@ -262,7 +267,47 @@ class BenchmarkJob:
     def update(self, **values):
         with self.lock:
             self.result.update(values)
+            self.result['updated_at'] = time.time()
         self.persist()
+    def live_progress(self, phase=None, force=False, **details):
+        with self.lock:
+            progress = self.result['progress']
+            if phase:
+                progress['phase'] = phase
+            progress.update(details)
+            total = progress.get('ingestion_total', 0) + 2 * progress.get('total', 0)
+            resolved = sum(c.get('correct') is not None or c.get('error') is not None or c.get('judge_error') is not None for c in self.result['cases'])
+            predictions = sum(c.get('prediction') is not None for c in self.result['cases'])
+            judged = sum(c.get('correct') is not None for c in self.result['cases'])
+            progress.update(answered=predictions, judged=judged, resolved=resolved)
+            units = progress.get('ingestion_completed', 0) + predictions + resolved
+            progress['percent'] = min(99.9, 100 * units / total) if total else 0
+            if self.result['status'] == 'completed':
+                progress['percent'] = 100
+            self.result['updated_at'] = time.time()
+        now = time.monotonic()
+        if phase or force or now - getattr(self, '_last_progress_persist', 0) > .4:
+            self._last_progress_persist = now
+            self.persist()
+
+    def wait_for_review(self, sample_id, module, full_context):
+        self.review_continue.clear()
+        token = str(uuid4())
+        memory = module.inspect() if full_context is None else {'config': {'architecture': 'full_context'}, 'entries': [{'text': full_context, 'metadata': {}}]}
+        self.update(status='waiting_review', review=dict(token=token, sample_id=sample_id, memory=memory, full_context=full_context is not None))
+        self.live_progress('review')
+        while not self.cancel.is_set():
+            if self.review_waiter:
+                if self.review_waiter(token):
+                    break
+                self.cancel.wait(.25)
+            elif self.review_continue.wait(.25):
+                break
+        if self.cancel.is_set():
+            return False
+        self.update(status='running', review=None)
+        return True
+
     def save_case(self, case):
         key = (case['module'], str(case['sample_id']), case['question_index'])
         with self.lock:
@@ -273,7 +318,7 @@ class BenchmarkJob:
             else:
                 self.result['cases'].append(deepcopy(case))
             self.result['progress']['completed'] = len(self.result['cases'])
-        self.persist()
+        self.live_progress(force=True)
 
     def run(self):
         request_token = cancel_event.set(self.cancel)
@@ -284,17 +329,22 @@ class BenchmarkJob:
             qs = [(i, q) for i, q in enumerate(sample['qa']) if q['category'] in self.options['categories']]
             limit = self.options['question_limit']
             question_sets.append((sample, qs[:limit] if limit else qs))
-        self.update(progress={'completed': len(self.result['cases']), 'total': sum(len(qs) for _, qs in question_sets) * len(self.options['modules'])})
+        self.update(progress={'completed': len(self.result['cases']), 'total': sum(len(qs) for _, qs in question_sets), 'ingestion_completed': 0, 'ingestion_total': sum(sum(1 for _ in conversation_entries(sample['conversation'])) for sample, _ in question_sets), 'phase': 'preparing'})
+        self.live_progress()
+        completed_run = False
         try:
             for mode in self.options['modules']:
-                for sample, questions in question_sets:
+                for conversation_index, (sample, questions) in enumerate(question_sets, 1):
                     if self.cancel.is_set():
                         return
                     existing = {(c['module'], str(c['sample_id']), c['question_index']): c for c in self.result['cases']}
                     def finished(c):
                         return c is not None and (c.get('correct') is not None or c.get('diagnostics', {}).get('status') == 'context_limit_exceeded')
+                    turns_total = sum(1 for _ in conversation_entries(sample['conversation']))
                     if all(finished(existing.get((mode, str(sample['sample_id']), i))) for i, _ in questions):
+                        self.live_progress(ingestion_completed=self.result['progress']['ingestion_completed'] + turns_total)
                         continue
+                    self.live_progress('ingestion', sample_id=sample['sample_id'], conversation_index=conversation_index, conversation_total=len(question_sets), turn_completed=0, turn_total=turns_total)
                     module = NoMemory() if mode == 'no_memory' else MemoryFactory.create_memory_module(mode, extractor=benchmark_extractor)
                     ingestion = dict(memory_llm_calls=0, memory_tokens=0, write_seconds=0.0, ingested_turns=0, api_cost_usd=None, storage_growth=[dict(session=None, ingested_turns=0, **storage_metrics(module))])
                     start = time.perf_counter()
@@ -305,6 +355,7 @@ class BenchmarkJob:
                         if mode == 'no_memory':
                             if self.options['no_memory_context'] == 'full':
                                 full_context = '\n\n'.join(e.text for e in conversation_entries(sample['conversation']))
+                            self.live_progress(ingestion_completed=self.result['progress']['ingestion_completed'] + turns_total, turn_completed=turns_total)
                         else:
                             current_session = None
                             for entry in conversation_entries(sample['conversation']):
@@ -319,6 +370,7 @@ class BenchmarkJob:
                                 finally:
                                     ingestion['write_seconds'] += time.perf_counter() - write_started
                                 ingestion['ingested_turns'] += 1
+                                self.live_progress(ingestion_completed=self.result['progress']['ingestion_completed'] + 1, turn_completed=ingestion['ingested_turns'])
                             if current_session is not None:
                                 ingestion['storage_growth'].append(dict(session=current_session, ingested_turns=ingestion['ingested_turns'], **storage_metrics(module)))
                     except Exception as error:
@@ -337,12 +389,15 @@ class BenchmarkJob:
                         with self.lock:
                             self.result['errors'].append(dict(sample_id=sample['sample_id'], module=mode, phase='ingestion', error=ingestion_error))
                         continue
-                    for index, qa in questions:
+                    if self.options['review_memory'] and not self.wait_for_review(sample['sample_id'], module, full_context):
+                        return
+                    for question_number, (index, qa) in enumerate(questions, 1):
                         if self.cancel.is_set():
                             return
                         previous_case = existing.get((mode, str(sample['sample_id']), index))
                         if finished(previous_case):
                             continue
+                        self.live_progress('answer', question_number=question_number, question_total=len(questions), question_index=index)
                         stop_error = None
                         d = {}
                         case = dict(sample_id=sample['sample_id'], module=mode, question_index=index, question=qa['question'], category=qa['category'], answer=qa.get('answer'), evidence=qa.get('evidence', []), diagnostics=d, score=None, exact_match=None, token_f1=None, judge=None, correct=None, evidence_recall=None)
@@ -365,6 +420,7 @@ class BenchmarkJob:
                             case['token_f1'] = token_f1(d['final_answer'], qa.get('answer', ''), qa['category'])
                             # Save the paid prediction before starting a separate judge request.
                             self.save_case(case)
+                            self.live_progress('judge')
                             try:
                                 judge, elapsed, tokens = judge_answer(qa['question'], None if qa['category'] == 5 else qa.get('answer'), d['final_answer'], [full_context] if full_context is not None else [e['text'] for e in d['retrieved']], diagnostics=d)
                                 d['judge_seconds'] = elapsed; d['judge_tokens'] = tokens
@@ -392,7 +448,8 @@ class BenchmarkJob:
                         if stop_error is not None:
                             self.update(status='failed', error=str(stop_error), failure_status_code=status_code(stop_error))
                             return
-            self.update(status='completed')
+            self.live_progress('finalizing')
+            completed_run = True
         except Exception as error:
             self.update(status='failed', error=str(error))
         finally:
@@ -444,6 +501,8 @@ class BenchmarkJob:
                     mean_retrieval_seconds=mean('retrieval_seconds', True),
                     mean_answer_seconds=mean('answer_seconds', True), api_cost_usd=None))
             self.update(scores=summaries, efficiency=efficiency)
+            if completed_run and not self.cancel.is_set():
+                self.update(status='completed', progress={**self.result['progress'], 'percent': 100, 'phase': 'completed'})
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -458,8 +517,11 @@ def main():
     parser.add_argument('--no-memory-context', choices=['full', 'question_only'], default='full')
     parser.add_argument('--context-limit', type=int, default=1_000_000)
     parser.add_argument('--max-output-tokens', type=int, default=8192)
+    parser.add_argument('--review-memory', action='store_true', help='Review pauses are controlled by the web worker.')
     parser.add_argument('--resume', help='Saved results JSON; reuse successful answers and retry failed/pending work.')
     args = parser.parse_args()
+    if args.review_memory:
+        parser.error('Use Test Benchmark for interactive memory review.')
     with open(args.dataset) as f:
         data = json.load(f)
     if args.resume:

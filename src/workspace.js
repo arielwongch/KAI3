@@ -20,6 +20,7 @@ let benchmark = null, runId = null, pollTimer = null, inspectionRequest = 0, pre
 const page = typeof location !== 'undefined' && location.pathname === '/benchmark' ? 'benchmark' : 'chat';
 $('chatWorkspace').hidden = page !== 'chat';
 $('testing').hidden = page !== 'benchmark';
+$('newChat').hidden=page==='benchmark';$('chatHistory').hidden=page==='benchmark';$('chatHistoryHeading').hidden=page==='benchmark';$('benchmarkSidebar').hidden=page!=='benchmark';
 document.querySelectorAll('.workspace-nav-item').forEach(link => link.classList.toggle('active', link.dataset.page === page));
 function active() { return workspace.sessions.find(s => s.id === workspace.active) || workspace.sessions[0]; }
 function save() { localStorage.setItem(key, JSON.stringify(workspace)); }
@@ -207,17 +208,27 @@ function normalizeBenchmarkImport(value){
     return report;
 }
 function showImportedBenchmark(value,filename){
-    if(benchmark&&['queued','running'].includes(benchmark.status)&&!importedBenchmark)throw new Error('Finish or cancel the active benchmark before importing results.');
+    if(benchmark&&['queued','running','waiting_review'].includes(benchmark.status)&&!importedBenchmark)throw new Error('Finish or cancel the active benchmark before importing results.');
     const report=normalizeBenchmarkImport(value);
     importedOriginal=value;importedBenchmark=true;benchmark=report;clearTimeout(pollTimer);runId=null;
     localStorage.removeItem('kai3-benchmark-run');
     $('benchmarkSetup').hidden=true;$('benchmarkRunning').hidden=true;$('benchmarkReport').hidden=false;
-    $('reportTitle').textContent='Imported benchmark results';
+    $('reportMoreActions').hidden=true;$('reportMoreActions').open=false;$('reportTitle').textContent='Benchmark results';$('reportMode').hidden=false;$('reviewLabelsControl').hidden=true;
     $('reportSubtitle').textContent=`${filename} ? ${report.status||'Saved report'} ? ${report.cases.length} question results`;
-    $('reportStatus').textContent=report.error?displayFailure(report.error):'Read-only report. No API calls are made when importing results.';
+    $('reportStatus').textContent=report.error?displayFailure(report.error):'';
     $('resumeBenchmark').hidden=true;$('exportReview').hidden=true;$('reviewFile').disabled=true;
     drawBenchmark();
 }
+async function loadResultLibrary(){
+    try{const {files}=await jsonRequest('/api/results');const select=$('resultLibrary'),selected=select.value;select.replaceChildren();const placeholder=document.createElement('option');placeholder.value='';placeholder.textContent=files.length?'Select a report from data/result':'No JSON reports in data/result';select.append(placeholder);for(const file of files){const option=document.createElement('option');option.value=file;option.textContent=file;select.append(option);}select.value=files.includes(selected)?selected:'';}
+    catch(error){$('benchmarkStatus').textContent=error.message;}
+}
+$('refreshResultLibrary').onclick=loadResultLibrary;
+$('resultLibrary').onchange=async()=>{
+    const selected=$('resultLibrary').value;if(!selected)return;
+    try{const {report}=await jsonRequest(`/api/results/file?path=${encodeURIComponent(selected)}`);if($('resultLibrary').value!==selected)return;showImportedBenchmark(report,`data/result/${selected}`);}
+    catch(error){$(benchmark&&!$('benchmarkReport').hidden?'reportStatus':'benchmarkStatus').textContent=error.message;}
+};
 $('resultsFile').onchange=async()=>{
     const file=$('resultsFile').files?.[0];if(!file)return;
     try{showImportedBenchmark(JSON.parse((await file.text()).replace(/^\uFEFF/,'')),file.name);}
@@ -230,8 +241,8 @@ $('cancelBenchmark').onclick=async()=>{try{await jsonRequest(`/api/benchmarks/${
 $('exportBenchmark').onclick=()=>importedBenchmark?downloadJSON(importedOriginal,'imported-results.json'):download(`/api/benchmarks/${runId}/export`);
 $('exportReview').onclick=()=>{if(importedBenchmark)return;download(`/api/benchmarks/${runId}/review`);};
 $('reviewFile').onchange=async()=>{if(importedBenchmark)return;try{const data=JSON.parse(await $('reviewFile').files[0].text());const reviews=data.reviews||data.cases.filter(c=>c.ratings).map(c=>({case_index:c.case_index,ratings:c.ratings,notes:c.notes}));const result=await jsonRequest(`/api/benchmarks/${runId}/review`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reviews})});benchmark.calibration=result.calibration;drawBenchmark();$('reportStatus').textContent='Human labels imported and agreement updated.';}catch(error){$('reportStatus').textContent=error.message;}};
-$('resumeBenchmark').onclick=async()=>{if(importedBenchmark)return;try{if(!previewDataset)await loadDefaultDataset();const result=await jsonRequest(`/api/benchmarks/${runId}/resume`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({dataset:previewDataset})});runId=result.run_id;pollBenchmark();}catch(error){$('reportStatus').textContent=error.message;}};
-$('newBenchmarkRun').onclick=()=>{importedBenchmark=false;importedOriginal=null;$('exportReview').hidden=false;$('reviewFile').disabled=false;clearTimeout(pollTimer);benchmark=null;runId=null;localStorage.removeItem('kai3-benchmark-run');$('benchmarkReport').hidden=true;$('benchmarkRunning').hidden=true;$('benchmarkSetup').hidden=false;$('reportStatus').textContent='';};
+$('resumeBenchmark').onclick=async()=>{if(importedBenchmark)return;try{const result=await jsonRequest(`/api/benchmarks/${runId}/resume`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(benchmark?.worker?{}:{dataset:previewDataset})});runId=result.run_id;pollBenchmark();}catch(error){$('reportStatus').textContent=error.message;}};
+$('newBenchmarkRun').onclick=()=>{$('reportMode').hidden=true;$('reviewLabelsControl').hidden=false;$('reportMoreActions').hidden=false;$('reportMoreActions').open=false;importedBenchmark=false;importedOriginal=null;$('exportReview').hidden=false;$('reviewFile').disabled=false;clearTimeout(pollTimer);benchmark=null;runId=null;localStorage.removeItem('kai3-benchmark-run');$('benchmarkReport').hidden=true;$('benchmarkRunning').hidden=true;$('benchmarkSetup').hidden=false;$('reportStatus').textContent='';};
 $('toggleAdvanced').onclick=()=>{const details=$('advancedDetails'),open=details.hidden;details.hidden=!open;$('toggleAdvanced').setAttribute('aria-expanded',String(open));$('toggleAdvanced').lastElementChild.textContent=open?'−':'＋';};
 function selectedCategories(){return [...document.querySelectorAll('[name=category]:checked')].map(input=>Number(input.value));}
 function selectedSamples(){return [...$('sampleIds').selectedOptions].map(option=>option.value);}
@@ -265,14 +276,37 @@ $('allConversations').onchange=()=>{updateConversationChoices();updateRunSummary
 $('sampleIds').onchange=updateRunSummary;$('questionLimit').oninput=updateRunSummary;
 document.querySelectorAll('[name=category],[name=benchmarkModule]').forEach(input=>input.onchange=updateRunSummary);
 $('benchmarkForm').onsubmit=async event=>{
-    event.preventDefault();if(!previewDataset)return;importedBenchmark=false;importedOriginal=null;$('exportReview').hidden=false;
-    $('resultsFile').disabled=true;$('benchmarkSetup').hidden=true;$('benchmarkRunning').hidden=false;$('benchmarkReport').hidden=true;$('progressTitle').textContent='Starting benchmark';$('progressDetail').textContent='Preparing the selected memory architecture.';
+    event.preventDefault();if(!previewDataset)return;$('reportMode').hidden=true;$('reviewLabelsControl').hidden=false;$('reportMoreActions').hidden=false;$('reportMoreActions').open=false;importedBenchmark=false;importedOriginal=null;$('exportReview').hidden=false;
+    $('resultsFile').disabled=true;$('resultLibrary').disabled=true;$('benchmarkSetup').hidden=true;$('benchmarkRunning').hidden=false;$('benchmarkReport').hidden=true;$('progressTitle').textContent='Starting benchmark';$('progressDetail').textContent='Preparing the selected memory architecture.';
     try{
-        const options={module:document.querySelector('[name=benchmarkModule]:checked').value,sample_ids:$('allConversations').checked?previewDataset.map(s=>String(s.sample_id)):selectedSamples(),categories:selectedCategories(),no_memory_context:$('noMemoryContext').value,question_limit:Number($('questionLimit').value)};
+        const options={background:$('backgroundRun').checked,review_memory:$('reviewMemory').checked,module:document.querySelector('[name=benchmarkModule]:checked').value,sample_ids:$('allConversations').checked?previewDataset.map(s=>String(s.sample_id)):selectedSamples(),categories:selectedCategories(),no_memory_context:$('noMemoryContext').value,question_limit:Number($('questionLimit').value)};
         const result=await jsonRequest('/api/benchmarks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({dataset:previewDataset,options})});
         runId=result.run_id;localStorage.setItem('kai3-benchmark-run',runId);pollBenchmark();
-    }catch(error){$('resultsFile').disabled=false;$('benchmarkSetup').hidden=false;$('benchmarkRunning').hidden=true;$('benchmarkStatus').textContent=error.message;}
+    }catch(error){$('resultsFile').disabled=false;$('resultLibrary').disabled=false;$('benchmarkSetup').hidden=false;$('benchmarkRunning').hidden=true;$('benchmarkStatus').textContent=error.message;}
 };
+function renderRunProgress(report){
+    const p=report.progress||{},waiting=report.status==='waiting_review';
+    const percent=p.percent??(p.total?100*(p.completed||0)/p.total:0);
+    $('progressBar').style.width=`${Math.min(100,Math.max(0,percent))}%`;
+    $('progressCount').textContent=`${percent.toFixed(1)}% ? ${p.answered??p.completed??0} answered ? ${p.judged??0} judged / ${p.total??0} questions`;
+    const titles={preparing:'Preparing your run',ingestion:'Ingesting conversation',answer:'Answering question',judge:'Judging answer',review:'Memory ready for review',finalizing:'Finalizing results'};
+    $('progressTitle').textContent=waiting?titles.review:titles[p.phase]||'Starting benchmark';
+    $('progressDetail').textContent=p.sample_id?`Conversation ${p.conversation_index??'?'} of ${p.conversation_total??'?'} ? ${p.sample_id}`:'Preparing selected conversations';
+    $('progressActivity').textContent=p.phase==='ingestion'?`Writing turn ${p.turn_completed??0} of ${p.turn_total??0}`:waiting?'Inspect the stored memory, then continue when ready.':['answer','judge'].includes(p.phase)?`Question ${p.question_number??'?'} of ${p.question_total??'?'} in this conversation`:'';
+    $('backgroundHint').textContent=report.worker?'Running independently in the background. Return through Saved runs.':'This run continues while the Python server remains running.';
+    $('reviewMemoryButton').hidden=!waiting;$('continueBenchmark').hidden=!waiting;
+}
+async function refreshSavedRuns(){
+    if(page!=='benchmark')return;
+    try{const {runs}=await jsonRequest('/api/benchmarks');const list=$('savedRuns');list.replaceChildren();
+        for(const saved of runs){const row=document.createElement('div');row.className='saved-run';const open=document.createElement('button');open.className='saved-run-open';const name=document.createElement('strong');name.textContent=(saved.module||'Benchmark').replaceAll('_',' ');const detail=document.createElement('small');detail.textContent=`${saved.status} ? ${(saved.progress?.percent??(saved.status==='completed'?100:0)).toFixed(1)}% ? ${saved.run_id.slice(0,8)}`;open.append(name,detail);open.onclick=()=>openSavedRun(saved.run_id);row.append(open);const actions=document.createElement('div');actions.className='saved-run-actions';const exportButton=document.createElement('button');exportButton.textContent='Export';exportButton.onclick=()=>download(`/api/benchmarks/${encodeURIComponent(saved.run_id)}/export`);actions.append(exportButton);if(['failed','cancelled','interrupted'].includes(saved.status)||(saved.status==='completed'&&saved.resumable)){const resume=document.createElement('button');resume.textContent='Resume';resume.onclick=async()=>{await openSavedRun(saved.run_id);$('resumeBenchmark').onclick();};actions.append(resume);}row.append(actions);list.append(row);}
+        if(!runs.length){const empty=document.createElement('p');empty.textContent='Your benchmark runs will appear here.';list.append(empty);}
+    }catch(error){$('savedRuns').textContent=error.message;}
+}
+async function openSavedRun(id){importedBenchmark=false;importedOriginal=null;runId=id;localStorage.setItem('kai3-benchmark-run',id);$('exportReview').hidden=false;$('reviewFile').disabled=false;$('reportMode').hidden=true;$('reviewLabelsControl').hidden=false;$('reportMoreActions').hidden=false;$('reportMoreActions').open=false;await pollBenchmark();}
+$('refreshRuns').onclick=refreshSavedRuns;$('sidebarNewBenchmark').onclick=()=>$('newBenchmarkRun').onclick();
+$('continueBenchmark').onclick=async()=>{try{await jsonRequest(`/api/benchmarks/${runId}/continue`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:benchmark.review.token})});pollBenchmark();}catch(error){$('progressActivity').textContent=error.message;}};
+$('reviewMemoryButton').onclick=()=>{if(!benchmark?.review)return;inspectionSource='benchmark';setInspection({memory:benchmark.review.memory,turns:[],totals:{}},`${benchmark.review.sample_id} ? ${benchmark.review.full_context?'Full conversation':'Stored memory'}`);$('inspector').hidden=false;document.body.classList.add('memory-open');};
 function categoryName(value){return ({'1':'Multi-hop','2':'Temporal','3':'Open-domain','4':'Single-hop','5':'Adversarial',overall:'Overall'})[String(value)]||String(value);}
 async function pollBenchmark(){
     clearTimeout(pollTimer);
@@ -281,38 +315,84 @@ async function pollBenchmark(){
     try{
         const result=await jsonRequest(`/api/benchmarks/${requestedRun}`);
         if(importedBenchmark||requestedRun!==runId)return;
-        benchmark=result;const running=['queued','running'].includes(benchmark.status);$('resultsFile').disabled=running;
+        benchmark=result;const running=['queued','running','waiting_review'].includes(benchmark.status);$('resultsFile').disabled=running;$('resultLibrary').disabled=running;$('reportMode').hidden=true;$('reviewLabelsControl').hidden=false;$('reportMoreActions').hidden=false;$('reportMoreActions').open=false;
         $('benchmarkSetup').hidden=true;$('benchmarkRunning').hidden=!running;$('benchmarkReport').hidden=running;
-        const progress=benchmark.progress||{completed:0,total:0},percent=progress.total?Math.round(100*progress.completed/progress.total):0;
-        $('progressBar').style.width=`${percent}%`;$('progressCount').textContent=`${progress.completed} / ${progress.total} questions`;
-        $('progressTitle').textContent=benchmark.status==='queued'?'Preparing your run':'Evaluating answers and judge scores';
-        $('progressDetail').textContent=`${benchmark.config.modules[0].replaceAll('_',' ')} · ${percent}% complete`;
+        const progress=benchmark.progress||{completed:0,total:0};
+        renderRunProgress(benchmark);
         $('reportTitle').textContent=benchmark.status==='completed'?'Run complete':benchmark.status==='cancelled'?'Run cancelled · partial results':'Run report';
         $('reportSubtitle').textContent=`${benchmark.status} · ${progress.completed} of ${progress.total} questions processed`;
         $('reportStatus').textContent=benchmark.error?displayFailure(benchmark.error):'';
         $('resumeBenchmark').disabled=running;
         $('resumeBenchmark').hidden=benchmark.status==='completed'&&benchmark.cases.every(c=>c.correct!=null||c.diagnostics?.status==='context_limit_exceeded');
         $('exportReview').disabled=!benchmark.cases.some(c=>c.prediction!=null);$('reviewFile').disabled=!benchmark.cases.some(c=>c.prediction!=null);
-        if(running){pollTimer=setTimeout(pollBenchmark,1200);}else drawBenchmark();
-    }catch(error){if(importedBenchmark||requestedRun!==runId)return;$('resultsFile').disabled=false;$('benchmarkRunning').hidden=true;$('benchmarkSetup').hidden=false;if(error.status===404){localStorage.removeItem('kai3-benchmark-run');runId=null;$('benchmarkStatus').textContent='That saved run is no longer available. Start a new benchmark; completed runs are now saved across server restarts.';}else{$('benchmarkStatus').textContent=error.message;}}
+        refreshSavedRuns();if(running){pollTimer=setTimeout(pollBenchmark,1200);}else drawBenchmark();
+    }catch(error){if(importedBenchmark||requestedRun!==runId)return;$('resultsFile').disabled=false;$('resultLibrary').disabled=false;$('benchmarkRunning').hidden=true;$('benchmarkSetup').hidden=false;if(error.status===404){localStorage.removeItem('kai3-benchmark-run');runId=null;$('benchmarkStatus').textContent='That saved run is no longer available. Start a new benchmark; completed runs are now saved across server restarts.';}else{$('benchmarkStatus').textContent=error.message;}}
 }
 function metricCard(label,value,note){const card=document.createElement('article');card.className='metric-card';const name=document.createElement('span');name.textContent=label;const number=document.createElement('strong');number.textContent=typeof value==='number'?value.toFixed(3):String(value??'—');const hint=document.createElement('small');hint.textContent=note;card.append(name,number,hint);return card;}
 function detailRow(label,value,parent){const row=document.createElement('div');row.className='case-detail-row';const name=document.createElement('strong');name.textContent=label;const content=document.createElement('div');content.textContent=value==null||value===''?'—':typeof value==='string'?value:JSON.stringify(value,null,2);row.append(name,content);parent.append(row);}
 function displayFailure(error){const text=String(error||'');if(/(?:Error code:\s*402\b|insufficient balance)/i.test(text))return 'DeepSeek account balance is exhausted. Top up the account, then resume unfinished work. Saved answers are retained.';if(/(?:Error code:\s*401\b|authentication fails|authentication_error|invalid.*api key)/i.test(text))return 'DeepSeek rejected the configured API key. Check DEEPSEEK_API_KEY in src/.env, restart KAI3, then resume unfinished work.';if(/Error code:\s*429\b/i.test(text))return 'DeepSeek rate limit persisted after retries. Resume unfinished work later.';return text||'The answer request failed. See technical diagnostics for details.';}
 
+function benchmarkUsage(report){
+    const cases=report.cases||[],finite=v=>typeof v==='number'&&Number.isFinite(v)&&v>=0;
+    const values=field=>cases.map(c=>c.diagnostics?.[field]).filter(finite);
+    const average=list=>list.length?list.reduce((a,b)=>a+b,0)/list.length:null;
+    const sum=list=>list.length?list.reduce((a,b)=>a+b,0):null;
+    const answerTokens=cases.filter(c=>c.prediction!=null).map(c=>c.diagnostics?.answer_tokens).filter(finite);
+    const judgeTokens=cases.filter(c=>c.judge!=null).map(c=>c.diagnostics?.judge_tokens).filter(finite);
+    const pairedTokens=cases.filter(c=>c.prediction!=null&&c.judge!=null&&finite(c.diagnostics?.answer_tokens)&&finite(c.diagnostics?.judge_tokens)).map(c=>c.diagnostics.answer_tokens+c.diagnostics.judge_tokens);
+    const ingestions=[...(report.previous_ingestions||[]),...(report.memories||[])].map(m=>m.ingestion||{});
+    const memoryTokens=ingestions.map(i=>i.memory_tokens).filter(finite);
+    const ingestionTimes=ingestions.map(i=>i.total_seconds).filter(finite);
+    const tokenValues=[...answerTokens,...judgeTokens,...memoryTokens];
+    const recall=cases.map(c=>c.evidence_recall).filter(finite);
+    return {caseCount:cases.length,meanRuntime:average(values('total_seconds')),runtimeCount:values('total_seconds').length,
+        meanAnswerTime:average(values('answer_seconds')),meanJudgeTime:average(values('judge_seconds')),meanRetrievalTime:average(values('retrieval_seconds')),
+        meanAnswerTokens:average(answerTokens),answerTokenCount:answerTokens.length,meanJudgeTokens:average(judgeTokens),judgeTokenCount:judgeTokens.length,
+        meanQuestionTokens:average(pairedTokens),pairedTokenCount:pairedTokens.length,totalTokens:sum(tokenValues),memoryTokens:sum(memoryTokens),
+        ingestionSeconds:sum(ingestionTimes),recordedSeconds:sum([...values('total_seconds'),...ingestionTimes]),
+        answerFailures:cases.filter(c=>c.error).length,judgeFailures:cases.filter(c=>c.judge_error).length,
+        contextFailures:cases.filter(c=>c.diagnostics?.status==='context_limit_exceeded').length,
+        meanEvidenceRecall:average(recall),evidenceCount:recall.length,
+        meanRetrievedBudget:average(values('retrieved_token_budget'))};
+}
+function formatDuration(value){if(value==null)return 'Unavailable';return value<60?`${value.toFixed(2)} s`:`${Math.floor(value/60)} min ${(value%60).toFixed(1)} s`;}
+function formatCount(value){return value==null?'Unavailable':value.toLocaleString(undefined,{maximumFractionDigits:1});}
+function reportDetails(title){const details=document.createElement('details');details.className='report-section report-details';const summary=document.createElement('summary');summary.textContent=title;details.append(summary);return details;}
+function drawUsageSummary(body){
+    const usage=benchmarkUsage(benchmark),section=reportDetails('Runtime and token breakdown');
+    const grid=document.createElement('div');grid.className='config-grid';
+    [['Average answer time',formatDuration(usage.meanAnswerTime)],['Average judge time',formatDuration(usage.meanJudgeTime)],['Average retrieval time',formatDuration(usage.meanRetrievalTime)],
+     ['Average answer tokens',`${formatCount(usage.meanAnswerTokens)} (${usage.answerTokenCount} recorded)`],['Average judge tokens',`${formatCount(usage.meanJudgeTokens)} (${usage.judgeTokenCount} recorded)`],
+     ['Reported API tokens',formatCount(usage.totalTokens)],['Memory API tokens',formatCount(usage.memoryTokens)],['Total ingestion time',formatDuration(usage.ingestionSeconds)],
+     ['Recorded processing time',formatDuration(usage.recordedSeconds)]].forEach(([k,v])=>addField(grid,k,v));
+    section.append(grid);const note=document.createElement('p');note.className='summary-note';note.textContent='Totals include recorded usage only. Processing time excludes review pauses and unrecorded work.';section.append(note);body.append(section);
+    const memory=reportDetails('Memory and retrieval');const memoryGrid=document.createElement('div');memoryGrid.className='config-grid';
+    addField(memoryGrid,'Evidence recall',usage.meanEvidenceRecall==null?'Unavailable':`${(usage.meanEvidenceRecall*100).toFixed(1)}% (${usage.evidenceCount} questions)`);
+    addField(memoryGrid,'Average retrieved token budget',usage.meanRetrievedBudget==null?'Unavailable':`${formatCount(usage.meanRetrievedBudget)} (conservative estimate)`);memory.append(memoryGrid);
+    if((benchmark.memories||[]).length){const table=document.createElement('table');table.className='report-table';table.innerHTML='<thead><tr><th>Conversation</th><th>Stored entries</th><th>Text size</th><th>Ingestion time</th></tr></thead>';const rows=document.createElement('tbody');for(const memory of benchmark.memories){const storage=memory.ingestion?.final_storage,entries=memory.memory?.entries;const bytes=storage?.stored_text_bytes;const tr=document.createElement('tr');[String(memory.sample_id??'Unavailable'),formatCount(storage?.stored_entries??entries?.length),bytes==null?'Unavailable':`${(bytes/1024).toFixed(1)} KB`,formatDuration(memory.ingestion?.total_seconds)].forEach(value=>{const td=document.createElement('td');td.textContent=value;tr.append(td);});rows.append(tr);}table.append(rows);memory.append(table);}
+    body.append(memory);return memory;
+}
 function drawBenchmark(){
     const body=$('benchmarkResults');body.replaceChildren();const overall=(benchmark.scores||[]).find(s=>s.category==='overall')||{};
-    const metrics=document.createElement('div');metrics.className='metric-grid';
-    metrics.append(metricCard('LoCoMo score',overall.mean_qa_score,`${overall.answer_count||0} answers scored`),metricCard('Exact match',overall.mean_exact_match,'Normalized reference match'),metricCard('Token F1',overall.mean_token_f1,'Stemmed token overlap'),metricCard('Accuracy',overall.accuracy,overall.accuracy==null?'Unavailable in this export':`${overall.correct_count??0} / ${overall.scored_count??0} correct ? ${overall.unscored_count??0} unscored`),metricCard('Judge rubric',overall.mean_judge,'Saved 0?2 diagnostic rating'));body.append(metrics);
+    const usage=benchmarkUsage(benchmark),binary=overall.accuracy!=null;
+    const metrics=document.createElement('div');metrics.className='metric-grid headline-metrics';
+    metrics.append(metricCard(binary?'Accuracy':'LoCoMo score',binary?`${(overall.accuracy*100).toFixed(1)}%`:overall.mean_qa_score,binary?`${overall.correct_count??0} / ${overall.scored_count??0} correct`:`${overall.answer_count??0} answers scored; binary accuracy unavailable`),
+        metricCard('Average question runtime',formatDuration(usage.meanRuntime),`${usage.runtimeCount} recorded timings`),
+        metricCard('Average tokens per question',formatCount(usage.meanQuestionTokens),`Answer + judge; ${usage.pairedTokenCount} recorded questions`));body.append(metrics);
+    const failures=usage.answerFailures+usage.judgeFailures;
+    if(failures||(benchmark.errors||[]).length){const notice=reportDetails(`${usage.answerFailures} answer failures, ${usage.judgeFailures} judge failures${usage.contextFailures?`, ${usage.contextFailures} context-limit cases`:''}`);notice.classList.add('failure-notice');
+        (benchmark.errors||[]).forEach(error=>addCard(notice,'Run error',typeof error==='string'?error:[error.sample_id,error.phase,error.error].filter(Boolean).join(' - ')));
+        (benchmark.cases||[]).filter(c=>c.error||c.judge_error).forEach(c=>addCard(notice,c.question,displayFailure(c.error||c.judge_error)));body.append(notice);}
     const summary=document.createElement('section');summary.className='report-section';const title=document.createElement('h3');title.textContent='Scores by category';summary.append(title);
-    const table=document.createElement('table');table.className='report-table';table.innerHTML='<thead><tr><th>Category</th><th>LoCoMo score</th><th>Exact match</th><th>Token F1</th><th>Accuracy</th><th>Judge rubric</th><th>Answered / judged</th></tr></thead>';
-    const rows=document.createElement('tbody');(benchmark.scores||[]).filter(s=>s.category!=='overall').forEach(s=>{const tr=document.createElement('tr');[`${categoryName(s.category)} · ${s.category}`,s.mean_qa_score,s.mean_exact_match,s.mean_token_f1,s.accuracy,s.mean_judge,`${s.answer_count??'?'} / ${s.judge_count??'?'}`].forEach((v,i)=>{const td=document.createElement('td');td.textContent=typeof v==='number'?v.toFixed(3):String(v??'—');tr.append(td);});rows.append(tr);});table.append(rows);summary.append(table);body.append(summary);
-    const efficiency=(benchmark.efficiency||[])[0];
-    if(efficiency){const section=document.createElement('section');section.className='report-section';const title=document.createElement('h3');title.textContent='Memory efficiency and latency';section.append(title);[['Evidence recall',efficiency.mean_evidence_recall],['Evidence cases',efficiency.evidence_count],['Mean retrieved token budget (conservative)',efficiency.mean_retrieved_token_budget],['Mean retrieval seconds',efficiency.mean_retrieval_seconds],['Mean answer seconds',efficiency.mean_answer_seconds]].forEach(([k,v])=>addField(section,k,v??'Unavailable'));(benchmark.memories||[]).forEach(m=>{addField(section,`Conversation ${m.sample_id} ? final storage`,m.ingestion.final_storage);addField(section,`Conversation ${m.sample_id} ? ingestion seconds`,m.ingestion.total_seconds);});body.append(section);}
-    const config=document.createElement('section');config.className='report-section report-config';const configTitle=document.createElement('h3');configTitle.textContent='Run configuration';config.append(configTitle);const configGrid=document.createElement('div');configGrid.className='config-grid';
+    const table=document.createElement('table');table.className='report-table';table.innerHTML=`<thead><tr><th>Category</th><th>${binary?'Accuracy':'LoCoMo score'}</th><th>Scored questions</th></tr></thead>`;
+    const rows=document.createElement('tbody');(benchmark.scores||[]).filter(s=>s.category!=='overall').forEach(s=>{const tr=document.createElement('tr');[categoryName(s.category),binary?(s.accuracy==null?'Unavailable':`${(s.accuracy*100).toFixed(1)}%`):(s.mean_qa_score==null?'Unavailable':s.mean_qa_score.toFixed(3)),binary?s.scored_count:s.answer_count].forEach(v=>{const td=document.createElement('td');td.textContent=String(v??'Unavailable');tr.append(td);});rows.append(tr);});table.append(rows);summary.append(table);body.append(summary);
+    const scores=reportDetails('Additional scores');const scoreGrid=document.createElement('div');scoreGrid.className='config-grid';
+    [['LoCoMo score',overall.mean_qa_score],['Exact match',overall.mean_exact_match],['Token F1',overall.mean_token_f1],['Judge rubric',overall.mean_judge]].forEach(([k,v])=>addField(scoreGrid,k,v==null?'Unavailable':v.toFixed(3)));scores.append(scoreGrid);
+    const extraTable=document.createElement('table');extraTable.className='report-table';extraTable.innerHTML='<thead><tr><th>Category</th><th>LoCoMo score</th><th>Exact match</th><th>Token F1</th><th>Judge rubric</th></tr></thead>';const extraRows=document.createElement('tbody');(benchmark.scores||[]).filter(s=>s.category!=='overall').forEach(s=>{const tr=document.createElement('tr');[categoryName(s.category),s.mean_qa_score,s.mean_exact_match,s.mean_token_f1,s.mean_judge].forEach(v=>{const td=document.createElement('td');td.textContent=typeof v==='number'?v.toFixed(3):String(v??'Unavailable');tr.append(td);});extraRows.append(tr);});extraTable.append(extraRows);scores.append(extraTable);body.append(scores);
+    const memoryDetails=drawUsageSummary(body);
+    const config=reportDetails('Run configuration');config.classList.add('report-config');const configGrid=document.createElement('div');configGrid.className='config-grid';
     [['Architecture',benchmark.config.modules?.[0]],['Conversations',benchmark.config.sample_ids?.join(', ')],['Categories',(benchmark.config.categories||[]).map(categoryName).join(', ')],['Question limit',benchmark.config.question_limit===0?'All matching questions':benchmark.config.question_limit],['No-memory input',benchmark.config.no_memory_context],['Answer model',benchmark.answer_model],['Judge model',benchmark.judge_model]].forEach(([k,v])=>addField(configGrid,k,v??'—'));config.append(configGrid);body.append(config);
-    const calibration=document.createElement('section');calibration.className='report-section calibration-panel';const calibrationTitle=document.createElement('h3');calibrationTitle.textContent='Human calibration';calibration.append(calibrationTitle);const calibrationText=document.createElement('p');calibrationText.textContent=benchmark.calibration?`${benchmark.calibration.status} · ${benchmark.calibration.reviewed_count} cases reviewed · agreement by rubric dimension`:'Uncalibrated · export a sample, add 0–2 rubric ratings, then import it.';calibration.append(calibrationText);if(benchmark.calibration)addField(calibration,'Agreement',benchmark.calibration.agreement);body.append(calibration);
-    (benchmark.errors||[]).forEach(error=>addCard(body,'Run error',error));
+    const calibration=reportDetails('Human review');calibration.classList.add('calibration-panel');const calibrationText=document.createElement('p');calibrationText.textContent=benchmark.calibration?`${benchmark.calibration.status} · ${benchmark.calibration.reviewed_count} cases reviewed · agreement by rubric dimension`:'Uncalibrated · export a sample, add 0–2 rubric ratings, then import it.';calibration.append(calibrationText);if(benchmark.calibration)for(const [dimension,rating] of Object.entries(benchmark.calibration.agreement||{}))addField(calibration,`${dimension} agreement`,rating.exact_agreement==null?'Unavailable':`${(rating.exact_agreement*100).toFixed(1)}% (${rating.count} reviewed)`);body.append(calibration);
     const cases=document.createElement('section');cases.className='report-section';const casesTitle=document.createElement('h3');casesTitle.textContent='Question results';cases.append(casesTitle);
     const filterBar=document.createElement('div');filterBar.className='case-filters';const categoryFilter=document.createElement('select');categoryFilter.id='caseCategoryFilter';categoryFilter.innerHTML='<option value="all">All categories</option>'+[1,2,3,4,5].map(c=>`<option value="${c}">${categoryName(c)}</option>`).join('');
     const statusFilter=document.createElement('select');statusFilter.id='caseStatusFilter';statusFilter.innerHTML='<option value="all">All statuses</option><option value="answered">Answered</option><option value="failed">Failed</option><option value="judge-error">Judge error</option><option value="uncertain">Judge uncertain</option>';
@@ -335,8 +415,8 @@ function drawBenchmark(){
         });if(!list.children.length)addCard(list,'No questions match these filters','Choose another category or status.');
     }
     categoryFilter.onchange=renderCases;statusFilter.onchange=renderCases;renderCases();
-    const memories=benchmark.memories||[];if(memories.length){const inspectButton=document.createElement('button');inspectButton.className='secondary-action';inspectButton.type='button';inspectButton.textContent='Inspect ingested memory';inspectButton.onclick=()=>{inspectionSource='benchmark';$('inspector').hidden=false;document.body.classList.add('memory-open');inspectBenchmark();};body.append(inspectButton);const select=document.createElement('select');select.id='benchmarkMemory';select.className='memory-run-select';memories.forEach((m,i)=>{const option=document.createElement('option');option.value=i;option.textContent=`${m.module} · ${m.sample_id}`;select.append(option);});select.onchange=inspectBenchmark;body.append(select);}
+    const memories=benchmark.memories||[];if(memories.length){const inspectButton=document.createElement('button');inspectButton.className='secondary-action';inspectButton.type='button';inspectButton.textContent='Inspect ingested memory';inspectButton.onclick=()=>{inspectionSource='benchmark';$('inspector').hidden=false;document.body.classList.add('memory-open');inspectBenchmark();};memoryDetails.append(inspectButton);const select=document.createElement('select');select.id='benchmarkMemory';select.className='memory-run-select';memories.forEach((m,i)=>{const option=document.createElement('option');option.value=i;option.textContent=`${m.module} · ${m.sample_id}`;select.append(option);});select.onchange=inspectBenchmark;memoryDetails.append(select);}
 }
-function inspectBenchmark(){const index=Number($('benchmarkMemory')?.value||0),memory=benchmark?.memories?.[index];if(!memory)return;const turns=benchmark.cases.filter(c=>c.module===memory.module&&c.sample_id===memory.sample_id).map(c=>c.diagnostics);setInspection({memory:memory.memory,turns,totals:{ingestion:memory.ingestion},benchmarkIndex:index},`${memory.module} · ${memory.sample_id}`);}
+function inspectBenchmark(){if(benchmark?.status==='waiting_review'&&benchmark.review){$('reviewMemoryButton').onclick();return;}const index=Number($('benchmarkMemory')?.value||0),memory=benchmark?.memories?.[index];if(!memory)return;const turns=benchmark.cases.filter(c=>c.module===memory.module&&c.sample_id===memory.sample_id).map(c=>c.diagnostics);setInspection({memory:memory.memory,turns,totals:{ingestion:memory.ingestion},benchmarkIndex:index},`${memory.module} · ${memory.sample_id}`);}
 if(page==='chat'){save();render();refreshInspection();}
-else{runId=localStorage.getItem('kai3-benchmark-run');loadDefaultDataset();if(runId)pollBenchmark();}
+else{runId=localStorage.getItem('kai3-benchmark-run');refreshSavedRuns();loadResultLibrary();loadDefaultDataset();if(runId)pollBenchmark();}

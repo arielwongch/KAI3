@@ -1,5 +1,6 @@
 import os
 import json
+from pathlib import Path
 from copy import deepcopy
 from threading import RLock, Thread
 from uuid import uuid4
@@ -9,6 +10,7 @@ from NoMemory import NoMemory
 from ReAct import run_ReAct
 from Diagnostics import totals
 from Benchmark import BenchmarkJob, MODULES
+from BenchmarkStore import ACTIVE, atomic_json, path_for, read_json, launch, worker_active
 
 app = Flask(__name__, template_folder='.', static_folder='.', static_url_path='')
 app.config['MAX_CONTENT_LENGTH'] = 32 * 1024 * 1024
@@ -23,25 +25,51 @@ def persist_benchmark(snapshot):
     run_id = snapshot.get('run_id')
     if not isinstance(run_id, str) or not run_id.replace('-', '').isalnum():
         return
-    target = os.path.join(RUN_STORE, run_id + '.json')
-    temporary = target + '.tmp'
-    with open(temporary, 'w', encoding='utf-8') as output:
-        json.dump(snapshot, output, ensure_ascii=False)
-    os.replace(temporary, target)
+    atomic_json(path_for(RUN_STORE, run_id), snapshot)
 
 def restore_benchmarks():
     for filename in os.listdir(RUN_STORE):
-        if not filename.endswith('.json'):
+        if not filename.endswith('.json') or filename.endswith(('.input.json', '.continue.json')):
             continue
         try:
             with open(os.path.join(RUN_STORE, filename), encoding='utf-8') as source:
                 snapshot = json.load(source)
             job = BenchmarkJob.restore(snapshot)
+            if worker_active(RUN_STORE, snapshot):
+                job.result = snapshot
             jobs[job.result['run_id']] = job
-            if job.result['status'] == 'interrupted':
-                persist_benchmark(job.snapshot())
         except (OSError, ValueError, KeyError, TypeError):
             app.logger.exception('Could not restore saved benchmark run %s', filename)
+
+def refresh_jobs():
+    # Active in-process jobs are authoritative; disk is authoritative for detached workers.
+    for filename in os.listdir(RUN_STORE):
+        if not filename.endswith('.json') or filename.endswith(('.input.json', '.continue.json')):
+            continue
+        try:
+            snapshot = read_json(os.path.join(RUN_STORE, filename))
+            run_id = snapshot['run_id']
+            existing = jobs.get(run_id)
+            if existing is not None and not existing.result.get('worker'):
+                continue
+            if snapshot.get('worker') and snapshot.get('status') in ACTIVE and not worker_active(RUN_STORE, snapshot):
+                snapshot.update(status='interrupted', error='Background worker stopped. Resume the saved run to continue.')
+                persist_benchmark(snapshot)
+            job = BenchmarkJob.restore(snapshot)
+            job.result = snapshot
+            jobs[run_id] = job
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+
+def start_benchmark(job):
+    job.set_persistence_callback(persist_benchmark)
+    persist_benchmark(job.snapshot())
+    atomic_json(path_for(RUN_STORE, job.result['run_id'], '.input.json'), dict(dataset=job.data, snapshot=job.snapshot()))
+    if job.options.get('background'):
+        launch(RUN_STORE, job)
+    else:
+        Thread(target=job.run, daemon=True).start()
+
 
 restore_benchmarks()
 
@@ -68,6 +96,35 @@ def chat_page():
 @app.get('/benchmark')
 def benchmark_page():
     return render_template('index.html', memory_modules=AVAILABLE_MEMORY_MODULES)
+
+RESULT_LIBRARY = Path(__file__).resolve().parents[1] / 'data' / 'result'
+
+@app.get('/api/results')
+def result_library():
+    root = RESULT_LIBRARY.resolve()
+    files = []
+    if root.is_dir():
+        for candidate in root.rglob('*.json'):
+            resolved = candidate.resolve()
+            if resolved.is_file() and resolved.is_relative_to(root):
+                files.append(candidate.relative_to(root).as_posix())
+    return jsonify(files=sorted(files, key=str.casefold))
+
+@app.get('/api/results/file')
+def result_library_file():
+    name = request.args.get('path', '')
+    root = RESULT_LIBRARY.resolve()
+    candidate = (root / name).resolve()
+    if not name or not candidate.is_relative_to(root) or candidate.suffix.lower() != '.json' or not candidate.is_file():
+        return jsonify(error='Result file is unavailable.'), 404
+    try:
+        with candidate.open(encoding='utf-8-sig') as source:
+            report = json.load(source)
+        if not isinstance(report, dict) or not isinstance(report.get('cases'), list):
+            return jsonify(error='This file is not a benchmark results export.'), 400
+        return jsonify(report=report)
+    except (OSError, ValueError):
+        return jsonify(error='Could not read this results JSON file.'), 400
 
 @app.get('/api/benchmarks/dataset')
 def default_benchmark_dataset():
@@ -146,18 +203,44 @@ def create_benchmark():
     except (ValueError, TypeError) as error:
         return jsonify(error=str(error)), 400
     with registry_lock:
-        if any(j.snapshot()['status'] in ('queued', 'running') for j in jobs.values()):
+        refresh_jobs()
+        if any(j.snapshot()['status'] in ACTIVE for j in jobs.values()):
             return jsonify(error='A benchmark is already running. Cancel it or wait for completion.'), 409
         jobs[job.result['run_id']] = job
-    job.set_persistence_callback(persist_benchmark)
-    persist_benchmark(job.snapshot())
-    Thread(target=job.run, daemon=True).start()
+    start_benchmark(job)
     return jsonify(run_id=job.result['run_id']), 202
+
+@app.get('/api/benchmarks')
+def list_benchmarks():
+    with registry_lock:
+        refresh_jobs()
+        runs = [dict(run_id=j.result['run_id'], status=j.result['status'], progress=j.result.get('progress', {}),
+                     module=j.result.get('config', {}).get('modules', [None])[0], updated_at=j.result.get('updated_at'),
+                     background=bool(j.result.get('worker')), resumable=any(c.get('correct') is None and c.get('diagnostics', {}).get('status') != 'context_limit_exceeded' for c in j.result.get('cases', []))) for j in jobs.values()]
+    return jsonify(runs=sorted(runs, key=lambda r: r.get('updated_at') or 0, reverse=True))
+
+@app.post('/api/benchmarks/<run_id>/continue')
+def continue_benchmark(run_id):
+    payload = request.get_json(silent=True) or {}
+    with registry_lock:
+        refresh_jobs()
+        job = jobs.get(run_id)
+        if job is None:
+            return jsonify(error='Benchmark run is unavailable.'), 404
+        review = job.result.get('review') or {}
+        if not isinstance(payload, dict) or job.result['status'] != 'waiting_review' or payload.get('token') != review.get('token'):
+            return jsonify(error='This memory review is no longer pending. Refresh the run.'), 409
+        if job.result.get('worker'):
+            atomic_json(path_for(RUN_STORE, run_id, '.continue.json'), dict(token=review['token']))
+        else:
+            job.review_continue.set()
+    return jsonify(status='continue_requested')
 
 @app.get('/api/benchmarks/<run_id>')
 @app.get('/api/benchmarks/<run_id>/export')
 def benchmark_status(run_id):
     with registry_lock:
+        refresh_jobs()
         job = jobs.get(run_id)
     if job is None:
         return jsonify(error='Benchmark run is unavailable.'), 404
@@ -172,33 +255,43 @@ def resume_benchmark(run_id):
     if not isinstance(payload, dict):
         return jsonify(error='Expected the original dataset.'), 400
     with registry_lock:
+        refresh_jobs()
         previous = jobs.get(run_id)
         if previous is None:
             return jsonify(error='Benchmark run is unavailable.'), 404
-        if any(j.snapshot()['status'] in ('queued', 'running') for j in jobs.values()):
+        refresh_jobs()
+        if any(j.snapshot()['status'] in ACTIVE for j in jobs.values()):
             return jsonify(error='A benchmark is already running.'), 409
         try:
-            job = BenchmarkJob.resume(payload.get('dataset') or previous.data, previous.snapshot())
-        except (ValueError, TypeError, KeyError) as error:
+            data = payload.get('dataset') or previous.data
+            if not data:
+                data = read_json(path_for(RUN_STORE, run_id, '.input.json'))['dataset']
+            job = BenchmarkJob.resume(data, previous.snapshot())
+        except (OSError, ValueError, TypeError, KeyError) as error:
             return jsonify(error=str(error)), 400
         job.set_persistence_callback(persist_benchmark)
         jobs[run_id] = job
         persist_benchmark(job.snapshot())
-    Thread(target=job.run, daemon=True).start()
+    start_benchmark(job)
     return jsonify(run_id=run_id), 202
 
 @app.post('/api/benchmarks/<run_id>/cancel')
 def cancel_benchmark(run_id):
     with registry_lock:
+        refresh_jobs()
         job = jobs.get(run_id)
     if job is None:
         return jsonify(error='Benchmark run is unavailable.'), 404
-    job.cancel.set()
+    if job.result.get('worker'):
+        path_for(RUN_STORE, run_id, '.cancel').touch()
+    else:
+        job.cancel.set()
     return jsonify(status='cancellation_requested')
 
 @app.get('/api/benchmarks/<run_id>/review')
 def benchmark_review_export(run_id):
     with registry_lock:
+        refresh_jobs()
         job = jobs.get(run_id)
     if job is None:
         return jsonify(error='Benchmark run is unavailable.'), 404
@@ -214,6 +307,7 @@ def benchmark_review_export(run_id):
 @app.post('/api/benchmarks/<run_id>/review')
 def benchmark_review_import(run_id):
     with registry_lock:
+        refresh_jobs()
         job = jobs.get(run_id)
     if job is None:
         return jsonify(error='Benchmark run is unavailable.'), 404
@@ -221,6 +315,8 @@ def benchmark_review_import(run_id):
     reviews = payload.get('reviews') if isinstance(payload, dict) else None
     if not isinstance(reviews, list):
         return jsonify(error='Expected a reviews array.'), 400
+    if job.result['status'] in ACTIVE:
+        return jsonify(error='Wait until the run stops before importing review labels.'), 409
     with job.lock:
         cases = job.result['cases']
         for review in reviews:
@@ -237,6 +333,7 @@ def benchmark_review_import(run_id):
             pairs = [(c['judge'][dim], c['human_review']['ratings'][dim]) for c in cases if c.get('judge') and c.get('human_review')]
             agreement[dim] = {'exact_agreement': sum(a == b for a,b in pairs) / len(pairs) if pairs else None, 'count': len(pairs)}
         job.result['calibration'] = {'reviewed_count': sum(bool(c.get('human_review')) for c in cases), 'agreement': agreement, 'status': 'reviewed sample; agreement shown' if any(v['count'] for v in agreement.values()) else 'uncalibrated'}
+    persist_benchmark(job.snapshot())
     return jsonify(calibration=job.snapshot().get('calibration'))
 
 if __name__ == '__main__':
