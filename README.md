@@ -278,3 +278,15 @@ Resume validates the dataset hash and model/prompt compatibility, keeps fully sc
 On **Test Benchmark**, choose **Import results JSON** in the top bar and select a previously exported results file. The browser restores score tables, question details, retrieved evidence, memory snapshots, and timing fields locally without API calls. Older exports display their saved judge rubric; absent binary accuracy or newer metrics remain unavailable. Dataset files and malformed exports receive a clear validation message.
 
 Imported reports are read-only: resume and human-label uploads are disabled. **Export JSON** downloads the original imported data locally. Choose **New run** to return to normal benchmarking. To view an imported report after refreshing the page, select the file again. The source file and server runs are unchanged.
+
+### Live progress, memory review, and background workers
+
+The benchmark sidebar shows **New benchmark** and **Saved runs**. Open a saved run to follow its current progress or export it; interrupted, cancelled, and failed runs can be resumed. Imported exports keep the results layout and display a **Read-only ? Imported report** badge.
+
+Progress counts ingestion turns and question stages separately, reports answered/judged counts, and shows the current conversation and operation. **Review memory before answering** pauses after each conversation is ingested, before its question calls. **Inspect memory** opens the actual store snapshot; for full-context runs it opens the supplied conversation. **Continue evaluation** releases that review pause. Memory extraction may already have used the API. Cancelling also works while reviewing.
+
+**Run in background** is enabled by default in the benchmark form. It launches an independent hidden Python process using the current interpreter and credentials. The run continues if you close the browser or stop the web server terminal. Start the server again and return to **Test Benchmark ? Saved runs** to reconnect. The computer must remain awake; shutdown/reboot terminates workers. Lost workers are marked interrupted and require explicit resume. A global worker lease prevents concurrent background evaluations. Waiting for memory review also keeps the worker alive until continued or cancelled.
+
+Snapshots, the original dataset, control files, and worker logs are stored in the server's `instance/benchmark_runs/` directory. No API key is stored in those files. The original dataset allows resuming after a restart without reuploading it. For older saved runs, load the original dataset before resuming. Uncheck **Run in background** to use the existing server-thread execution. CLI behavior is unchanged; interactive review is available through the web UI.
+
+The benchmark top bar also has **View saved results**, which lists JSON files under `data/result/`, including nested folders. Add more reports or folders there, then press the refresh button beside the dropdown. Selecting a file opens the same read-only report view; no model calls are made.
