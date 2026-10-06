@@ -183,7 +183,7 @@ class SemanticMemoryTests(unittest.TestCase):
                     self.assertNotIn("cats", fake_llm.calls[2]["messages"][0]["content"])
                     response = client.post("/get", json={"chat_id": "one", "memory_module": "sliding_window", "message": "hello"})
                     self.assertEqual(response.status_code, 409)
-                    self.assertIn(kind, client.get("/").get_data(as_text=True))
+                    self.assertIn(kind, client.get("/chat").get_data(as_text=True))
                 if kind == "fact_store":
                     self.assertEqual(json.loads(extractor.call_args.args[1])["user_text"], "hello")
                     self.assertEqual(json.loads(extractor.call_args.args[1])["assistant_context"], "done")

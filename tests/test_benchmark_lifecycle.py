@@ -13,6 +13,7 @@ sys.path.insert(0, 'src')
 os.environ.setdefault('DEEPSEEK_API_KEY', 'test-only')
 import app
 import Benchmark
+from benchmark_helpers import FakeTokenizer
 from BenchmarkStore import ACTIVE, atomic_json, launch, path_for, read_json, worker_active, Lease
 from test_binary_benchmark import judgment
 from test_memory_integration import FakeOpenAIClient
@@ -26,6 +27,8 @@ def data():
 
 class LifecycleTests(unittest.TestCase):
     def setUp(self):
+        token_patch = patch.object(Benchmark, "get_benchmark_tokenizer", return_value=FakeTokenizer())
+        token_patch.start(); self.addCleanup(token_patch.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.store = patch.object(app, 'RUN_STORE', self.temp.name)
         self.store.start(); app.jobs.clear()

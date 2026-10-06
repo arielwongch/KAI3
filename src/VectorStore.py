@@ -9,7 +9,11 @@ from MemoryModule import MemoryModule
 
 
 class VectorStore(MemoryModule):
-    def __init__(self, embedder=None):
+    def __init__(self, embedder=None, max_stored_entries=None):
+        from MemoryContext import positive_count
+        positive_count(max_stored_entries, 'max_stored_entries', unlimited=True)
+        self.max_stored_entries = max_stored_entries
+        self.evicted_count = 0
         self.embedder = embedder if embedder is not None else LocalEmbeddings()
         self._records = []
         self._lock = RLock()
@@ -26,9 +30,17 @@ class VectorStore(MemoryModule):
             if self._records:
                 similarity(self._records[0][1][0], vectors[0])
             self._records.append((stored, vectors))
+            if self.max_stored_entries is not None and len(self._records) > self.max_stored_entries:
+                del self._records[0]
+                self.evicted_count += 1
 
     def retrieve(self, query: str, k: int = 5) -> list[MemoryEntry]:
         validate_k(k)
+        return list(self.iter_context_candidates(query, k))
+
+    def iter_context_candidates(self, query, k=None):
+        if k is not None:
+            validate_k(k)
         with self._lock:
             if not self._records or not query.strip():
                 return []
@@ -53,4 +65,4 @@ class VectorStore(MemoryModule):
 
     def inspect(self):
         with self._lock:
-            return {"config": {"embedding_model": MODEL_NAME}, "entries": [dict(asdict(deepcopy(e)), chunk_count=len(v)) for e, v in self._records]}
+            return {"config": {"embedding_model": MODEL_NAME, "max_stored_entries": self.max_stored_entries, "evicted_count": self.evicted_count}, "entries": [dict(asdict(deepcopy(e)), chunk_count=len(v)) for e, v in self._records]}

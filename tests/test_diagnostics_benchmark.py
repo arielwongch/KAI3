@@ -10,6 +10,7 @@ sys.path.insert(0, 'src')
 os.environ.setdefault('DEEPSEEK_API_KEY', 'test-only')
 import app
 import Benchmark
+from benchmark_helpers import FakeTokenizer
 import ReAct
 import Summarization as summary_module
 from Diagnostics import totals
@@ -33,7 +34,7 @@ def fixture():
 
 class DiagnosticsTests(unittest.TestCase):
     def test_snapshots_detached_and_no_model_calls(self):
-        for mode in Benchmark.MODULES:
+        for mode in Benchmark.MODULES[:-1]:
             module = MemoryFactory.create_memory_module(mode, embedder=Embedder(), extractor=lambda *a: ('{"operations":[{"op":"add","text":"Rome"}]}', 0, 3))
             with patch.object(summary_module, 'call_api', return_value=('Rome', 0, 2)):
                 module.write(MemoryEntry('Rome', {'nested': {'key': 'value'}}))
@@ -88,6 +89,12 @@ class SessionTests(unittest.TestCase):
     def setUp(self):
         app.chat_memory_modules.clear()
         app.jobs.clear()
+        token_patch = patch.object(Benchmark, "get_benchmark_tokenizer", return_value=FakeTokenizer())
+        token_patch.start(); self.addCleanup(token_patch.stop)
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        store_patch = patch.object(app, "RUN_STORE", directory.name)
+        store_patch.start(); self.addCleanup(store_patch.stop)
         self.client = app.app.test_client()
     def send(self, chat='one', **extra):
         return self.client.post('/get', json=dict(message='Hello', chat_id=chat, memory_module='sliding_window', **extra))
@@ -129,7 +136,7 @@ class SessionTests(unittest.TestCase):
                 self.target = target
             def start(self):
                 self.target()
-        with patch.object(app, 'Thread', Worker), patch.object(ReAct, 'client', FakeOpenAIClient('Thought: I have the final answer.\nFinal Answer: Rome')):
+        with patch.object(app, 'Thread', Worker), patch.object(Benchmark, 'client', FakeOpenAIClient('Rome')):
             response = self.client.post('/api/benchmarks', json={'dataset': fixture(), 'options': {'modules': ['sliding_window'], 'question_limit': 1}})
         self.assertEqual(response.status_code, 202)
         run_id = response.json['run_id']
@@ -149,6 +156,10 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(self.client.post('/api/benchmarks', json={'dataset': []}).status_code, 400)
 
 class BenchmarkTests(unittest.TestCase):
+    def setUp(self):
+        token_patch = patch.object(Benchmark, 'get_benchmark_tokenizer', return_value=FakeTokenizer())
+        token_patch.start(); self.addCleanup(token_patch.stop)
+
     def test_upstream_scoring(self):
         self.assertEqual(Benchmark.score('Rome', 'Rome', 4), 1)
         self.assertEqual(Benchmark.score('Rome', 'Rome; Italy', 3), 1)
@@ -158,52 +169,55 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(Benchmark.score('running', 'runs', 2), 1)
     def test_isolation_order_no_leakage_and_recall(self):
         created = []
-        fake = FakeOpenAIClient('Thought: I have the final answer.\nFinal Answer: Rome')
         data = fixture(); data[0]['qa'][0]['answer'] = 'SECRET ANSWER'
-        job = Benchmark.BenchmarkJob(data, {'modules': ['sliding_window', 'vector_store'], 'categories': [4]})
         from SlidingWindow import SlidingWindow
         from VectorStore import VectorStore
+        from test_binary_benchmark import judgment
         def create(mode, **kwargs):
             module = SlidingWindow() if mode == 'sliding_window' else VectorStore(Embedder())
             created.append(module)
             return module
-        with patch.object(Benchmark.MemoryFactory, 'create_memory_module', side_effect=create), patch.object(ReAct, 'client', fake):
-            job.run()
-        result = job.snapshot()
-        self.assertEqual(result['status'], 'completed')
+        for mode in ('sliding_window', 'vector_store'):
+            job = Benchmark.BenchmarkJob(data, {'module': mode, 'categories': [4]})
+            fake = FakeOpenAIClient(['Rome', judgment(1)])
+            with patch.object(Benchmark.MemoryFactory, 'create_memory_module', side_effect=create), patch.object(Benchmark, 'client', fake):
+                job.run()
+            result = job.snapshot()
+            self.assertEqual(result['status'], 'completed')
+            self.assertEqual(result['cases'][0]['evidence_recall'], 1)
+            self.assertNotIn('SECRET ANSWER', str(fake.calls[0]))
+            self.assertEqual(result['progress']['completed'], 1)
         self.assertEqual(len(created), 2)
-        for m in created:
-            self.assertEqual(len(m.inspect()['entries']), 2)
-            self.assertIn('Alice', m.inspect()['entries'][0]['text'])
-            self.assertIn('1 May', m.inspect()['entries'][0]['text'])
-        self.assertEqual(result['cases'][0]['evidence_recall'], 1)
-        for call in fake.calls:
-            self.assertNotIn('SECRET ANSWER', str(call))
-        self.assertEqual(result['progress']['completed'], 2)
+        for module in created:
+            self.assertEqual(len(module.inspect()['entries']), 2)
+            self.assertIn('Alice', module.inspect()['entries'][0]['text'])
+            self.assertIn('1 May', module.inspect()['entries'][0]['text'])
+
     def test_cancellation_and_partial_failure(self):
-        job = Benchmark.BenchmarkJob(fixture(), {'modules': ['sliding_window']})
-        fake = FakeOpenAIClient()
-        original = Benchmark.run_ReAct
+        job = Benchmark.BenchmarkJob(fixture(), {'module': 'sliding_window'})
+        original = Benchmark.direct_answer
         def stop(*args, **kwargs):
             result = original(*args, **kwargs)
             job.cancel.set()
             return result
-        with patch.object(ReAct, 'client', fake), patch.object(Benchmark, 'run_ReAct', side_effect=stop):
+        with patch.object(Benchmark, 'client', FakeOpenAIClient('Rome')), patch.object(Benchmark, 'direct_answer', side_effect=stop):
             job.run()
         self.assertEqual(job.snapshot()['status'], 'cancelled')
         self.assertEqual(len(job.snapshot()['cases']), 1)
-        job = Benchmark.BenchmarkJob(fixture(), {'modules': ['summarization']})
+        job = Benchmark.BenchmarkJob(fixture(), {'module': 'summarization'})
         with patch.object(summary_module, 'call_api', side_effect=RuntimeError('failure')):
             job.run()
         self.assertEqual(len(job.snapshot()['errors']), 1)
         self.assertEqual(job.snapshot()['memories'][0]['memory']['entries'], [])
+        self.assertEqual(job.snapshot()['scores'][0]['failure_counts']['ingestion_blocked'], 1)
+
     def test_cli_matches_shared_runner(self):
         with tempfile.TemporaryDirectory() as directory:
             dataset = directory + '/dataset.json'; output = directory + '/out.json'
             with open(dataset, 'w') as f:
                 json.dump(fixture(), f)
             args = ['benchmark', '--dataset', dataset, '--output', output, '--modules', 'sliding_window', '--question-limit', '1']
-            with patch.object(sys, 'argv', args), patch.object(ReAct, 'client', FakeOpenAIClient('Thought: I have the final answer.\nFinal Answer: Rome')):
+            with patch.object(sys, 'argv', args), patch.object(Benchmark, 'client', FakeOpenAIClient('Rome')):
                 Benchmark.main()
             with open(output) as f:
                 result = json.load(f)

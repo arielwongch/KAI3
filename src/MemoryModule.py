@@ -16,3 +16,7 @@ class MemoryModule(ABC):
     def inspect(self) -> dict:
         """Return a detached snapshot without retrieval or model calls."""
         raise NotImplementedError
+
+    def iter_context_candidates(self, query: str, k: int | None = None):
+        """Optional budgeted-context API; does not change live-chat retrieval."""
+        raise NotImplementedError

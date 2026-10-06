@@ -3,6 +3,7 @@ import os
 import sys
 import threading
 import unittest
+import tempfile
 from unittest.mock import patch
 sys.path.insert(0, 'src')
 os.environ.setdefault('DEEPSEEK_API_KEY', 'test-only')
@@ -22,6 +23,14 @@ def dataset():
         dict(question=f'Question {i}', answer='Rome', category=4) for i in range(3)])]
 
 class RecoveryTests(unittest.TestCase):
+    def setUp(self):
+        import app
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        store_patch = patch.object(app, 'RUN_STORE', directory.name)
+        store_patch.start(); self.addCleanup(store_patch.stop)
+        app.jobs.clear(); self.addCleanup(app.jobs.clear)
+
     def test_transient_backoff_and_bounded_attempts(self):
         fake = FakeOpenAIClient('Rome')
         original = fake.chat.completions.create

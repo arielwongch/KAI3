@@ -11,6 +11,8 @@ def record_memory_call(tokens):
         metrics["memory_llm_calls"] += 1
         if tokens is None:
             metrics["memory_tokens"] = None
+            metrics['memory_prompt_tokens'] = None
+            metrics['memory_completion_tokens'] = None
         elif metrics["memory_tokens"] is not None:
             metrics["memory_tokens"] += tokens
 

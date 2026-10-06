@@ -27,7 +27,11 @@ Use each existing ID at most once. If no changes are justified, return
 
 
 class FactStore(MemoryModule):
-    def __init__(self, embedder=None, extractor=None):
+    def __init__(self, embedder=None, extractor=None, max_stored_entries=None):
+        from MemoryContext import positive_count
+        positive_count(max_stored_entries, 'max_stored_entries', unlimited=True)
+        self.max_stored_entries = max_stored_entries
+        self.evicted_count = 0
         self.embedder = embedder if embedder is not None else LocalEmbeddings()
         self.extractor = extractor if extractor is not None else call_api
         self._facts = {}
@@ -92,6 +96,10 @@ class FactStore(MemoryModule):
                     similarity(reference, vector)
                 fact, _, order = pending[fact_id]
                 pending[fact_id] = (fact, vector, order)
+            if self.max_stored_entries is not None:
+                while len(pending) > self.max_stored_entries:
+                    del pending[next(iter(pending))]
+                    self.evicted_count += 1
             self._facts = pending
             self._next_id = next_id
             self._revision = revision
@@ -120,6 +128,11 @@ class FactStore(MemoryModule):
 
     def retrieve(self, query: str, k: int = 5) -> list[MemoryEntry]:
         validate_k(k)
+        return self.iter_context_candidates(query, k)
+
+    def iter_context_candidates(self, query, k=None):
+        if k is not None:
+            validate_k(k)
         with self._lock:
             if not self._facts or not query.strip():
                 return []
@@ -138,4 +151,4 @@ class FactStore(MemoryModule):
 
     def inspect(self):
         with self._lock:
-            return {"config": {"embedding_model": MODEL_NAME}, "entries": [asdict(deepcopy(r[0])) for r in self._facts.values()]}
+            return {"config": {"embedding_model": MODEL_NAME, "max_stored_entries": self.max_stored_entries, "evicted_count": self.evicted_count}, "entries": [asdict(deepcopy(r[0])) for r in self._facts.values()]}

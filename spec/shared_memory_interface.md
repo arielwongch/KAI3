@@ -79,6 +79,22 @@ Conversation state is in-process only, without persistence or eviction. Embeddin
 weights are cached separately. The existing agent metrics exclude memory work.
 
 
+## Budgeted benchmark integration (protocol v3)
+
+Live chat continues to call `retrieve(query, k=5)`. The controlled benchmark
+uses `iter_context_candidates(query, k=None)` and the shared `MemoryContext`
+builder. Window/vector/fact modules accept a finite candidate k or all; the
+builder packs whole candidates within a fixed-tokenizer allowance. Summary
+rejects a candidate k and supplies its one rolling summary.
+
+Factory options are module-specific: `max_stored_entries` for record modules,
+`max_summary_tokens` plus an injected tokenizer for summaries, and
+`fact_history_mode="versioned"` to select benchmark `TemporalFactStore`.
+The normal `FactStore` remains the default for live chat. Defaults preserve
+window capacity 10 and unlimited vector/fact stores. See
+[the controlled-comparison specification](locomo_controlled_comparison.md)
+for capacities, eviction, provenance operations, token counting, and validation.
+
 ## Inspection and diagnostics
 
 Every built-in module exposes `inspect() -> dict` with `config` and `entries`.

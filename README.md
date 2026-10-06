@@ -121,6 +121,63 @@ Existing response latency and token counts describe the agent calls, not all
 embedding and fact-extraction work. Memory write failures return the existing
 HTTP 503 response; previous stored memory is preserved.
 
+## Controlled LoCoMo comparison (protocol v3)
+
+The benchmark now exposes **Question Only**, **Full Context**, **Sliding Window**,
+**Summarization**, **Vector Store**, and **Fact Store** as separate conditions.
+Live-chat modes retain their existing behavior.
+
+Record-based modules (window/vector/facts) expose retrieval `k` and stored-record
+capacity. Summarization exposes only its summary-size limit. All four memory
+conditions share a configurable context-token allowance (default 2,000). These
+are fixed, pinned MiniLM tokenizer counts, not exact DeepSeek tokens. The first
+memory benchmark downloads the tokenizer if it is not cached; tokenizer failure
+stops preparation before paid calls. Actual provider token usage is separate.
+
+The default `k=all` considers every retained record; finite k considers only the
+first k ranked/recent records. Whole records are packed within the token allowance,
+including labels and separators. Oversized candidates are skipped without going
+beyond k. Sliding window selects recent turns and supplies them chronologically.
+Its default capacity is 10; vector/fact capacity defaults to unlimited. Finite
+capacity evicts oldest records, including old fact versions, and exports record
+these evictions. Summaries use a token-size limit with explicit truncation tracking.
+
+Full Context supplies the complete conversation and is exempt from the memory
+allowance; Question Only supplies no conversation. Both use fresh requests and
+retain no memory. The independent conservative whole-request context guard still
+applies. The legacy `no_memory` CLI/API alias maps to Full Context by default.
+
+```powershell
+python src/Benchmark.py --dataset data/locomo/locomo10.json --output vector_results.json --modules vector_store --retrieval-k 8 --max-stored-entries 100 --memory-context-tokens 2000 --all-conversations --question-limit 0
+python src/Benchmark.py --dataset data/locomo/locomo10.json --output summary_results.json --modules summarization --max-summary-tokens 2000 --memory-context-tokens 2000 --all-conversations --question-limit 0
+python src/Benchmark.py --dataset data/locomo/locomo10.json --output full_results.json --modules full_context --all-conversations --question-limit 0
+python src/Benchmark.py --dataset data/locomo/locomo10.json --output question_results.json --modules question_only --all-conversations --question-limit 0
+```
+
+Use `--retrieval-k all` and `--max-stored-entries unlimited` for vector/facts.
+Unsupported settings are rejected rather than silently ignored. Summary accepts
+neither record capacity nor retrieval k. Settings are saved per run and resume
+requires the same protocol, configuration, prompts, question manifest, and tokenizer.
+
+Benchmark facts retain searchable superseded/corrected/retracted assertions with
+speaker/status/observation labels and validated dialogue provenance. Corrections
+are labelled as corrections, not established historical truth. Session dates
+record observation times rather than inferred real-world validity intervals.
+Live-chat fact replacement/retraction remains current-state behavior.
+
+New schema-v2 exports report **judged accuracy**, **judge completion**, and
+**end-to-end success** (confirmed correct / all selected questions). Judge/answer
+failures, context rejection, ingestion-blocked questions, and unattempted questions
+remain visible in the denominator. Active/interrupted results are provisional.
+Evidence recall for facts measures source provenance coverage, not proof that
+extraction preserved all annotated detail. Reports distinguish that basis from
+original-turn evidence coverage and report conditional accuracy with group counts.
+
+Legacy schema-v1 reports stay readable and keep their saved metrics. Unambiguous
+legacy full-context runs display Full Context; ambiguous inputs retain a legacy
+label. Legacy runs cannot resume into v3: start a new run to avoid mixing protocols.
+See [the design and acceptance criteria](spec/locomo_controlled_comparison.md).
+
 ## Session inspector and LoCoMo QA testing
 
 Use **Memory database** in the chat header to browse stored records in a
@@ -188,7 +245,7 @@ module/conversation.
 Supplied image captions are included; images are not fetched. Fact extraction
 uses a benchmark-only adapter that preserves speaker names and accepts assertions
 from both participants. Live chat still extracts only user assertions. Questions
-retrieve `k=5` and use the normal conversational API directly; answers are never
+retrieve according to configured k and the shared context-token allowance and use the normal conversational API directly; answers are never
 written back.
 Ground truth and evidence labels are used only after prediction.
 
@@ -199,9 +256,8 @@ for category 3, and the upstream abstention phrase check for category 5. The
 report also includes normalized exact match, token F1, and a DeepSeek judge score
 for correctness, completeness, support, and abstention. Judge failures do not
 discard answer metrics. Incomplete/failed predictions are excluded from means
-and shown separately. Evidence recall is available only
-for window/vector retrieval with dialogue IDs and nonempty evidence; it is `null`
-for summary/fact retrieval. DeepSeek supplies the binary semantic correctness judgment.
+and shown separately. Evidence recall is available for window/vector/full context with dialogue IDs and
+nonempty evidence; summary coverage is null and facts use source provenance. DeepSeek supplies the binary semantic correctness judgment.
 
 Exports include dataset SHA-256 (canonicalized parsed JSON), protocol, answer and
 judge model identifiers, judge prompt version, module configuration, ingestion
@@ -257,9 +313,9 @@ py src/Benchmark.py --dataset data/locomo/locomo10.json --output facts_results.j
 py src/Benchmark.py --dataset data/locomo/locomo10.json --output retrieval_results.json --modules vector_store --all-conversations --question-limit 0
 ```
 
-Every conversation creates an empty, isolated memory instance. Ingestion writes one labelled, timestamped turn at a time in numeric session order. Questions retrieve up to five entries, use the same answer prompt/settings as the full-context baseline, and never write questions or predictions back. `vector_store` is the original-turn retrieval baseline; `fact_store` and `summarization` transform dialogue into memory representations. Summary/fact extraction model settings are recorded separately.
+Every conversation creates an empty, isolated memory instance. Ingestion writes one labelled, timestamped turn at a time in numeric session order. Questions retrieve whole entries within the configured k and token allowance, use the same answer prompt/settings as the full-context baseline, and never write questions or predictions back. `vector_store` is the original-turn retrieval baseline; `fact_store` and `summarization` transform dialogue into memory representations. Summary/fact extraction model settings are recorded separately.
 
-Exports include retrieved items with ranks and cosine scores for vector/fact search, ingestion/write latency, session-by-session logical storage growth, final storage size, retrieval/answer latency, API usage, and evidence recall where original dialogue IDs are available. Summary/fact provenance is not treated as proof that an annotated fact survives transformation; evidence recall remains unavailable for those representations. Retrieved token budgets use UTF-8 bytes as a conservative proxy, not exact tokenizer counts. Storage sizes describe text and JSON snapshots, excluding embedding arrays and Python overhead. Monetary costs remain `null` when pricing is unavailable. The `efficiency` report aggregates retrieval budgets, latency, and evidence recall.
+Exports include retrieved items with ranks and cosine scores for vector/fact search, ingestion/write latency, session-by-session logical storage growth, final storage size, retrieval/answer latency, API usage, and evidence recall where original dialogue IDs are available. Summary/fact provenance is not treated as proof that an annotated fact survives transformation; evidence recall remains unavailable for those representations. New memory-context counts use the pinned benchmark tokenizer; legacy retrieved budgets are UTF-8 byte proxies. Storage sizes describe text and JSON snapshots, excluding embedding arrays and Python overhead. Monetary costs remain `null` when pricing is unavailable. The `efficiency` report aggregates retrieval budgets, latency, and evidence recall.
 
 ### Long benchmark runs and recovery
 
@@ -271,7 +327,7 @@ Every question is checkpointed. CLI runs also checkpoint their output file while
 py src/Benchmark.py --dataset data/locomo/locomo10.json --output recovered_results.json --resume results.json
 ```
 
-Resume validates the dataset hash and model/prompt compatibility, keeps fully scored cases (including incorrect answers), and reuses saved predictions when only judging failed. Failed cases are replaced rather than appended. External-memory stores are rebuilt for unfinished conversations; summary/fact ingestion may incur additional calls and generate different memories. Prior ingestion snapshots are retained for auditing. Full-context/question-only baselines need no memory rebuild. Keep the original dataset loaded for frontend resume after a server restart. API keys remain server-side and are read from `src/.env` (environment variables take precedence).
+Resume validates the dataset hash and model/prompt compatibility, keeps fully scored cases (including incorrect answers), and reuses saved predictions when only judging failed. Failed cases are replaced rather than appended. For compatible v3 resumes, external-memory stores are rebuilt for unfinished conversations; summary/fact ingestion may incur additional calls and generate different memories. Prior ingestion snapshots are retained for auditing. Full-context/question-only baselines need no memory rebuild. Keep the original dataset loaded for frontend resume after a server restart. API keys remain server-side and are read from `src/.env` (environment variables take precedence).
 
 ### Import saved benchmark reports
 

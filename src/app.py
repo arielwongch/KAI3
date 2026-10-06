@@ -9,7 +9,7 @@ from MemoryFactory import MemoryFactory
 from NoMemory import NoMemory
 from ReAct import run_ReAct
 from Diagnostics import totals
-from Benchmark import BenchmarkJob, MODULES
+from Benchmark import BenchmarkJob, MODULES, BENCHMARK_MODULES, MODULE_CAPABILITIES, PROTOCOL_VERSION
 from BenchmarkStore import ACTIVE, atomic_json, path_for, read_json, launch, worker_active
 
 app = Flask(__name__, template_folder='.', static_folder='.', static_url_path='')
@@ -91,11 +91,11 @@ def home():
 
 @app.get('/chat')
 def chat_page():
-    return render_template('index.html', memory_modules=AVAILABLE_MEMORY_MODULES)
+    return render_template('index.html', memory_modules=AVAILABLE_MEMORY_MODULES, benchmark_modules=BENCHMARK_MODULES, module_capabilities=MODULE_CAPABILITIES)
 
 @app.get('/benchmark')
 def benchmark_page():
-    return render_template('index.html', memory_modules=AVAILABLE_MEMORY_MODULES)
+    return render_template('index.html', memory_modules=AVAILABLE_MEMORY_MODULES, benchmark_modules=BENCHMARK_MODULES, module_capabilities=MODULE_CAPABILITIES)
 
 RESULT_LIBRARY = Path(__file__).resolve().parents[1] / 'data' / 'result'
 
@@ -215,8 +215,8 @@ def list_benchmarks():
     with registry_lock:
         refresh_jobs()
         runs = [dict(run_id=j.result['run_id'], status=j.result['status'], progress=j.result.get('progress', {}),
-                     module=j.result.get('config', {}).get('modules', [None])[0], updated_at=j.result.get('updated_at'),
-                     background=bool(j.result.get('worker')), resumable=any(c.get('correct') is None and c.get('diagnostics', {}).get('status') != 'context_limit_exceeded' for c in j.result.get('cases', []))) for j in jobs.values()]
+                     module=j.result.get('config', {}).get('modules', [None])[0], condition=j.result.get('condition'), no_memory_context=j.result.get('config', {}).get('no_memory_context'), protocol=j.result.get('protocol'), updated_at=j.result.get('updated_at'),
+                     background=bool(j.result.get('worker')), resumable=j.result.get('protocol_version') == PROTOCOL_VERSION and (len(j.result.get('cases', [])) < len(j.result.get('question_manifest', [])) or any(c.get('correct') is None and c.get('diagnostics', {}).get('status') != 'context_limit_exceeded' for c in j.result.get('cases', [])))) for j in jobs.values()]
     return jsonify(runs=sorted(runs, key=lambda r: r.get('updated_at') or 0, reverse=True))
 
 @app.post('/api/benchmarks/<run_id>/continue')

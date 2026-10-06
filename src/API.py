@@ -3,6 +3,7 @@ import os
 import time
 from pathlib import Path
 from RequestPolicy import completion
+from Diagnostics import collector
 from dotenv import load_dotenv
 from openai import OpenAI
 
@@ -40,7 +41,12 @@ def call_api(system_prompt:str,user_input:str):
 
     response_text = response.choices[0].message.content
     latency = time.perf_counter() - start_time
-    total_tokens = response.usage.total_tokens
+    usage = getattr(response, 'usage', None)
+    total_tokens = getattr(usage, 'total_tokens', None)
+    metrics = collector.get()
+    if metrics is not None:
+        for field, usage_field in (('memory_prompt_tokens', 'prompt_tokens'), ('memory_completion_tokens', 'completion_tokens')):
+            value = getattr(usage, usage_field, None)
+            metrics[field] = None if value is None or metrics.get(field, 0) is None else metrics.get(field, 0) + value
     
     return response_text, latency, total_tokens
-        

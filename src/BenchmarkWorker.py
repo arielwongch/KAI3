@@ -23,14 +23,18 @@ def run_worker(root, run_id):
     global_lease = None
     job = None
     try:
-        from Benchmark import BenchmarkJob
+        from Benchmark import BenchmarkJob, PROTOCOL_VERSION
         payload = read_json(path_for(root, run_id, '.input.json'))
         snapshot = payload['snapshot']
         job = BenchmarkJob(payload['dataset'], snapshot['config'])
         job.result = snapshot
+        job.set_persistence_callback(lambda value: atomic_json(path_for(root, run_id), value))
+        job._resume_tokenizer = snapshot.get('tokenizer')
+        if snapshot.get('protocol_version') != PROTOCOL_VERSION:
+            job.update(status='failed', error='Legacy benchmark protocol cannot run in this worker. Start a new run.')
+            return
         job.result['worker'] = dict(mode='detached')
         job.cancel = DiskCancel(path_for(root, run_id, '.cancel'))
-        job.set_persistence_callback(lambda value: atomic_json(path_for(root, run_id), value))
         try:
             global_lease = Lease(path_for(root, 'worker-global', '.lease'))
         except OSError:

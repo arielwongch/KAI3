@@ -2,10 +2,12 @@ import json
 import os
 import sys
 import unittest
+import tempfile
 from unittest.mock import patch
 sys.path.insert(0, 'src')
 os.environ.setdefault('DEEPSEEK_API_KEY', 'test-only')
 import Benchmark
+from benchmark_helpers import FakeTokenizer
 from test_memory_integration import FakeOpenAIClient
 
 
@@ -16,6 +18,16 @@ def judgment(correct):
 
 
 class BinaryBenchmarkTests(unittest.TestCase):
+    def setUp(self):
+        import app
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        store_patch = patch.object(app, 'RUN_STORE', directory.name)
+        store_patch.start(); self.addCleanup(store_patch.stop)
+        app.jobs.clear(); self.addCleanup(app.jobs.clear)
+        token_patch = patch.object(Benchmark, 'get_benchmark_tokenizer', return_value=FakeTokenizer())
+        token_patch.start(); self.addCleanup(token_patch.stop)
+
     def test_question_only_isolation_and_binary_aggregation(self):
         data = [dict(sample_id=str(i), conversation={
             'session_1': [dict(speaker='Alice', text='SECRET HISTORY', dia_id='D1:1')]},
@@ -99,7 +111,8 @@ class BinaryBenchmarkTests(unittest.TestCase):
         self.assertIn('I live in Rome.', fake.calls[0]['messages'][1]['content'])
         self.assertEqual(result['scores'][0]['accuracy'], 1)
         page = app.app.test_client().get('/benchmark').get_data(as_text=True)
-        self.assertIn('id="noMemoryContext"', page)
+        self.assertIn('value="full_context"', page)
+        self.assertIn('value="question_only"', page)
 
     def test_external_memory_isolation_no_qa_writes_and_metrics(self):
         from VectorStore import VectorStore
@@ -124,7 +137,7 @@ class BinaryBenchmarkTests(unittest.TestCase):
             job.run()
         result = job.snapshot()
         self.assertEqual(len(stores), 2)
-        self.assertEqual(result['condition'], 'original_turn_retrieval')
+        self.assertEqual(result['condition'], 'vector_store')
         for i, store in enumerate(stores):
             entries = store.inspect()['entries']
             self.assertEqual(len(entries), 2)
@@ -139,7 +152,7 @@ class BinaryBenchmarkTests(unittest.TestCase):
             d = case['diagnostics']
             self.assertEqual(d['stored_before'], d['stored_after'])
             self.assertEqual(case['evidence_recall'], 1)
-            self.assertGreater(d['retrieved_token_budget'], 0)
+            self.assertGreater(d['memory_context_tokens'], 0)
             self.assertEqual([e['rank'] for e in d['retrieved']], [1, 2])
             self.assertEqual(d['retrieved'][0]['retrieval_score'], 1)
         for memory in result['memories']:

@@ -12,6 +12,9 @@ class NoMemory(MemoryModule):
     def inspect(self):
         return {"config": {"architecture": "no_memory"}, "entries": []}
 
+    def iter_context_candidates(self, query, k=None):
+        return iter(())
+
 
 # Keep the public factory contract aligned with the architectures exposed by
 # the application while preserving the factory's existing implementations.
