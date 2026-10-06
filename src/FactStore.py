@@ -126,7 +126,7 @@ class FactStore(MemoryModule):
                 raise ValueError("Fact text must be a nonempty string")
         return data["operations"]
 
-    def retrieve(self, query: str, k: int = 5) -> list[MemoryEntry]:
+    def retrieve(self, query: str, k: int = 30) -> list[MemoryEntry]:
         validate_k(k)
         return self.iter_context_candidates(query, k)
 

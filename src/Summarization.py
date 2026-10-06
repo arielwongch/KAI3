@@ -1,6 +1,3 @@
-from dataclasses import asdict
-from copy import deepcopy
-from Embeddings import MODEL_NAME
 from API import call_api
 from Diagnostics import record_memory_call
 from MemoryEntry import MemoryEntry
@@ -8,8 +5,8 @@ from MemoryModule import MemoryModule
 
 SUMMARY_PROMPT = (
     "You maintain a concise rolling summary of a conversation. "
-    "Update the previous summary using the new interaction. "
-    "Preserve important facts, decisions, preferences, and context. "
+    "Update the previous summary using the new interaction(s) in order. "
+    "Preserve important facts, decisions, preferences, speaker names, dates, and context. "
     "Return only the updated summary."
 )
 
@@ -35,6 +32,8 @@ class Summarization(MemoryModule):
 
     def generate_summary(self, new_entry: MemoryEntry) -> str:
         system_prompt = SUMMARY_PROMPT
+        if self.max_summary_tokens is None:
+            system_prompt += f' Keep the updated summary within {self.summary_limit} characters.'
         user_input = (
             f"Previous summary:\n{self.summary or '(none)'}\n\n"
             f"New interaction:\n{new_entry.text}"
