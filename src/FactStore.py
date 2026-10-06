@@ -63,32 +63,36 @@ class FactStore(MemoryModule):
             operations = self._validate(response)
             pending = deepcopy(self._facts)
             next_id = self._next_id
-            changed = []
             revision = self._revision + 1
+            # All IDs were validated against the starting snapshot. Stage every
+            # operation before deduplicating: a matching old value may itself be
+            # replaced or removed elsewhere in this batch.
             for operation in operations:
                 action = operation["op"]
                 if action == "remove":
                     del pending[operation["id"]]
                     continue
                 text = operation["text"].strip()
-                canonical = " ".join(text.casefold().split())
-                duplicate = next((key for key, record in pending.items()
-                                  if " ".join(record[0].text.casefold().split()) == canonical), None)
                 if action == "add":
-                    if duplicate is not None:
-                        continue
                     fact_id = f"fact-{next_id}"
                     next_id += 1
                 else:
                     fact_id = operation["id"]
-                    if duplicate is not None:
-                        if duplicate != fact_id:
-                            del pending[fact_id]
+                    if " ".join(self._facts[fact_id][0].text.casefold().split()) == " ".join(text.casefold().split()):
                         continue
                 metadata = {"type": "fact", "fact_id": fact_id,
                             "source": deepcopy(entry.metadata), "source_text": user_text}
                 pending[fact_id] = (MemoryEntry(text, metadata), None, revision)
-                changed.append(fact_id)
+            # Existing IDs keep their insertion order, regardless of operation
+            # order, and win ties over newly added duplicate assertions.
+            seen = set()
+            for fact_id, (fact, _, _) in list(pending.items()):
+                canonical = " ".join(fact.text.casefold().split())
+                if canonical in seen:
+                    del pending[fact_id]
+                else:
+                    seen.add(canonical)
+            changed = [key for key, (_, vector, _) in pending.items() if vector is None]
             vectors = embed_checked(self.embedder, [pending[key][0].text for key in changed])
             reference = next(iter(self._facts.values()))[1] if self._facts else None
             for fact_id, vector in zip(changed, vectors):

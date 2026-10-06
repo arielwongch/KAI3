@@ -1,2 +1,2 @@
 -r requirements.txt
-quickjs>=1.19,<2
+# Frontend tests also require Node.js 22+ (no npm dependencies).

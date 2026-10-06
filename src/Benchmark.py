@@ -302,7 +302,7 @@ def options_for(data, options):
     summary_batch_size = options.get('summary_batch_size', 20)
     if type(summary_batch_size) is not int or not 1 <= summary_batch_size <= 20:
         raise ValueError('Summary batch size must be an integer from 1 to 20.')
-    normalized = dict(summary_batch_size=summary_batch_size, review_memory=options.get('review_memory', False), background=options.get('background', False), context_limit=context_limit, max_output_tokens=max_output_tokens, modules=modules, sample_ids=list(ids), categories=list(categories), question_limit=limit, **memory_options)
+    normalized = dict(summary_batch_size=summary_batch_size, review_memory=options.get('review_memory', False), background=options.get('background', False), context_limit=context_limit, max_output_tokens=max_output_tokens, modules=modules, sample_ids=[str(i) for i in ids], categories=list(categories), question_limit=limit, **memory_options)
     if mode in ('full_context', 'question_only'):
         normalized['no_memory_context'] = context_mode
     return normalized
@@ -469,6 +469,13 @@ class BenchmarkJob:
 
     def run(self):
         request_token = cancel_event.set(self.cancel)
+        try:
+            self._run()
+        finally:
+            # Initial checkpoints can fail before the evaluation try/finally.
+            cancel_event.reset(request_token)
+
+    def _run(self):
         self.update(status='running')
         samples = [s for s in self.data if str(s['sample_id']) in self.options['sample_ids']]
         question_sets = []
@@ -621,7 +628,6 @@ class BenchmarkJob:
         except Exception as error:
             self.update(status='failed', error=str(error))
         finally:
-            cancel_event.reset(request_token)
             if self.cancel.is_set():
                 self.update(status='cancelled')
             groups = defaultdict(list)

@@ -4,7 +4,7 @@ from pathlib import Path
 from copy import deepcopy
 from threading import RLock, Thread
 from uuid import uuid4
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, abort, jsonify, render_template, request, send_from_directory
 from MemoryFactory import MemoryFactory
 from NoMemory import NoMemory
 from ReAct import run_ReAct
@@ -12,7 +12,16 @@ from Diagnostics import totals
 from Benchmark import BenchmarkJob, MODULES, BENCHMARK_MODULES, MODULE_CAPABILITIES, PROTOCOL_VERSION
 from BenchmarkStore import ACTIVE, atomic_json, path_for, read_json, launch, worker_active
 
-app = Flask(__name__, template_folder='.', static_folder='.', static_url_path='')
+app = Flask(__name__, template_folder='.', static_folder=None)
+# Keep the existing asset URLs without exposing the source/configuration directory.
+PUBLIC_ASSETS = frozenset(('style.css', 'workspace.js', 'assets/favicon.png'))
+
+@app.get('/<path:filename>', endpoint='static')
+def public_asset(filename):
+    if filename not in PUBLIC_ASSETS:
+        abort(404)
+    return send_from_directory(app.root_path, filename)
+
 app.config['MAX_CONTENT_LENGTH'] = 32 * 1024 * 1024
 AVAILABLE_MEMORY_MODULES = MODULES
 chat_memory_modules = {}
@@ -61,14 +70,36 @@ def refresh_jobs():
         except (OSError, ValueError, KeyError, TypeError):
             continue
 
+def fail_benchmark(job, error):
+    # The in-memory terminal state must survive even if saving it also fails.
+    # Clearing worker makes it authoritative over any stale queued disk snapshot.
+    job.set_persistence_callback(None)
+    job.update(status='failed', worker=None, error=f'Benchmark execution failed: {error}')
+    try:
+        persist_benchmark(job.snapshot())
+    except Exception:
+        app.logger.exception('Could not persist failed benchmark %s', job.result['run_id'])
+
+
+def run_benchmark_thread(job):
+    try:
+        job.run()
+    except Exception as error:
+        fail_benchmark(job, error)
+
+
 def start_benchmark(job):
-    job.set_persistence_callback(persist_benchmark)
-    persist_benchmark(job.snapshot())
-    atomic_json(path_for(RUN_STORE, job.result['run_id'], '.input.json'), dict(dataset=job.data, snapshot=job.snapshot()))
-    if job.options.get('background'):
-        launch(RUN_STORE, job)
-    else:
-        Thread(target=job.run, daemon=True).start()
+    try:
+        job.set_persistence_callback(persist_benchmark)
+        persist_benchmark(job.snapshot())
+        atomic_json(path_for(RUN_STORE, job.result['run_id'], '.input.json'), dict(dataset=job.data, snapshot=job.snapshot()))
+        if job.options.get('background'):
+            launch(RUN_STORE, job)
+        else:
+            Thread(target=lambda: run_benchmark_thread(job), daemon=True).start()
+    except Exception as error:
+        fail_benchmark(job, error)
+        raise
 
 
 restore_benchmarks()
@@ -207,7 +238,10 @@ def create_benchmark():
         if any(j.snapshot()['status'] in ACTIVE for j in jobs.values()):
             return jsonify(error='A benchmark is already running. Cancel it or wait for completion.'), 409
         jobs[job.result['run_id']] = job
-    start_benchmark(job)
+        try:
+            start_benchmark(job)
+        except Exception:
+            return jsonify(run_id=job.result['run_id'], error=job.result['error']), 503
     return jsonify(run_id=job.result['run_id']), 202
 
 @app.get('/api/benchmarks')
@@ -263,16 +297,24 @@ def resume_benchmark(run_id):
         if any(j.snapshot()['status'] in ACTIVE for j in jobs.values()):
             return jsonify(error='A benchmark is already running.'), 409
         try:
-            data = payload.get('dataset') or previous.data
-            if not data:
+            # Saved input is authoritative; the browser may currently show an
+            # unrelated dataset. Uploads are a fallback for older/missing inputs.
+            try:
                 data = read_json(path_for(RUN_STORE, run_id, '.input.json'))['dataset']
+            except (OSError, ValueError, KeyError, TypeError):
+                data = previous.data
+            if not data:
+                data = payload.get('dataset')
+            if data is None or data == []:
+                return jsonify(code='dataset_required', error='The original dataset is unavailable. Upload it to resume this run.'), 409
             job = BenchmarkJob.resume(data, previous.snapshot())
         except (OSError, ValueError, TypeError, KeyError) as error:
             return jsonify(error=str(error)), 400
-        job.set_persistence_callback(persist_benchmark)
         jobs[run_id] = job
-        persist_benchmark(job.snapshot())
-    start_benchmark(job)
+        try:
+            start_benchmark(job)
+        except Exception:
+            return jsonify(run_id=run_id, error=job.result['error']), 503
     return jsonify(run_id=run_id), 202
 
 @app.post('/api/benchmarks/<run_id>/cancel')
@@ -336,9 +378,12 @@ def benchmark_review_import(run_id):
     persist_benchmark(job.snapshot())
     return jsonify(calibration=job.snapshot().get('calibration'))
 
-if __name__ == '__main__':
+def main():
     # The watchdog reloader restarts the process when OneDrive or an editor
     # touches a source file. Benchmark jobs run in-process, so reloads interrupt
     # them. Keep the server stable during long runs; opt into the debugger only.
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', '5000')),
+    app.run(host=os.environ.get('HOST', '127.0.0.1'), port=int(os.environ.get('PORT', '5000')),
             debug=os.environ.get('KAI3_DEBUG') == '1', use_reloader=False)
+
+if __name__ == '__main__':
+    main()

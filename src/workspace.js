@@ -59,7 +59,7 @@ function render() {
 }
 async function jsonRequest(url, options) {
     const response = await fetch(url, options); const data = await response.json();
-    if (!response.ok) { const error = new Error(data.error || 'Request failed'); error.status = response.status; throw error; }
+    if (!response.ok) { const error = new Error(data.error || 'Request failed'); error.status = response.status; error.code = data.code; throw error; }
     return data;
 }
 function addCard(parent, title, value) {
@@ -210,6 +210,7 @@ function normalizeBenchmarkImport(value){
 function showImportedBenchmark(value,filename){
     if(benchmark&&['queued','running','waiting_review'].includes(benchmark.status)&&!importedBenchmark)throw new Error('Finish or cancel the active benchmark before importing results.');
     const report=normalizeBenchmarkImport(value);
+    $('resumeDatasetControl').hidden=true;
     importedOriginal=value;importedBenchmark=true;benchmark=report;clearTimeout(pollTimer);runId=null;
     localStorage.removeItem('kai3-benchmark-run');
     $('benchmarkSetup').hidden=true;$('benchmarkRunning').hidden=true;$('benchmarkReport').hidden=false;
@@ -241,8 +242,30 @@ $('cancelBenchmark').onclick=async()=>{try{await jsonRequest(`/api/benchmarks/${
 $('exportBenchmark').onclick=()=>importedBenchmark?downloadJSON(importedOriginal,'imported-results.json'):download(`/api/benchmarks/${runId}/export`);
 $('exportReview').onclick=()=>{if(importedBenchmark)return;download(`/api/benchmarks/${runId}/review`);};
 $('reviewFile').onchange=async()=>{if(importedBenchmark)return;try{const data=JSON.parse(await $('reviewFile').files[0].text());const reviews=data.reviews||data.cases.filter(c=>c.ratings).map(c=>({case_index:c.case_index,ratings:c.ratings,notes:c.notes}));const result=await jsonRequest(`/api/benchmarks/${runId}/review`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reviews})});benchmark.calibration=result.calibration;drawBenchmark();$('reportStatus').textContent='Human labels imported and agreement updated.';}catch(error){$('reportStatus').textContent=error.message;}};
-$('resumeBenchmark').onclick=async()=>{if(importedBenchmark)return;try{const result=await jsonRequest(`/api/benchmarks/${runId}/resume`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(benchmark?.worker?{}:{dataset:previewDataset})});runId=result.run_id;pollBenchmark();}catch(error){$('reportStatus').textContent=error.message;}};
-$('newBenchmarkRun').onclick=()=>{$('reportMode').hidden=true;$('reviewLabelsControl').hidden=false;$('reportMoreActions').hidden=false;$('reportMoreActions').open=false;importedBenchmark=false;importedOriginal=null;$('exportReview').hidden=false;$('reviewFile').disabled=false;clearTimeout(pollTimer);benchmark=null;runId=null;localStorage.removeItem('kai3-benchmark-run');$('benchmarkReport').hidden=true;$('benchmarkRunning').hidden=true;$('benchmarkSetup').hidden=false;$('reportStatus').textContent='';};
+async function resumeSavedBenchmark(dataset){
+    if(importedBenchmark||!runId)return;
+    const requestedRun=runId;
+    try{
+        const result=await jsonRequest(`/api/benchmarks/${requestedRun}/resume`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(dataset===undefined?{}:{dataset})});
+        if(importedBenchmark||runId!==requestedRun)return;
+        $('resumeDatasetControl').hidden=true;
+        runId=result.run_id;pollBenchmark();
+    }catch(error){
+        if(importedBenchmark||runId!==requestedRun)return;
+        $('reportStatus').textContent=error.message;
+        if(error.code==='dataset_required')$('resumeDatasetControl').hidden=false;
+    }
+}
+$('resumeBenchmark').onclick=()=>resumeSavedBenchmark();
+$('resumeDatasetFile').onchange=async()=>{
+    const file=$('resumeDatasetFile').files?.[0],requestedRun=runId;if(!file||importedBenchmark)return;
+    try{
+        const dataset=JSON.parse((await file.text()).replace(/^\uFEFF/,''));
+        if(!importedBenchmark&&requestedRun===runId)await resumeSavedBenchmark(dataset);
+    }catch(error){if(!importedBenchmark&&requestedRun===runId)$('reportStatus').textContent=`Could not read the original dataset: ${error.message}`;}
+    finally{$('resumeDatasetFile').value='';}
+};
+$('newBenchmarkRun').onclick=()=>{$('resumeDatasetControl').hidden=true;$('reportMode').hidden=true;$('reviewLabelsControl').hidden=false;$('reportMoreActions').hidden=false;$('reportMoreActions').open=false;importedBenchmark=false;importedOriginal=null;$('exportReview').hidden=false;$('reviewFile').disabled=false;clearTimeout(pollTimer);benchmark=null;runId=null;localStorage.removeItem('kai3-benchmark-run');$('benchmarkReport').hidden=true;$('benchmarkRunning').hidden=true;$('benchmarkSetup').hidden=false;$('reportStatus').textContent='';};
 $('toggleAdvanced').onclick=()=>{const details=$('advancedDetails'),open=details.hidden;details.hidden=!open;$('toggleAdvanced').setAttribute('aria-expanded',String(open));$('toggleAdvanced').lastElementChild.textContent=open?'−':'＋';};
 function selectedCategories(){return [...document.querySelectorAll('[name=category]:checked')].map(input=>Number(input.value));}
 function selectedSamples(){return [...$('sampleIds').selectedOptions].map(option=>option.value);}
@@ -338,7 +361,7 @@ async function refreshSavedRuns(){
         if(!runs.length){const empty=document.createElement('p');empty.textContent='Your benchmark runs will appear here.';list.append(empty);}
     }catch(error){$('savedRuns').textContent=error.message;}
 }
-async function openSavedRun(id){importedBenchmark=false;importedOriginal=null;runId=id;localStorage.setItem('kai3-benchmark-run',id);$('exportReview').hidden=false;$('reviewFile').disabled=false;$('reportMode').hidden=true;$('reviewLabelsControl').hidden=false;$('reportMoreActions').hidden=false;$('reportMoreActions').open=false;await pollBenchmark();}
+async function openSavedRun(id){$('resumeDatasetControl').hidden=true;importedBenchmark=false;importedOriginal=null;runId=id;localStorage.setItem('kai3-benchmark-run',id);$('exportReview').hidden=false;$('reviewFile').disabled=false;$('reportMode').hidden=true;$('reviewLabelsControl').hidden=false;$('reportMoreActions').hidden=false;$('reportMoreActions').open=false;await pollBenchmark();}
 $('refreshRuns').onclick=refreshSavedRuns;$('sidebarNewBenchmark').onclick=()=>$('newBenchmarkRun').onclick();
 $('continueBenchmark').onclick=async()=>{try{await jsonRequest(`/api/benchmarks/${runId}/continue`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:benchmark.review.token})});pollBenchmark();}catch(error){$('progressActivity').textContent=error.message;}};
 $('reviewMemoryButton').onclick=()=>{if(!benchmark?.review)return;inspectionSource='benchmark';setInspection({memory:benchmark.review.memory,turns:[],totals:{}},`${benchmark.review.sample_id} ? ${benchmark.review.full_context?'Full conversation':'Stored memory'}`);$('inspector').hidden=false;document.body.classList.add('memory-open');};

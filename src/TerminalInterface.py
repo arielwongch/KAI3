@@ -96,7 +96,7 @@ memory = []
 # Create a timezone object for UTC+8
 utc_8 = timezone(timedelta(hours=8))
 
-PerformanceMetrics: List[PerformanceMetric] = []
+PerformanceMetrics: list[PerformanceMetric] = []
 
 while True:
     try:

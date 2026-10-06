@@ -32,6 +32,8 @@ Edit `src/.env` and replace `YOUR_API_KEY` with your DeepSeek API key before usi
 the chat. Copy the example file only during initial setup; copying it again
 overwrites your saved configuration.
 
+The server binds to loopback (`127.0.0.1`) by default. Set `HOST` explicitly if a different bind address is needed. Only the stylesheet, workspace script, and favicon are served as public files.
+
 Open http://localhost:5000 after starting the app. The home page links to Chat
 and Test Benchmark. Press **Ctrl+C** to stop it.
 On subsequent runs, macOS/Linux users activate the environment and run
@@ -279,10 +281,13 @@ Benchmark endpoints:
 Tests use mocked models and embeddings and require no paid calls. The new scoring
 dependency, NLTK, uses its bundled Porter stemmer; no corpus downloads are needed.
 
-For the optional DOM-free JavaScript state tests (history migration, restart
-blocking, safe text rendering, and error refresh), install `requirements-test.txt`
-and run the same unittest command. These tests use QuickJS; no browser or Node.js
-installation is required.
+Install `requirements-test.txt` and Node.js 22+ to run the complete unittest
+suite. DOM-free JavaScript tests cover history migration, restart blocking,
+safe text rendering, inspector views, and saved-run resume/upload behavior.
+They use Node's built-in test runner with no npm dependencies or browser needed.
+A missing Node runtime fails the frontend tests instead of silently skipping them.
+GitHub Actions installs Python 3.12 and Node.js 22 and runs the full suite with
+dummy credentials and offline model settings.
 
 ### Binary evaluation with no memory
 
@@ -327,7 +332,7 @@ Every question is checkpointed. CLI runs also checkpoint their output file while
 py src/Benchmark.py --dataset data/locomo/locomo10.json --output recovered_results.json --resume results.json
 ```
 
-Resume validates the dataset hash and model/prompt compatibility, keeps fully scored cases (including incorrect answers), and reuses saved predictions when only judging failed. Failed cases are replaced rather than appended. For compatible v3 resumes, external-memory stores are rebuilt for unfinished conversations; summary/fact ingestion may incur additional calls and generate different memories. Prior ingestion snapshots are retained for auditing. Full-context/question-only baselines need no memory rebuild. Keep the original dataset loaded for frontend resume after a server restart. API keys remain server-side and are read from `src/.env` (environment variables take precedence).
+Resume validates the dataset hash and model/prompt compatibility, keeps fully scored cases (including incorrect answers), and reuses saved predictions when only judging failed. Failed cases are replaced rather than appended. For compatible v3 resumes, external-memory stores are rebuilt for unfinished conversations; summary/fact ingestion may incur additional calls and generate different memories. Prior ingestion snapshots are retained for auditing. Full-context/question-only baselines need no memory rebuild. Frontend resume uses the original dataset saved on the server, including after a restart. If that dataset is unavailable, the report requests an upload and validates it against the saved run. API keys remain server-side and are read from `src/.env` (environment variables take precedence).
 
 ### Import saved benchmark reports
 
@@ -343,6 +348,6 @@ Progress counts ingestion turns and question stages separately, reports answered
 
 **Run in background** is enabled by default in the benchmark form. It launches an independent hidden Python process using the current interpreter and credentials. The run continues if you close the browser or stop the web server terminal. Start the server again and return to **Test Benchmark ? Saved runs** to reconnect. The computer must remain awake; shutdown/reboot terminates workers. Lost workers are marked interrupted and require explicit resume. A global worker lease prevents concurrent background evaluations. Waiting for memory review also keeps the worker alive until continued or cancelled.
 
-Snapshots, the original dataset, control files, and worker logs are stored in the server's `instance/benchmark_runs/` directory. No API key is stored in those files. The original dataset allows resuming after a restart without reuploading it. For older saved runs, load the original dataset before resuming. Uncheck **Run in background** to use the existing server-thread execution. CLI behavior is unchanged; interactive review is available through the web UI.
+Snapshots, the original dataset, control files, and worker logs are stored in the server's `instance/benchmark_runs/` directory. No API key is stored in those files. The original dataset allows resuming after a restart without reuploading it. For older saved runs without a saved dataset, click Resume and use the requested original-dataset upload. Uncheck **Run in background** to use the existing server-thread execution. CLI behavior is unchanged; interactive review is available through the web UI.
 
 The benchmark top bar also has **View saved results**, which lists JSON files under `data/result/`, including nested folders. Add more reports or folders there, then press the refresh button beside the dropdown. Selecting a file opens the same read-only report view; no model calls are made.
