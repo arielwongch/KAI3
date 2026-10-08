@@ -1,5 +1,11 @@
 # KAI3
 
+## Documentation
+
+[Component and feature specifications](spec/README.md) describe current memory,
+benchmark, and frontend behavior. [Development plans and history](plans/README.md)
+record phase status, dates, remaining acceptance work, and future proposals.
+
 ## Local setup
 
 Install Python 3.12 first, then run the commands below from the project folder.
@@ -103,7 +109,8 @@ cache; subsequent runs reuse cached weights. The model is loaded lazily and shar
 across chats. Vector memory indexes overlapping chunks but returns whole original
 interactions. Fact memory uses the existing DeepSeek credentials to extract and
 update current user-stated facts, then searches them using the same embeddings.
-No database is required. Neither store evicts records automatically.
+No database is required. Both stores default to unlimited capacity; callers can
+configure finite capacity with oldest-record eviction.
 
 Use Python 3.12 for the local ML dependencies. Tests mock both embeddings and
 model API responses and do not require credentials or a model download:
@@ -178,7 +185,10 @@ original-turn evidence coverage and report conditional accuracy with group count
 Legacy schema-v1 reports stay readable and keep their saved metrics. Unambiguous
 legacy full-context runs display Full Context; ambiguous inputs retain a legacy
 label. Legacy runs cannot resume into v3: start a new run to avoid mixing protocols.
-See [the design and acceptance criteria](spec/locomo_controlled_comparison.md).
+See [benchmark lifecycle and defaults](spec/benchmark/lifecycle.md) and
+[the memory component specifications](spec/README.md) for implemented behavior.
+The [controlled-comparison plan](plans/controlled_comparison.md) separately records
+implementation history, acceptance work, and the proposed experiment sequence.
 
 ## Session inspector and LoCoMo QA testing
 

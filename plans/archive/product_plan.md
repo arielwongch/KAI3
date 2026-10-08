@@ -1,3 +1,13 @@
+<!-- Historical document; see the notice below before interpreting its status. -->
+> Historical record, archived on 2026-10-08 from `spec/product_plan.md`.
+> First recorded in Git: 2026-10-05, commit `acb7a6f`. This is a commit date,
+> not a verified proposal/approval or deployment date. The body preserves the
+> pre-reorganization working-tree text, including later edits and old status claims.
+> "Current", "planning only", dates, and open questions below describe that
+> historical document and are not current project status.
+> See the [plan index](../README.md) for reconciled status and the
+> [specification index](../../spec/README.md) for implemented behavior.
+
 # KAI3 Product Plan: Home, Chat, and LoCoMo Benchmark
 
 ## Status
