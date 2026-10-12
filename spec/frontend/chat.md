@@ -27,8 +27,11 @@ continuation for lost memory, prompting a new chat.
 
 ## Write and interaction flow
 
-Select one of `no_memory`, `sliding_window`, `summarization`, `vector_store`, or
-`fact_store` before sending. Selection locks for that chat; another architecture
+Select `no_memory`, `sliding_window`, `summarization`, `vector_store`,
+`vector_store_reranker`, `fact_store`, `delta`, `epsilon`, or `zeta` before sending.
+Vector Store + Reranker exposes candidate pool and storage capacity controls
+before the first message; they are saved under `memory_options` and remain fixed.
+Its live final retrieval k is five. Selection locks for that chat; another architecture
 requires a new chat. The composer is disabled until selection or while sending,
 checking memory, or unable to reconnect. Enter sends; Shift+Enter inserts a newline.
 

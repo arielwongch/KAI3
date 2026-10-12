@@ -55,6 +55,8 @@ Factory options are module-specific. Window supports `max_items` and
 `max_stored_entries`; summary supports `summary_limit`, `max_summary_tokens`,
 and an injected tokenizer; vector/facts support `max_stored_entries` and an
 injected embedder. Facts also support an extractor and `fact_history_mode`.
+The standalone [reranked vector store](vector_store_reranker.md) also supports
+`candidate_k` and an injected reranker; final k is supplied at retrieval time.
 The default fact mode is `current`; benchmark v3 requires `versioned`.
 
 The application and benchmark construct `NoMemory()` directly for their no-memory

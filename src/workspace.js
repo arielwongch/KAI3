@@ -26,7 +26,7 @@ document.querySelectorAll('.workspace-nav-item').forEach(link => link.classList.
 function active() { return workspace.sessions.find(s => s.id === workspace.active) || workspace.sessions[0]; }
 function save() { localStorage.setItem(key, JSON.stringify(workspace)); }
 function markdown(text) { return DOMPurify.sanitize(marked.parse(String(text))); }
-function labelMode(mode) { return (mode || 'No architecture selected').replaceAll('_', ' '); }
+function labelMode(mode) { return mode==='vector_store_reranker'?'Vector Store + Reranker':(mode || 'No architecture selected').replaceAll('_', ' '); }
 function controlState() {
     const session = active();
     $('userInput').disabled = busy || checking || unavailable || !session.module;
@@ -34,6 +34,12 @@ function controlState() {
     $('moduleStatus').textContent = unavailable ? 'Memory unavailable · start a new chat' : checking ? 'Checking memory…' : labelMode(session.module);
     document.querySelectorAll('.memory-choice').forEach(b => { b.disabled = !!session.module || busy || checking; b.classList.toggle('selected', b.dataset.module === session.module); });
     $('userInput').placeholder = session.module ? 'Message KAI3…' : 'Select a memory architecture to start';
+    $('chatRerankerSettings').hidden=session.module!=='vector_store_reranker'||session.messages.length>0;
+    if(session.module==='vector_store_reranker'){
+        const options=session.memory_options||{};
+        $('chatCandidateK').value=options.candidate_k===null?'all':String(options.candidate_k??50);
+        $('chatRerankerCapacity').value=String(options.max_stored_entries??'unlimited');
+    }
     const components=HYBRID_COMPONENTS[session.module];
     $('chatHybridSettings').hidden=!components||session.messages.length>0;
     if(components){
@@ -164,6 +170,10 @@ $('chatForm').onsubmit = async event => {
         try{session.memory_options=hybridFormOptions(session.module,$('chatHybridShare').value,$('chatComponentOptions').value);session.memory_options.memory_context_tokens=parseMemoryCount($('chatHybridBudget').value,null);$('chatHybridError').textContent='';}
         catch(error){$('chatHybridError').textContent=error.message;return;}
     }
+    if(session.module==='vector_store_reranker'&&!session.started){
+        try{session.memory_options={candidate_k:parseMemoryCount($('chatCandidateK').value,'all'),max_stored_entries:parseMemoryCount($('chatRerankerCapacity').value,'unlimited')};$('chatRerankerError').textContent='';}
+        catch(error){$('chatRerankerError').textContent=error.message;return;}
+    }
     const requiresExisting=session.started; session.messages.push({role:'user',content:message});
     session.title=session.messages.find(m=>m.role==='user').content.slice(0,60); $('userInput').value=''; busy=true; save(); render();
     const loading=document.createElement('div'); loading.className='chat-loading'; loading.textContent='KAI3 is thinking…'; $('chatMessages').append(loading);
@@ -285,20 +295,21 @@ function selectedSamples(){return [...$('sampleIds').selectedOptions].map(option
 function selectedQuestionCount(data){const ids=$('allConversations').checked?data.map(s=>String(s.sample_id)):selectedSamples();const categories=selectedCategories(),limit=Number($('questionLimit').value);const samples=data.filter(s=>ids.includes(String(s.sample_id)));return samples.reduce((n,s)=>{const count=s.qa.filter(q=>categories.includes(q.category)).length;return n+(limit?Math.min(count,limit):count);},0);}
 const memorySettingDrafts={};
 let memorySettingMode=null;
-function memoryCapabilities(mode){return globalThis.KAI3_MEMORY_CAPABILITIES?.[mode]||{records:['sliding_window','vector_store','fact_store'].includes(mode)||!!HYBRID_COMPONENTS[mode],summary:['summarization','delta','epsilon'].includes(mode),hybrid:!!HYBRID_COMPONENTS[mode],memory:['sliding_window','vector_store','fact_store','summarization'].includes(mode)||!!HYBRID_COMPONENTS[mode]};}
+function memoryCapabilities(mode){return globalThis.KAI3_MEMORY_CAPABILITIES?.[mode]||{reranker:mode==='vector_store_reranker',records:['sliding_window','vector_store','vector_store_reranker','fact_store'].includes(mode)||!!HYBRID_COMPONENTS[mode],summary:['summarization','delta','epsilon'].includes(mode),hybrid:!!HYBRID_COMPONENTS[mode],memory:['sliding_window','vector_store','vector_store_reranker','fact_store','summarization'].includes(mode)||!!HYBRID_COMPONENTS[mode]};}
 function updateMemorySettings(mode){
     const caps=memoryCapabilities(mode);
     if(memorySettingMode!==mode){
-        if(memorySettingMode)memorySettingDrafts[memorySettingMode]={k:$('retrievalK').value,capacity:$('storageCapacity').value,summary:$('summaryTokens').value,budget:$('memoryContextTokens').value,share:$('hybridShare').value,components:$('componentOptions').value};
-        const draft=memorySettingDrafts[mode]||{k:'all',capacity:mode==='sliding_window'?'10':'unlimited',summary:'2000',budget:'2000',share:'50',components:'{}'};
-        $('retrievalK').value=draft.k;$('storageCapacity').value=draft.capacity;$('summaryTokens').value=draft.summary;$('memoryContextTokens').value=draft.budget;memorySettingMode=mode;
+        if(memorySettingMode)memorySettingDrafts[memorySettingMode]={candidate:$('candidateK').value,k:$('retrievalK').value,capacity:$('storageCapacity').value,summary:$('summaryTokens').value,budget:$('memoryContextTokens').value,share:$('hybridShare').value,components:$('componentOptions').value};
+        const draft=memorySettingDrafts[mode]||{candidate:'50',k:'all',capacity:mode==='sliding_window'?'10':'unlimited',summary:'2000',budget:'2000',share:'50',components:'{}'};
+        $('candidateK').value=draft.candidate||'50';$('retrievalK').value=draft.k;$('storageCapacity').value=draft.capacity;$('summaryTokens').value=draft.summary;$('memoryContextTokens').value=draft.budget;memorySettingMode=mode;
         $('hybridShare').value=draft.share||'50';$('componentOptions').value=draft.components||'{}';
     }
     $('memorySettings').hidden=!caps.memory;$('retrievalKField').hidden=!caps.records;$('storageCapacityField').hidden=!caps.records;$('summaryTokensField').hidden=!caps.summary;
     $('retrievalK').disabled=!caps.records;$('storageCapacity').disabled=!caps.records;$('summaryTokens').disabled=!caps.summary;$('memoryContextTokens').disabled=!caps.memory;
+    $('candidateKField').hidden=!caps.reranker;$('candidateK').disabled=!caps.reranker;
     $('hybridSettings').hidden=!caps.hybrid;
     if(caps.hybrid)$('hybridShareLabel').textContent=`${labelMode(HYBRID_COMPONENTS[mode][0])} share (%)`;
-    $('memorySettingsHint').textContent=caps.hybrid?'Both components ingest original turns independently. Retrieval k and capacity apply to each record store unless overridden. Summary context may be shortened to its share.':caps.summary?'Summaries use a size limit, with no retrieval k or record capacity.':mode==='fact_store'?'Finite capacity evicts old fact versions and limits historical coverage.':'';
+    $('memorySettingsHint').textContent=caps.reranker?'Rerank the cosine shortlist, then apply retrieval k and the context allowance. Retrieval k = all includes the entire shortlist; set both counts to all to consider every stored turn.':caps.hybrid?'Both components ingest original turns independently. Retrieval k and capacity apply to each record store unless overridden. Summary context may be shortened to its share.':caps.summary?'Summaries use a size limit, with no retrieval k or record capacity.':mode==='fact_store'?'Finite capacity evicts old fact versions and limits historical coverage.':'';
 }
 function hybridFormOptions(mode,shareValue,componentText){
     const names=HYBRID_COMPONENTS[mode],share=Number(shareValue)/100;
@@ -320,12 +331,13 @@ function benchmarkMemoryOptions(mode){
     const caps=memoryCapabilities(mode),options={};
     if(caps.memory)options.memory_context_tokens=parseMemoryCount($('memoryContextTokens').value,null);
     if(caps.records){options.retrieval_k=parseMemoryCount($('retrievalK').value,'all');options.max_stored_entries=parseMemoryCount($('storageCapacity').value,mode==='sliding_window'?null:'unlimited');}
+    if(caps.reranker)options.candidate_k=parseMemoryCount($('candidateK').value,'all');
     if(caps.summary){options.max_summary_tokens=parseMemoryCount($('summaryTokens').value,null);if(options.max_summary_tokens>options.memory_context_tokens)throw new Error('Summary size cannot exceed the context-token allowance.');}
     if(caps.hybrid)Object.assign(options,hybridFormOptions(mode,$('hybridShare').value,$('componentOptions').value));
     return options;
 }
 function benchmarkConditionLabel(report){
-    const mode=report.config?.modules?.[0];if(mode!=='no_memory')return (mode||'Unknown').replaceAll('_',' ');
+    const mode=report.config?.modules?.[0];if(mode!=='no_memory')return labelMode(mode||'Unknown');
     const condition=report.condition||report.config?.no_memory_context;
     if(condition==='full_context'||condition==='full'||report.protocol?.includes('full-context'))return 'Full Context';
     if(condition==='question_only'||report.protocol?.includes('question-only'))return 'Question Only';
@@ -481,7 +493,7 @@ function drawBenchmark(){
     body.append(retrievalMetrics);
     const memoryDetails=drawUsageSummary(body);
     const config=reportDetails('Run configuration');config.classList.add('report-config');const configGrid=document.createElement('div');configGrid.className='config-grid';
-    [['Condition',benchmarkConditionLabel(benchmark)],['Conversations',benchmark.config.sample_ids?.join(', ')],['Categories',(benchmark.config.categories||[]).map(categoryName).join(', ')],['Question limit',benchmark.config.question_limit===0?'All matching questions':benchmark.config.question_limit],['Retrieval k',benchmark.config.retrieval_k===null?'All available':benchmark.config.retrieval_k],['Stored-record capacity',benchmark.config.max_stored_entries===null?'Unlimited':benchmark.config.max_stored_entries],['Context-token allowance',benchmark.config.memory_context_tokens],['Maximum summary tokens',benchmark.config.max_summary_tokens],['Answer model',benchmark.answer_model],['Judge model',benchmark.judge_model]].forEach(([k,v])=>addField(configGrid,k,v??'—'));config.append(configGrid);body.append(config);
+    [['Condition',benchmarkConditionLabel(benchmark)],['Conversations',benchmark.config.sample_ids?.join(', ')],['Categories',(benchmark.config.categories||[]).map(categoryName).join(', ')],['Question limit',benchmark.config.question_limit===0?'All matching questions':benchmark.config.question_limit],...(benchmark.config.modules?.[0]==='vector_store_reranker'?[['Candidate pool',benchmark.config.candidate_k===null?'All stored turns':benchmark.config.candidate_k],['Reranker model',benchmark.reranker?.model],['Reranker revision',benchmark.reranker?.revision]]:[]),['Retrieval k',benchmark.config.retrieval_k===null?'All available':benchmark.config.retrieval_k],['Stored-record capacity',benchmark.config.max_stored_entries===null?'Unlimited':benchmark.config.max_stored_entries],['Context-token allowance',benchmark.config.memory_context_tokens],['Maximum summary tokens',benchmark.config.max_summary_tokens],['Answer model',benchmark.answer_model],['Judge model',benchmark.judge_model]].forEach(([k,v])=>addField(configGrid,k,v??'—'));config.append(configGrid);body.append(config);
     const calibration=reportDetails('Human review');calibration.classList.add('calibration-panel');const calibrationText=document.createElement('p');calibrationText.textContent=benchmark.calibration?`${benchmark.calibration.status} · ${benchmark.calibration.reviewed_count} cases reviewed · agreement by rubric dimension`:'Uncalibrated · export a sample, add 0–2 rubric ratings, then import it.';calibration.append(calibrationText);if(benchmark.calibration)for(const [dimension,rating] of Object.entries(benchmark.calibration.agreement||{}))addField(calibration,`${dimension} agreement`,rating.exact_agreement==null?'Unavailable':`${(rating.exact_agreement*100).toFixed(1)}% (${rating.count} reviewed)`);body.append(calibration);
     const cases=document.createElement('section');cases.className='report-section';const casesTitle=document.createElement('h3');casesTitle.textContent='Question results';cases.append(casesTitle);
     const filterBar=document.createElement('div');filterBar.className='case-filters';const categoryFilter=document.createElement('select');categoryFilter.id='caseCategoryFilter';categoryFilter.innerHTML='<option value="all">All categories</option>'+[1,2,3,4,5].map(c=>`<option value="${c}">${categoryName(c)}</option>`).join('');
@@ -501,7 +513,7 @@ function drawBenchmark(){
             if(c.component_evidence_recall)detailRow('Evidence coverage by component',c.component_evidence_recall,detail);
             if(c.diagnostics?.components)detailRow('Context use by component',c.diagnostics.components,detail);
             const evidence=document.createElement('details');evidence.className='case-evidence';const evidenceTitle=document.createElement('summary');evidenceTitle.textContent=`Retrieved evidence · ${c.diagnostics?.retrieved?.length||0} records`;evidence.append(evidenceTitle);
-            (c.diagnostics?.retrieved||[]).forEach((entry,i)=>{const record=document.createElement('article');record.className='evidence-record';const meta=entry.metadata||{};const h=document.createElement('strong');h.textContent=`${i+1}. ${meta.speaker||'Memory'} · ${meta.dialogue_id||meta.fact_id||''} · ${meta.timestamp||''}`;const p=document.createElement('p');p.textContent=entry.text||'';record.append(h,p);evidence.append(record);});detail.append(evidence);
+            (c.diagnostics?.retrieved||[]).forEach((entry,i)=>{const record=document.createElement('article');record.className='evidence-record';const meta=entry.metadata||{};const h=document.createElement('strong');h.textContent=`${i+1}. ${meta.speaker||'Memory'} · ${meta.dialogue_id||meta.fact_id||''} · ${meta.timestamp||''}`;const p=document.createElement('p');p.textContent=entry.text||'';record.append(h,p);for(const key of ['vector_rank','vector_score','retrieval_rank','reranker_score'])if(meta[key]!=null)addField(record,key.replaceAll('_',' '),meta[key]);evidence.append(record);});detail.append(evidence);
             const timing={};for(const key of ['retrieval_seconds','answer_seconds','judge_seconds','total_seconds','answer_llm_calls','judge_llm_calls','answer_tokens','judge_tokens'])if(c.diagnostics?.[key]!==undefined)timing[key]=c.diagnostics[key];detailRow('Timing and tokens',timing,detail);
             const raw={...c.diagnostics};delete raw.retrieved;const technical=document.createElement('details');technical.className='technical-details';const technicalTitle=document.createElement('summary');technicalTitle.textContent='Technical diagnostics';const pre=document.createElement('pre');pre.textContent=JSON.stringify(raw,null,2);technical.append(technicalTitle,pre);detail.append(technical);
             item.append(detail);list.append(item);

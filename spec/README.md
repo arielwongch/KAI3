@@ -13,6 +13,7 @@ dates, remaining acceptance work, and unscheduled proposals.
 | [Sliding window](memory/sliding_window.md) | Recent-turn storage, eviction, chronological context |
 | [Rolling summary](memory/summarization.md) | Summary updates, batching input, size enforcement |
 | [Vector memory](memory/vector_store.md) | Chunk embeddings, original-turn retrieval, similarity ordering |
+| [Vector Store + Reranker](memory/vector_store_reranker.md) | Vector shortlist, pinned cross-encoder, whole-turn reranking |
 | [Current facts](memory/fact_store.md) | Live-chat assertions, replacement, removal, current-fact retrieval |
 | [Temporal facts](memory/temporal_fact_store.md) | Benchmark versions, provenance, updates, historical retrieval |
 | [No memory](memory/no_memory.md) | No-op storage/retrieval component |

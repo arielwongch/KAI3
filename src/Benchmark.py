@@ -21,11 +21,12 @@ from SlidingWindow import SlidingWindow
 from RequestPolicy import completion, fatal_provider_error, status_code, cancel_event
 from MemoryContext import build_memory_context, get_benchmark_tokenizer, positive_count, PACKING_POLICY, TOKENIZER_REVISION
 
-MODULES = ['sliding_window', 'summarization', 'vector_store', 'fact_store', *HYBRIDS, 'no_memory']
+MODULES = ['sliding_window', 'summarization', 'vector_store', 'vector_store_reranker', 'fact_store', *HYBRIDS, 'no_memory']
 BENCHMARK_MODULES = MODULES[:-1] + ['question_only', 'full_context']
 PROTOCOL_VERSION = 'locomo-controlled-v3'
 MODULE_CAPABILITIES = {
-    name: dict(records=name in ('sliding_window', 'vector_store', 'fact_store') or name in HYBRIDS,
+    name: dict(records=name in ('sliding_window', 'vector_store', 'vector_store_reranker', 'fact_store') or name in HYBRIDS,
+               reranker=name == 'vector_store_reranker',
                summary=name == 'summarization' or name in ('delta', 'epsilon'),
                facts=name in ('fact_store', 'epsilon', 'zeta'),
                hybrid=name in HYBRIDS, components=list(HYBRIDS.get(name, ())), memory=name in MODULES[:-1])
@@ -281,7 +282,9 @@ def options_for(data, options):
         allowed.add('fact_history_mode')
     if caps['hybrid']:
         allowed |= {'hybrid_shares', 'component_options'}
-    for key in ('memory_context_tokens', 'retrieval_k', 'max_stored_entries', 'max_summary_tokens', 'fact_history_mode', 'hybrid_shares', 'component_options'):
+    if caps['reranker']:
+        allowed.add('candidate_k')
+    for key in ('memory_context_tokens', 'retrieval_k', 'max_stored_entries', 'max_summary_tokens', 'fact_history_mode', 'hybrid_shares', 'component_options', 'candidate_k'):
         if key in options and key not in allowed:
             raise ValueError(f'{key} does not apply to {mode}')
     if caps['memory']:
@@ -292,6 +295,9 @@ def options_for(data, options):
         memory_options['max_stored_entries'] = options.get('max_stored_entries', 10 if mode == 'sliding_window' else None)
         positive_count(memory_options['retrieval_k'], 'retrieval_k', unlimited=True)
         positive_count(memory_options['max_stored_entries'], 'max_stored_entries', unlimited=mode != 'sliding_window')
+    if caps['reranker']:
+        memory_options['candidate_k'] = options.get('candidate_k', 50)
+        positive_count(memory_options['candidate_k'], 'candidate_k', unlimited=True)
     if caps['summary']:
         memory_options['max_summary_tokens'] = options.get('max_summary_tokens', memory_options['memory_context_tokens'])
         positive_count(memory_options['max_summary_tokens'], 'max_summary_tokens')
@@ -354,6 +360,10 @@ class BenchmarkJob:
                            answer_model='deepseek-flash', judge_model='deepseek-flash', judge_prompt_version=JUDGE_PROMPT_VERSION, scoring='binary-semantic-correctness',
                            progress={'completed': 0, 'total': 0}, cases=[], memories=[], errors=[])
         self.result['config_hash'] = hashlib.sha256(json.dumps(self.options, sort_keys=True).encode()).hexdigest()
+        if mode == 'vector_store_reranker':
+            from Reranker import reranker_identity
+            self.result['reranker'] = reranker_identity()
+            self.result['protocol'] = 'vector-shortlist-cross-encoder-rerank-v1; shared-token-budget; no-qa-writeback'
         self.result['judge_prompt_hash'] = hashlib.sha256(JUDGE_SYSTEM.encode()).hexdigest()
         self.result['tokenizer_revision'] = TOKENIZER_REVISION if MODULE_CAPABILITIES[mode]['memory'] else None
         if mode == 'fact_store':
@@ -398,6 +408,8 @@ class BenchmarkJob:
         if config.get('modules') == ['no_memory'] and 'no_memory_context' not in config:
             config['no_memory_context'] = 'full' if 'full-context' in previous.get('protocol', '') else 'question_only'
         job = cls(data, config)
+        if job.options['modules'] == ['vector_store_reranker'] and previous.get('reranker') != job.result['reranker']:
+            raise ValueError('Resume requires matching reranker model, revision, and scoring policy')
         for field in ('question_manifest_hash', 'packing_policy', 'answer_prompt_hash', 'judge_prompt_hash', 'memory_prompt_hash', 'tokenizer_revision', 'config_hash'):
             if previous.get(field) != job.result[field]:
                 raise ValueError(f'Resume requires matching {field}')
@@ -533,7 +545,7 @@ class BenchmarkJob:
                         self.live_progress(ingestion_completed=self.result['progress']['ingestion_completed'] + turns_total)
                         continue
                     self.live_progress('ingestion', sample_id=sample['sample_id'], conversation_index=conversation_index, conversation_total=len(question_sets), turn_completed=0, turn_total=turns_total)
-                    factory_options = {key: self.options[key] for key in ('max_stored_entries', 'max_summary_tokens', 'fact_history_mode') if key in self.options}
+                    factory_options = {key: self.options[key] for key in ('max_stored_entries', 'max_summary_tokens', 'fact_history_mode', 'candidate_k') if key in self.options}
                     if mode in HYBRIDS:
                         factory_options.update({key: self.options[key] for key in ('hybrid_shares', 'component_options', 'memory_context_tokens')})
                     module = NoMemory() if mode in ('full_context', 'question_only') else MemoryFactory.create_memory_module(mode, extractor=benchmark_extractor, tokenizer=self.tokenizer, **factory_options)
@@ -633,7 +645,7 @@ class BenchmarkJob:
                                     stop_error = judge_error
                             d['total_seconds'] = time.perf_counter() - case_started
                             d['stored_after'] = len(module.inspect()['entries'])
-                            if mode in ('sliding_window', 'vector_store', 'fact_store', 'full_context') and qa.get('evidence'):
+                            if mode in ('sliding_window', 'vector_store', 'vector_store_reranker', 'fact_store', 'full_context') and qa.get('evidence'):
                                 if mode == 'full_context':
                                     ids = {e.metadata['dialogue_id'] for e in conversation_entries(sample['conversation'])}
                                 elif mode == 'fact_store':
@@ -801,6 +813,7 @@ def main():
         except ValueError as error:
             raise argparse.ArgumentTypeError(str(error)) from error
     parser.add_argument('--retrieval-k', type=count_option, default=argparse.SUPPRESS, help='Record modules only: positive count or all.')
+    parser.add_argument('--candidate-k', type=count_option, default=argparse.SUPPRESS, help='Vector Store + Reranker only: cosine shortlist count or all (default 50). Retrieval k applies after reranking.')
     parser.add_argument('--max-stored-entries', type=count_option, default=argparse.SUPPRESS, help='Record modules only: positive count or unlimited (vector/facts).')
     parser.add_argument('--memory-context-tokens', type=int, default=argparse.SUPPRESS)
     parser.add_argument('--max-summary-tokens', type=int, default=argparse.SUPPRESS)
@@ -816,7 +829,7 @@ def main():
     with open(args.dataset) as f:
         data = json.load(f)
     if args.resume:
-        if any(key in vars(args) for key in ('retrieval_k', 'max_stored_entries', 'memory_context_tokens', 'max_summary_tokens', 'no_memory_context', 'hybrid_shares', 'component_options')):
+        if any(key in vars(args) for key in ('retrieval_k', 'max_stored_entries', 'memory_context_tokens', 'max_summary_tokens', 'no_memory_context', 'hybrid_shares', 'component_options', 'candidate_k')):
             parser.error('Resume uses saved memory settings; start a new run to change them.')
         with open(args.resume, encoding='utf-8') as source:
             job = BenchmarkJob.resume(data, json.load(source))

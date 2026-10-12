@@ -1,5 +1,5 @@
 Flask
 openai
 python-dotenv
-sentence-transformers>=3,<6
+sentence-transformers>=5,<6
 nltk>=3.9,<4

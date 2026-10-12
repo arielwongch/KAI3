@@ -17,6 +17,11 @@ write usage, storage metrics, context allocations, and evidence coverage. They
 use a distinct packing identity and a combined component prompt hash; shares and
 component limits participate in the existing configuration hash/resume checks.
 
+[Reranked vector runs](../memory/vector_store_reranker.md) export the pinned
+reranker identity and both vector and reranker scores/ranks. Resume requires the
+same model revision and window/scoring settings; candidate k participates in the
+configuration hash.
+
 New exports use `schema_version=2` and `protocol_version="locomo-controlled-v3"`.
 They retain condition, normalized configuration, dataset hash, selected-question
 manifest/hash, protocol description, counting/packing identity, prompts/hashes,

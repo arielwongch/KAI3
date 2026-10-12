@@ -36,11 +36,12 @@ class MemoryFactory:
             return HybridMemory(module_type, components, shares, options,
                                 kwargs.get('memory_context_tokens', 2000), kwargs.get('tokenizer'))
         controls = {'max_items', 'max_stored_entries', 'summary_limit', 'max_summary_tokens', 'fact_history_mode',
-                    'hybrid_shares', 'component_options', 'memory_context_tokens', 'retrieval_k'}
+                    'hybrid_shares', 'component_options', 'memory_context_tokens', 'retrieval_k', 'candidate_k', 'reranker'}
         supported = {
             'sliding_window': {'max_items', 'max_stored_entries'},
             'summarization': {'summary_limit', 'max_summary_tokens'},
             'vector_store': {'max_stored_entries'},
+            'vector_store_reranker': {'max_stored_entries', 'candidate_k', 'reranker'},
             'fact_store': {'max_stored_entries', 'fact_history_mode'},
         }.get(module_type, set())
         unsupported = (controls & kwargs.keys()) - supported
@@ -62,6 +63,10 @@ class MemoryFactory:
             return Summarization(summary_limit=summary_limit, max_summary_tokens=kwargs.get('max_summary_tokens'), tokenizer=kwargs.get('tokenizer'))
         elif module_type == "vector_store":
             return VectorStore(embedder=kwargs.get("embedder"), max_stored_entries=kwargs.get('max_stored_entries'))
+        elif module_type == "vector_store_reranker":
+            from VectorStoreReranker import VectorStoreReranker
+            return VectorStoreReranker(embedder=kwargs.get('embedder'), reranker=kwargs.get('reranker'),
+                                       max_stored_entries=kwargs.get('max_stored_entries'), candidate_k=kwargs.get('candidate_k', 50))
         elif module_type == "fact_store":
             if kwargs.get('fact_history_mode') == 'versioned':
                 from TemporalFactStore import TemporalFactStore

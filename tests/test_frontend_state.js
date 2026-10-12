@@ -41,6 +41,37 @@ async function harness(seed={}){
     return {run,async act(code){await run(code);await new Promise(setImmediate);}};
 }
 
+test('reranker benchmark settings keep shortlist separate and preserve drafts',async()=>{
+    const {run}=await harness();
+    run("updateMemorySettings('vector_store_reranker')");
+    assert.equal(run("$('candidateKField').hidden"),false);
+    assert.equal(run("benchmarkMemoryOptions('vector_store_reranker').candidate_k"),50);
+    assert.equal(run("benchmarkMemoryOptions('vector_store_reranker').retrieval_k"),null);
+    run("$('candidateK').value='all';$('retrievalK').value='7';updateMemorySettings('vector_store')");
+    assert.equal(run("$('candidateKField').hidden"),true);
+    assert.equal(run("'candidate_k' in benchmarkMemoryOptions('vector_store')"),false);
+    run("updateMemorySettings('vector_store_reranker')");
+    assert.equal(run("benchmarkMemoryOptions('vector_store_reranker').candidate_k"),null);
+    assert.equal(run("benchmarkMemoryOptions('vector_store_reranker').retrieval_k"),7);
+    run("$('candidateK').value='0'");
+    assert.throws(()=>run("benchmarkMemoryOptions('vector_store_reranker')"));
+    assert.equal(run("benchmarkConditionLabel({config:{modules:['vector_store_reranker']}})"),'Vector Store + Reranker');
+});
+
+test('reranker chat validates settings, sends them, and locks after first message',async()=>{
+    const {run,act}=await harness();
+    run("active().module='vector_store_reranker';render();$('userInput').value='Rome';$('chatCandidateK').value='0'");
+    assert.equal(run("$('chatRerankerSettings').hidden"),false);
+    await act("$('chatForm').onsubmit({preventDefault(){}})");
+    assert.equal(run("requests.filter(r=>r.url==='/get').length"),0);
+    assert.match(run("$('chatRerankerError').textContent"),/positive integer/);
+    run("$('chatCandidateK').value='all';$('chatRerankerCapacity').value='12';responseHandler=url=>({status:200,data:url==='/get'?{reply:'Remembered',turn_id:'t1'}:{memory:{entries:[]},turns:[],totals:{}}})");
+    await act("$('chatForm').onsubmit({preventDefault(){}})");
+    assert.equal(run("JSON.parse(requests.find(r=>r.url==='/get').options.body).memory_options.candidate_k"),null);
+    assert.equal(run('active().memory_options.max_stored_entries'),12);
+    assert.equal(run("$('chatRerankerSettings').hidden"),true);
+});
+
 test('hybrid settings retain drafts and validate component controls',async()=>{
     const {run}=await harness();
     run("updateMemorySettings('delta')");

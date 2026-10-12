@@ -98,7 +98,7 @@ memory = MemoryFactory.create_memory_module("vector_store")
 memory = MemoryFactory.create_memory_module("fact_store")
 ```
 
-All eight modes are available in the chat UI, including **No memory** for a
+All nine modes are available in the chat UI, including **No memory** for a
 baseline that stores and retrieves nothing. Each chat keeps its selected mode
 and isolated memory for the lifetime of the server process. Restarting the server
 clears memory; browser history does not restore it.
@@ -111,6 +111,37 @@ interactions. Fact memory uses the existing DeepSeek credentials to extract and
 update current user-stated facts, then searches them using the same embeddings.
 No database is required. Both stores default to unlimited capacity; callers can
 configure finite capacity with oldest-record eviction.
+
+### Vector Store + Reranker
+
+Select **Vector Store + Reranker** in chat or benchmarks, or use
+`MemoryFactory.create_memory_module("vector_store_reranker", candidate_k=50)`.
+It first retrieves a cosine-similarity shortlist, then reranks those turns with
+`cross-encoder/ms-marco-MiniLM-L6-v2` on CPU. The reranker uses a pinned revision,
+loads lazily, and downloads weights on first retrieval if uncached. Reinstall
+`requirements.txt` to use the required sentence-transformers 5.x API.
+
+`candidate_k` defaults to 50 and is separate from final retrieval `k` (chat: 5;
+benchmark: all shortlisted turns). The candidate pool accepts a positive integer
+or `all` in CLI/UI (`None` in Python, `null` in JSON). Set both candidate k and
+retrieval k to all to consider every stored turn. Capacity defaults to unlimited.
+Chat exposes candidate pool and storage capacity before its first message.
+
+```powershell
+py src/Benchmark.py --dataset data/locomo/locomo10.json --output reranker_results.json --modules vector_store_reranker --candidate-k 50 --retrieval-k 8 --memory-context-tokens 2000
+```
+
+Long turns are scored in overlapping windows and returned whole. Exports include
+both ranking stages and the pinned reranker identity; resume validates its model,
+revision, policy, and candidate settings. Local inference adds retrieval latency
+without a memory LLM API call. See the [reranker specification](spec/memory/vector_store_reranker.md)
+for windowing, score semantics, failure behavior, and limits.
+
+Optional real-model smoke test (downloads weights, no paid API calls):
+
+```bash
+python tests/smoke_reranker_memory.py
+```
 
 ### Hybrid memory modes
 
@@ -178,18 +209,18 @@ HTTP 503 response; previous stored memory is preserved.
 ## Controlled LoCoMo comparison (protocol v3)
 
 The benchmark now exposes **Question Only**, **Full Context**, **Sliding Window**,
-**Summarization**, **Vector Store**, **Fact Store**, **Delta**, **Epsilon**, and
+**Summarization**, **Vector Store**, **Vector Store + Reranker**, **Fact Store**, **Delta**, **Epsilon**, and
 **Zeta** as separate conditions.
 Live-chat modes retain their existing behavior.
 
 Record-based modules (window/vector/facts) expose retrieval `k` and stored-record
-capacity. Summarization exposes only its summary-size limit. All seven memory
+capacity. Summarization exposes only its summary-size limit. All eight memory
 conditions share a configurable context-token allowance (default 2,000). These
 are fixed, pinned MiniLM tokenizer counts, not exact DeepSeek tokens. The first
 memory benchmark downloads the tokenizer if it is not cached; tokenizer failure
 stops preparation before paid calls. Actual provider token usage is separate.
 
-The default `k=all` considers every retained record; finite k considers only the
+The default `k=all` considers every retained record (for the reranked mode, every shortlisted record); finite k considers only the
 first k ranked/recent records. Whole records are packed within the token allowance,
 including labels and separators. Oversized candidates are skipped without going
 beyond k. Sliding window selects recent turns and supplies them chronologically.

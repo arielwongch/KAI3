@@ -196,9 +196,11 @@ def get_reply():
     memory_options = payload.get('memory_options', {})
     allowed = {'hybrid_shares', 'component_options', 'memory_context_tokens', 'retrieval_k',
                'max_stored_entries', 'max_summary_tokens', 'summary_limit'}
+    if mode == 'vector_store_reranker':
+        allowed = {'candidate_k', 'max_stored_entries'}
     if (not isinstance(memory_options, dict) or memory_options.keys() - allowed
-            or (memory_options and mode not in HYBRIDS)):
-        return jsonify(error='memory_options must contain supported hybrid settings.'), 400
+            or (memory_options and mode not in (*HYBRIDS, 'vector_store_reranker'))):
+        return jsonify(error='memory_options must contain supported settings for the selected module.'), 400
     chat_id = chat_id.strip()
     with registry_lock:
         session = chat_memory_modules.get(chat_id)

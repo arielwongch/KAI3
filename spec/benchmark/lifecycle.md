@@ -18,6 +18,7 @@ allowance controls supplied context size, not ingestion cost or stored informati
 | `sliding_window` | `SlidingWindow` | Last N original turns | Most recent retained turns |
 | `summarization` | `Summarization` | One generated rolling summary | The same summary for every question |
 | `vector_store` | `VectorStore` | Original turns and embeddings of their chunks | Turns ranked by their best matching chunk |
+| `vector_store_reranker` | `VectorStoreReranker` | Original turns and chunk embeddings | Cosine shortlist, cross-encoder ranking, final k |
 | `fact_store` | `TemporalFactStore` | Atomic assertions, historical versions, provenance, and embeddings | All retained versions ranked by assertion similarity |
 
 | Control | Window | Summary | Vector | Temporal facts |
@@ -33,6 +34,11 @@ The two reference baselines reject memory budget, retrieval, storage, summary-si
 and fact-history controls. Positive counts reject booleans, zero, negatives, and
 fractions. A summary cap cannot exceed its context allowance. The runner currently
 normalizes `summary_batch_size` for all conditions, but uses it only for summary.
+
+The [reranked vector mode](../memory/vector_store_reranker.md) shares vector
+capacity, final k, and context defaults, adding `candidate_k=50`. A null candidate
+limit considers every retained turn. Final k applies after reranking; final `all`
+means the whole shortlist. CLI/UI use `all` for null.
 
 Storage capacity, candidate count, and supplied context size are independent.
 For example, a vector store can retain 100 turns, consider only its first eight

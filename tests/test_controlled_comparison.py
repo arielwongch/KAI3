@@ -160,7 +160,7 @@ class ControlledBenchmarkTests(unittest.TestCase):
     def test_module_capabilities_and_validation(self):
         for mode in Benchmark.BENCHMARK_MODULES:
             options = Benchmark.options_for(dataset(), dict(module=mode))
-            self.assertEqual('retrieval_k' in options, mode in ('sliding_window','vector_store','fact_store','delta','epsilon','zeta'))
+            self.assertEqual('retrieval_k' in options, mode in ('sliding_window','vector_store','vector_store_reranker','fact_store','delta','epsilon','zeta'))
             self.assertEqual('max_summary_tokens' in options, mode in ('summarization','delta','epsilon'))
         for options in (dict(module='summarization', retrieval_k=None),
                         dict(module='summarization', max_stored_entries=1),
