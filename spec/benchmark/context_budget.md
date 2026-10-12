@@ -12,6 +12,11 @@ it is not an additional storage layer.
 
 ## Selection and rendering
 
+The three [hybrid conditions](../memory/hybrid.md) use a separate versioned
+packing policy: configurable reservations, followed by reuse of spare space.
+Their component labels and separators count toward the same total allowance.
+The single-component policy below remains unchanged.
+
 The controlled benchmark uses `iter_context_candidates`, followed by
 `build_memory_context`; it does not impose live chat's top-five retrieval limit.
 

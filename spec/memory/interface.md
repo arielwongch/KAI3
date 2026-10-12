@@ -38,6 +38,11 @@ context. Temporal facts explicitly render selected metadata into their text.
 
 ## Construction and configuration
 
+Delta, epsilon, and zeta compose two independent built-in components. Their
+transactional writes, per-component settings, and shared context packing are
+specified in [hybrid memory](hybrid.md). Live hybrid chat uses the pinned context
+tokenizer and records packing diagnostics in addition to the common interface.
+
 ```python
 from MemoryFactory import MemoryFactory
 from ReAct import run_ReAct

@@ -98,7 +98,7 @@ memory = MemoryFactory.create_memory_module("vector_store")
 memory = MemoryFactory.create_memory_module("fact_store")
 ```
 
-All five modes are available in the chat UI, including **No memory** for a
+All eight modes are available in the chat UI, including **No memory** for a
 baseline that stores and retrieves nothing. Each chat keeps its selected mode
 and isolated memory for the lifetime of the server process. Restarting the server
 clears memory; browser history does not restore it.
@@ -111,6 +111,51 @@ interactions. Fact memory uses the existing DeepSeek credentials to extract and
 update current user-stated facts, then searches them using the same embeddings.
 No database is required. Both stores default to unlimited capacity; callers can
 configure finite capacity with oldest-record eviction.
+
+### Hybrid memory modes
+
+**Delta** combines summarization and vector memory; **Epsilon** combines
+summarization and facts; **Zeta** combines vector memory and facts. Both components
+independently ingest original conversation turns. They are available in chat and
+benchmark selectors, the API, factory, and benchmark CLI.
+
+Hybrids share one context allowance (default 2,000 pinned benchmark tokens), with
+configurable shares defaulting to 50/50. Unused space can be used by the other
+component. Turns and facts remain whole; summaries can be shortened for context
+with explicit truncation tracking. Live hybrid chat also uses the pinned tokenizer,
+which downloads on first use if uncached. Configure chat shares before sending
+the first message; settings stay fixed for the conversation.
+
+```python
+memory = MemoryFactory.create_memory_module(
+    "zeta",
+    hybrid_shares={"vector_store": 0.6, "fact_store": 0.4},
+    memory_context_tokens=2000,
+    component_options={
+        "vector_store": {"retrieval_k": 8, "max_stored_entries": 100},
+        "fact_store": {"retrieval_k": 12, "max_stored_entries": None},
+    },
+)
+```
+
+The same settings are accepted under `memory_options` in chat `/get` requests,
+or directly in benchmark `options`. Both fact hybrids preserve current facts
+in chat and versioned facts in benchmarks. Summary hybrids preserve batched
+summary ingestion while the other store receives individual turns.
+
+```powershell
+py src/Benchmark.py --dataset data/locomo/locomo10.json --output delta_results.json --modules delta --memory-context-tokens 2000
+py src/Benchmark.py --dataset data/locomo/locomo10.json --output epsilon_results.json --modules epsilon --max-summary-tokens 1000
+py src/Benchmark.py --dataset data/locomo/locomo10.json --output zeta_results.json --modules zeta --retrieval-k 8
+```
+
+CLI `--hybrid-shares` accepts a JSON object such as
+`{"vector_store":0.6,"fact_store":0.4}`; `--component-options` accepts the nested
+component configuration shown above (use JSON `null` for Python `None`). Quote
+JSON according to your shell. Common k/capacity apply to each record component;
+component settings override them. Exports include component usage and evidence
+coverage. See the [hybrid specification](spec/memory/hybrid.md) for packing,
+transactional writes, diagnostics, and resume behavior.
 
 Use Python 3.12 for the local ML dependencies. Tests mock both embeddings and
 model API responses and do not require credentials or a model download:
@@ -133,11 +178,12 @@ HTTP 503 response; previous stored memory is preserved.
 ## Controlled LoCoMo comparison (protocol v3)
 
 The benchmark now exposes **Question Only**, **Full Context**, **Sliding Window**,
-**Summarization**, **Vector Store**, and **Fact Store** as separate conditions.
+**Summarization**, **Vector Store**, **Fact Store**, **Delta**, **Epsilon**, and
+**Zeta** as separate conditions.
 Live-chat modes retain their existing behavior.
 
 Record-based modules (window/vector/facts) expose retrieval `k` and stored-record
-capacity. Summarization exposes only its summary-size limit. All four memory
+capacity. Summarization exposes only its summary-size limit. All seven memory
 conditions share a configurable context-token allowance (default 2,000). These
 are fixed, pinned MiniLM tokenizer counts, not exact DeepSeek tokens. The first
 memory benchmark downloads the tokenizer if it is not cached; tokenizer failure

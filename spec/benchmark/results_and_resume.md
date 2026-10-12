@@ -12,6 +12,11 @@ The [benchmark workspace](../frontend/benchmark.md) lists the web endpoints.
 
 ## Stored data and exports
 
+[Hybrid conditions](../memory/hybrid.md) additionally export component snapshots,
+write usage, storage metrics, context allocations, and evidence coverage. They
+use a distinct packing identity and a combined component prompt hash; shares and
+component limits participate in the existing configuration hash/resume checks.
+
 New exports use `schema_version=2` and `protocol_version="locomo-controlled-v3"`.
 They retain condition, normalized configuration, dataset hash, selected-question
 manifest/hash, protocol description, counting/packing identity, prompts/hashes,

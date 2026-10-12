@@ -8,7 +8,35 @@ from FactStore import FactStore
 class MemoryFactory:
     @staticmethod
     def create_memory_module(module_type:str, **kwargs) -> MemoryModule:
-        controls = {'max_items', 'max_stored_entries', 'summary_limit', 'max_summary_tokens', 'fact_history_mode'}
+        from HybridMemory import HYBRIDS, HybridMemory, hybrid_settings
+        if module_type in HYBRIDS:
+            names = HYBRIDS[module_type]
+            allowed = {'hybrid_shares', 'component_options', 'memory_context_tokens', 'retrieval_k',
+                       'max_stored_entries', 'embedder', 'tokenizer', 'extractor'}
+            if 'summarization' in names:
+                allowed |= {'summary_limit', 'max_summary_tokens'}
+            if 'fact_store' in names:
+                allowed.add('fact_history_mode')
+            if kwargs.keys() - allowed:
+                raise ValueError(f'{sorted(kwargs.keys() - allowed)[0]} does not apply to {module_type}')
+            shares, options = hybrid_settings(module_type, kwargs.get('hybrid_shares'), kwargs.get('component_options'))
+            components = {}
+            for name in names:
+                if name == 'summarization':
+                    child_options = {key: kwargs[key] for key in ('summary_limit', 'max_summary_tokens', 'tokenizer') if key in kwargs}
+                else:
+                    child_options = {key: kwargs[key] for key in ('embedder', 'max_stored_entries') if key in kwargs}
+                    if 'max_stored_entries' in options.get(name, {}):
+                        child_options['max_stored_entries'] = options[name]['max_stored_entries']
+                    if 'retrieval_k' in kwargs:
+                        options.setdefault(name, {}).setdefault('retrieval_k', kwargs['retrieval_k'])
+                    if name == 'fact_store':
+                        child_options.update({key: kwargs[key] for key in ('extractor', 'fact_history_mode') if key in kwargs})
+                components[name] = MemoryFactory.create_memory_module(name, **child_options)
+            return HybridMemory(module_type, components, shares, options,
+                                kwargs.get('memory_context_tokens', 2000), kwargs.get('tokenizer'))
+        controls = {'max_items', 'max_stored_entries', 'summary_limit', 'max_summary_tokens', 'fact_history_mode',
+                    'hybrid_shares', 'component_options', 'memory_context_tokens', 'retrieval_k'}
         supported = {
             'sliding_window': {'max_items', 'max_stored_entries'},
             'summarization': {'summary_limit', 'max_summary_tokens'},

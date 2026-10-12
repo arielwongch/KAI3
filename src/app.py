@@ -6,6 +6,7 @@ from threading import RLock, Thread
 from uuid import uuid4
 from flask import Flask, abort, jsonify, render_template, request, send_from_directory
 from MemoryFactory import MemoryFactory
+from HybridMemory import HYBRIDS
 from NoMemory import NoMemory
 from ReAct import run_ReAct
 from Diagnostics import totals
@@ -105,14 +106,20 @@ def start_benchmark(job):
 restore_benchmarks()
 
 class ChatSession:
-    def __init__(self, mode):
+    def __init__(self, mode, memory_options=None):
         self.mode = mode
-        self.module = NoMemory() if mode == 'no_memory' else MemoryFactory.create_memory_module(mode)
+        self.memory_options = deepcopy(memory_options or {})
+        options = deepcopy(self.memory_options)
+        if 'max_summary_tokens' in options:
+            from MemoryContext import get_benchmark_tokenizer
+            options['tokenizer'] = get_benchmark_tokenizer()
+        self.module = NoMemory() if mode == 'no_memory' else MemoryFactory.create_memory_module(mode, **options)
         self.lock = RLock()
         self.turns = []
     def snapshot(self, chat_id):
         with self.lock:
             return dict(schema_version=1, chat_id=chat_id, memory_module=self.mode,
+                        memory_options=deepcopy(self.memory_options),
                         model="deepseek-flash", retrieval_k=5, max_iterations=10,
                         memory=self.module.inspect(), turns=deepcopy(self.turns), totals=totals(self.turns))
 
@@ -186,6 +193,12 @@ def get_reply():
         return jsonify(error='Valid chat ID is required.'), 400
     if mode not in AVAILABLE_MEMORY_MODULES:
         return jsonify(error='Choose a known memory module.'), 400
+    memory_options = payload.get('memory_options', {})
+    allowed = {'hybrid_shares', 'component_options', 'memory_context_tokens', 'retrieval_k',
+               'max_stored_entries', 'max_summary_tokens', 'summary_limit'}
+    if (not isinstance(memory_options, dict) or memory_options.keys() - allowed
+            or (memory_options and mode not in HYBRIDS)):
+        return jsonify(error='memory_options must contain supported hybrid settings.'), 400
     chat_id = chat_id.strip()
     with registry_lock:
         session = chat_memory_modules.get(chat_id)
@@ -193,11 +206,16 @@ def get_reply():
             # Restored browser histories must not silently recreate lost memory.
             if payload.get('requires_existing'):
                 return jsonify(error='Server memory is unavailable. Start a new chat.'), 410
-            session = ChatSession(mode)
+            try:
+                session = ChatSession(mode, memory_options)
+            except (ValueError, TypeError) as error:
+                return jsonify(error=str(error)), 400
             chat_memory_modules[chat_id] = session
     with session.lock:
         if session.mode != mode:
             return jsonify(error='The memory module cannot be changed during a chat.'), 409
+        if 'memory_options' in payload and session.memory_options != memory_options:
+            return jsonify(error='Memory settings cannot be changed during a chat.'), 409
         d = {'turn_id': str(uuid4())}
         try:
             result, latency, tokens = run_ReAct(message.strip(), memory_module=session.module, diagnostics=d)

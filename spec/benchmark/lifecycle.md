@@ -122,3 +122,10 @@ write time. No annotated answer/evidence controls retrieval or generation.
 [summary tests](../../tests/test_summary_benchmark.py), and
 [controlled comparison tests](../../tests/test_controlled_comparison.py) cover
 state transitions, ingestion, configuration, failures, and no QA write-back.
+
+## Hybrid conditions
+
+Delta, epsilon, and zeta are available alongside the original conditions. Their
+component settings, batching, and context allocations are defined in the
+[hybrid specification](../memory/hybrid.md). Summary hybrids batch only summary
+updates; their vector/fact components ingest individual original turns.

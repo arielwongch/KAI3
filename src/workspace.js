@@ -1,5 +1,6 @@
 ﻿/* Versioned browser sessions; server memory remains process-local. */
 const $ = id => document.getElementById(id);
+const HYBRID_COMPONENTS={delta:['summarization','vector_store'],epsilon:['summarization','fact_store'],zeta:['vector_store','fact_store']};
 const key = 'kai3-workspace-v1';
 function readJSON(name, fallback) { try { return JSON.parse(localStorage.getItem(name)) ?? fallback; } catch { return fallback; } }
 function newSession() { return {id: crypto.randomUUID(), title: 'New chat', module: null, messages: [], started: false}; }
@@ -33,6 +34,14 @@ function controlState() {
     $('moduleStatus').textContent = unavailable ? 'Memory unavailable · start a new chat' : checking ? 'Checking memory…' : labelMode(session.module);
     document.querySelectorAll('.memory-choice').forEach(b => { b.disabled = !!session.module || busy || checking; b.classList.toggle('selected', b.dataset.module === session.module); });
     $('userInput').placeholder = session.module ? 'Message KAI3…' : 'Select a memory architecture to start';
+    const components=HYBRID_COMPONENTS[session.module];
+    $('chatHybridSettings').hidden=!components||session.messages.length>0;
+    if(components){
+        $('chatHybridDescription').textContent=`${components.map(labelMode).join(' + ')}. Configure before the first message.`;
+        $('chatHybridShare').value=String((session.memory_options?.hybrid_shares?.[components[0]]??0.5)*100);
+        $('chatHybridBudget').value=String(session.memory_options?.memory_context_tokens??2000);
+        $('chatComponentOptions').value=JSON.stringify(session.memory_options?.component_options||{});
+    }
 }
 function render() {
     const session = active();
@@ -151,10 +160,14 @@ async function refreshInspection() {
 $('chatForm').onsubmit = async event => {
     event.preventDefault(); if ($('sendButton').disabled) return;
     const session=active(), message=$('userInput').value.trim(); if (!message) return;
+    if(HYBRID_COMPONENTS[session.module]&&!session.started){
+        try{session.memory_options=hybridFormOptions(session.module,$('chatHybridShare').value,$('chatComponentOptions').value);session.memory_options.memory_context_tokens=parseMemoryCount($('chatHybridBudget').value,null);$('chatHybridError').textContent='';}
+        catch(error){$('chatHybridError').textContent=error.message;return;}
+    }
     const requiresExisting=session.started; session.messages.push({role:'user',content:message});
     session.title=session.messages.find(m=>m.role==='user').content.slice(0,60); $('userInput').value=''; busy=true; save(); render();
     const loading=document.createElement('div'); loading.className='chat-loading'; loading.textContent='KAI3 is thinking…'; $('chatMessages').append(loading);
-    try { const data=await jsonRequest('/get',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message,chat_id:session.id,memory_module:session.module,requires_existing:requiresExisting})}); session.started=true; session.messages.push({role:'assistant',content:data.reply,turn_id:data.turn_id}); }
+    try { const data=await jsonRequest('/get',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message,chat_id:session.id,memory_module:session.module,memory_options:session.memory_options,requires_existing:requiresExisting})}); session.started=true; session.messages.push({role:'assistant',content:data.reply,turn_id:data.turn_id}); }
     catch(error) { session.started=true; session.messages.push({role:'assistant',content:`Request failed: ${error.message}`}); }
     finally { busy=false; save(); render(); inspectionSource='chat'; await refreshInspection(); $('userInput').focus(); }
 };
@@ -272,17 +285,31 @@ function selectedSamples(){return [...$('sampleIds').selectedOptions].map(option
 function selectedQuestionCount(data){const ids=$('allConversations').checked?data.map(s=>String(s.sample_id)):selectedSamples();const categories=selectedCategories(),limit=Number($('questionLimit').value);const samples=data.filter(s=>ids.includes(String(s.sample_id)));return samples.reduce((n,s)=>{const count=s.qa.filter(q=>categories.includes(q.category)).length;return n+(limit?Math.min(count,limit):count);},0);}
 const memorySettingDrafts={};
 let memorySettingMode=null;
-function memoryCapabilities(mode){return globalThis.KAI3_MEMORY_CAPABILITIES?.[mode]||{records:['sliding_window','vector_store','fact_store'].includes(mode),summary:mode==='summarization',memory:['sliding_window','vector_store','fact_store','summarization'].includes(mode)};}
+function memoryCapabilities(mode){return globalThis.KAI3_MEMORY_CAPABILITIES?.[mode]||{records:['sliding_window','vector_store','fact_store'].includes(mode)||!!HYBRID_COMPONENTS[mode],summary:['summarization','delta','epsilon'].includes(mode),hybrid:!!HYBRID_COMPONENTS[mode],memory:['sliding_window','vector_store','fact_store','summarization'].includes(mode)||!!HYBRID_COMPONENTS[mode]};}
 function updateMemorySettings(mode){
     const caps=memoryCapabilities(mode);
     if(memorySettingMode!==mode){
-        if(memorySettingMode)memorySettingDrafts[memorySettingMode]={k:$('retrievalK').value,capacity:$('storageCapacity').value,summary:$('summaryTokens').value,budget:$('memoryContextTokens').value};
-        const draft=memorySettingDrafts[mode]||{k:'all',capacity:mode==='sliding_window'?'10':'unlimited',summary:'2000',budget:'2000'};
+        if(memorySettingMode)memorySettingDrafts[memorySettingMode]={k:$('retrievalK').value,capacity:$('storageCapacity').value,summary:$('summaryTokens').value,budget:$('memoryContextTokens').value,share:$('hybridShare').value,components:$('componentOptions').value};
+        const draft=memorySettingDrafts[mode]||{k:'all',capacity:mode==='sliding_window'?'10':'unlimited',summary:'2000',budget:'2000',share:'50',components:'{}'};
         $('retrievalK').value=draft.k;$('storageCapacity').value=draft.capacity;$('summaryTokens').value=draft.summary;$('memoryContextTokens').value=draft.budget;memorySettingMode=mode;
+        $('hybridShare').value=draft.share||'50';$('componentOptions').value=draft.components||'{}';
     }
     $('memorySettings').hidden=!caps.memory;$('retrievalKField').hidden=!caps.records;$('storageCapacityField').hidden=!caps.records;$('summaryTokensField').hidden=!caps.summary;
     $('retrievalK').disabled=!caps.records;$('storageCapacity').disabled=!caps.records;$('summaryTokens').disabled=!caps.summary;$('memoryContextTokens').disabled=!caps.memory;
-    $('memorySettingsHint').textContent=caps.summary?'Summaries use a size limit, with no retrieval k or record capacity.':mode==='fact_store'?'Finite capacity evicts old fact versions and limits historical coverage.':'';
+    $('hybridSettings').hidden=!caps.hybrid;
+    if(caps.hybrid)$('hybridShareLabel').textContent=`${labelMode(HYBRID_COMPONENTS[mode][0])} share (%)`;
+    $('memorySettingsHint').textContent=caps.hybrid?'Both components ingest original turns independently. Retrieval k and capacity apply to each record store unless overridden. Summary context may be shortened to its share.':caps.summary?'Summaries use a size limit, with no retrieval k or record capacity.':mode==='fact_store'?'Finite capacity evicts old fact versions and limits historical coverage.':'';
+}
+function hybridFormOptions(mode,shareValue,componentText){
+    const names=HYBRID_COMPONENTS[mode],share=Number(shareValue)/100;
+    if(!names||!Number.isFinite(share)||share<=0||share>=1)throw new Error('Choose a component share greater than 0 and less than 100 percent.');
+    const options=JSON.parse(componentText||'{}');
+    if(!options||typeof options!=='object'||Array.isArray(options))throw new Error('Component settings must be a JSON object.');
+    for(const [name,values] of Object.entries(options)){
+        if(!names.includes(name)||name==='summarization'||!values||typeof values!=='object'||Array.isArray(values))throw new Error('Configure only record components belonging to this hybrid.');
+        for(const [key,value] of Object.entries(values))if(!['retrieval_k','max_stored_entries'].includes(key)||(value!==null&&(!Number.isSafeInteger(value)||value<1)))throw new Error('Component limits must be positive integers or null.');
+    }
+    return {hybrid_shares:{[names[0]]:share,[names[1]]:1-share},component_options:options};
 }
 function parseMemoryCount(value,unlimited){
     const text=String(value).trim().toLowerCase();if(text===unlimited)return null;
@@ -294,6 +321,7 @@ function benchmarkMemoryOptions(mode){
     if(caps.memory)options.memory_context_tokens=parseMemoryCount($('memoryContextTokens').value,null);
     if(caps.records){options.retrieval_k=parseMemoryCount($('retrievalK').value,'all');options.max_stored_entries=parseMemoryCount($('storageCapacity').value,mode==='sliding_window'?null:'unlimited');}
     if(caps.summary){options.max_summary_tokens=parseMemoryCount($('summaryTokens').value,null);if(options.max_summary_tokens>options.memory_context_tokens)throw new Error('Summary size cannot exceed the context-token allowance.');}
+    if(caps.hybrid)Object.assign(options,hybridFormOptions(mode,$('hybridShare').value,$('componentOptions').value));
     return options;
 }
 function benchmarkConditionLabel(report){
@@ -470,6 +498,8 @@ function drawBenchmark(){
             if(c.human_review)detailRow('Human review',c.human_review,detail);
             detailRow('Evidence recall',c.evidence_recall,detail);
             detailRow('Evidence coverage basis',c.evidence_recall_basis,detail);
+            if(c.component_evidence_recall)detailRow('Evidence coverage by component',c.component_evidence_recall,detail);
+            if(c.diagnostics?.components)detailRow('Context use by component',c.diagnostics.components,detail);
             const evidence=document.createElement('details');evidence.className='case-evidence';const evidenceTitle=document.createElement('summary');evidenceTitle.textContent=`Retrieved evidence · ${c.diagnostics?.retrieved?.length||0} records`;evidence.append(evidenceTitle);
             (c.diagnostics?.retrieved||[]).forEach((entry,i)=>{const record=document.createElement('article');record.className='evidence-record';const meta=entry.metadata||{};const h=document.createElement('strong');h.textContent=`${i+1}. ${meta.speaker||'Memory'} · ${meta.dialogue_id||meta.fact_id||''} · ${meta.timestamp||''}`;const p=document.createElement('p');p.textContent=entry.text||'';record.append(h,p);evidence.append(record);});detail.append(evidence);
             const timing={};for(const key of ['retrieval_seconds','answer_seconds','judge_seconds','total_seconds','answer_llm_calls','judge_llm_calls','answer_tokens','judge_tokens'])if(c.diagnostics?.[key]!==undefined)timing[key]=c.diagnostics[key];detailRow('Timing and tokens',timing,detail);

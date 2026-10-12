@@ -47,12 +47,21 @@ def _run_ReAct(
     if memory_module is not None:
         retrieval_start = time.perf_counter()
         try:
-            memory_entries = memory_module.retrieve(query=user_input, k=5)
+            from HybridMemory import HybridMemory
+            if isinstance(memory_module, HybridMemory):
+                from MemoryContext import build_memory_context, get_benchmark_tokenizer
+                packed = build_memory_context(memory_module, user_input, memory_module.memory_context_tokens,
+                                              memory_module.tokenizer or get_benchmark_tokenizer(), 5)
+                memory_entries = packed.pop('entries')
+                memory_text = packed.pop('text')
+                diagnostics.update(packed)
+            else:
+                memory_entries = memory_module.retrieve(query=user_input, k=5)
+                memory_text = "\n".join(entry.text for entry in memory_entries)
         finally:
             diagnostics["retrieval_seconds"] = time.perf_counter() - retrieval_start
         diagnostics["retrieved"] = entries_json(memory_entries)
         diagnostics["retrieved_count"] = len(memory_entries)
-        memory_text = "\n".join(entry.text for entry in memory_entries)
     else:
         memory_text = ""
 

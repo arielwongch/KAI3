@@ -58,6 +58,9 @@ def build_memory_context(module, query, token_budget, tokenizer, retrieval_k=Non
     positive_count(token_budget, 'memory_context_tokens')
     if retrieval_k is not None:
         validate_k(retrieval_k)
+    from HybridMemory import HybridMemory
+    if isinstance(module, HybridMemory):
+        return module.build_context(query, token_budget, tokenizer, retrieval_k)
     candidates = list(module.iter_context_candidates(query, retrieval_k))
     selected = []
     is_window = getattr(module, 'context_order', None) == 'chronological'

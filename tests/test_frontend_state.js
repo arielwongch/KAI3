@@ -41,6 +41,38 @@ async function harness(seed={}){
     return {run,async act(code){await run(code);await new Promise(setImmediate);}};
 }
 
+test('hybrid settings retain drafts and validate component controls',async()=>{
+    const {run}=await harness();
+    run("updateMemorySettings('delta')");
+    assert.equal(run("$('hybridSettings').hidden"),false);
+    assert.equal(run("$('summaryTokensField').hidden"),false);
+    run(`$('hybridShare').value='30';$('componentOptions').value='{"vector_store":{"retrieval_k":8,"max_stored_entries":null}}'`);
+    assert.equal(run("benchmarkMemoryOptions('delta').hybrid_shares.summarization"),.3);
+    assert.equal(run("benchmarkMemoryOptions('delta').component_options.vector_store.retrieval_k"),8);
+    run("updateMemorySettings('zeta')");
+    assert.equal(run("$('summaryTokensField').hidden"),true);
+    assert.equal(run("'max_summary_tokens' in benchmarkMemoryOptions('zeta')"),false);
+    run("updateMemorySettings('delta')");
+    assert.equal(run("$('hybridShare').value"),'30');
+    assert.equal(run("benchmarkMemoryOptions('delta').component_options.vector_store.retrieval_k"),8);
+    assert.throws(()=>run("hybridFormOptions('delta','100','{}')"));
+    assert.throws(()=>run(`hybridFormOptions('delta','50','{"fact_store":{}}')`));
+    assert.throws(()=>run(`hybridFormOptions('delta','50','{"vector_store":{"retrieval_k":true}}')`));
+    run("updateMemorySettings('full_context')");
+    assert.equal(run("$('hybridSettings').hidden"),true);
+});
+
+test('hybrid chat sends its fixed share and record settings',async()=>{
+    const {run,act}=await harness();
+    run("active().module='epsilon';render()");
+    assert.equal(run("$('chatHybridSettings').hidden"),false);
+    run(`$('chatHybridShare').value='40';$('chatHybridBudget').value='500';$('chatComponentOptions').value='{"fact_store":{"retrieval_k":3}}';$('userInput').value='Remember Rome';responseHandler=url=>({status:200,data:url==='/get'?{reply:'Remembered',turn_id:'t1'}:{memory:{entries:[]},turns:[],totals:{}}})`);
+    await act("$('chatForm').onsubmit({preventDefault(){}})");
+    assert.equal(run("JSON.parse(requests.find(r=>r.url==='/get').options.body).memory_options.hybrid_shares.summarization"),.4);
+    assert.equal(run("active().memory_options.component_options.fact_store.retrieval_k"),3);
+    assert.equal(run("$('chatHybridSettings').hidden"),true);
+});
+
 test('history migration, restart blocking, and safe user text',async()=>{
     const {run,act}=await harness({'kai3-chat-history':JSON.stringify([{role:'user',content:'<script>bad</script>'}]),'kai3-chat-id':'legacy','kai3-memory-module':'sliding_window'});
     assert.equal(run('workspace.version'),1);

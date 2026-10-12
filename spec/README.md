@@ -27,6 +27,10 @@ dates, remaining acceptance work, and unscheduled proposals.
 | [Evaluation](benchmark/evaluation.md) | Lexical/judge scores, failures/denominators, evidence, human review |
 | [Results and resume](benchmark/results_and_resume.md) | Exports, diagnostics, persistence, imports, recovery, compatibility |
 
+The [hybrid memory specification](memory/hybrid.md) covers delta (summary + vector),
+epsilon (summary + facts), and zeta (vector + facts), including independent
+ingestion, configurable context shares, atomic writes, and component diagnostics.
+
 ## Frontend features
 
 | Feature | Scope |
