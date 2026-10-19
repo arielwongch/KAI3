@@ -15,11 +15,11 @@ from Diagnostics import collector
 from Embeddings import MODEL_NAME
 from MemoryEntry import MemoryEntry
 from MemoryFactory import MemoryFactory
+from MemoryConfig import MODULES, HYBRID_MODULES, window_size_for, retrieval_policy
+from MemoryContext import format_context, retrieval_k
 from NoMemory import NoMemory
 from RequestPolicy import completion, fatal_provider_error, status_code, cancel_event
-from SlidingWindow import SlidingWindow
 
-MODULES = ['sliding_window', 'summarization', 'vector_store', 'fact_store', 'no_memory']
 STEMMER = PorterStemmer()
 
 def normalize(text):
@@ -114,12 +114,12 @@ def ingestion_batches(conversation, batch_size=1, max_chars=12000):
 def direct_answer(module, question, diagnostics, conversation_text=None,
                   context_limit=1_000_000, max_output_tokens=8192):
     started = time.perf_counter()
-    k = module.buffer.maxlen if isinstance(module, SlidingWindow) else 5
+    k = retrieval_k(module)
     entries = [] if conversation_text is not None else module.retrieve(query=question, k=k)
     diagnostics['retrieval_seconds'] = time.perf_counter() - started
     diagnostics['retrieved'] = [dict(text=e.text, metadata=e.metadata, rank=i, retrieval_score=e.metadata.get('retrieval_score')) for i, e in enumerate(entries, 1)]
     diagnostics['retrieved_count'] = len(entries)
-    context = conversation_text if conversation_text is not None else '\n\n'.join(e.text for e in entries)
+    context = conversation_text if conversation_text is not None else format_context(entries)
     diagnostics['retrieved_text_bytes'] = sum(len(e.text.encode('utf-8')) for e in entries)
     diagnostics['retrieved_token_budget'] = diagnostics['retrieved_text_bytes']
     diagnostics['supplied_context_bytes'] = len(context.encode('utf-8'))
@@ -199,6 +199,7 @@ def options_for(data, options):
     limit = options.get('question_limit', 10)
     if not isinstance(modules, list) or len(modules) != 1 or any(m not in MODULES for m in modules):
         raise ValueError('Select exactly one known memory module per run.')
+    window_size = window_size_for(modules[0], options, 100)
     if not isinstance(ids, list) or any(str(i) not in {str(s['sample_id']) for s in data} for i in ids):
         raise ValueError('Unknown conversation ID.')
     if not isinstance(categories, list) or any(c not in range(1, 6) for c in categories):
@@ -218,7 +219,10 @@ def options_for(data, options):
     summary_batch_size = options.get('summary_batch_size', 20)
     if type(summary_batch_size) is not int or not 1 <= summary_batch_size <= 20:
         raise ValueError('Summary batch size must be an integer from 1 to 20.')
-    return dict(summary_batch_size=summary_batch_size, review_memory=options.get('review_memory', False), background=options.get('background', False), no_memory_context=context_mode, context_limit=context_limit, max_output_tokens=max_output_tokens, modules=list(dict.fromkeys(modules)), sample_ids=list(ids), categories=list(categories), question_limit=limit)
+    normalized = dict(summary_batch_size=summary_batch_size, review_memory=options.get('review_memory', False), background=options.get('background', False), no_memory_context=context_mode, context_limit=context_limit, max_output_tokens=max_output_tokens, modules=list(dict.fromkeys(modules)), sample_ids=list(ids), categories=list(categories), question_limit=limit)
+    if window_size is not None:
+        normalized['window_size'] = window_size
+    return normalized
 
 class BenchmarkJob:
     def __init__(self, data, options=None):
@@ -235,12 +239,25 @@ class BenchmarkJob:
                            config=self.options, model='deepseek-flash', embedding_model=MODEL_NAME,
                            protocol=('full-context; fresh-request-per-question; no-persistent-memory' if self.options['modules'] == ['no_memory'] and self.options['no_memory_context'] == 'full' else 'question-only; fresh-request-per-question; no-persistent-memory' if self.options['modules'] == ['no_memory'] else 'direct-turn-ingestion; direct-chat-completion; retrieval-k=5; no-qa-writeback'),
                            condition=('full_context' if self.options['no_memory_context'] == 'full' else 'question_only') if self.options['modules'] == ['no_memory'] else 'original_turn_retrieval' if self.options['modules'] == ['vector_store'] else 'external_memory',
-                           memory_model='deepseek-flash' if self.options['modules'][0] in ('summarization', 'fact_store') else None,
-                           memory_model_settings=dict(thinking='enabled', reasoning_effort='high') if self.options['modules'][0] in ('summarization', 'fact_store') else None,
+                           memory_model='deepseek-flash' if self.options['modules'][0] in ('summarization', 'fact_store', 'alpha', 'gamma') else None,
+                           memory_model_settings=dict(thinking='enabled', reasoning_effort='high') if self.options['modules'][0] in ('summarization', 'fact_store', 'alpha', 'gamma') else None,
                            ingestion_unit='turn', storage_size_definition='UTF-8 text and serialized logical snapshot; excludes embedding arrays and runtime overhead',
                            answer_prompt_version=ANSWER_PROMPT_VERSION, answer_settings=dict(thinking='enabled', reasoning_effort='high', max_tokens=self.options['max_output_tokens'], max_attempts=5, timeout_seconds=180),
                            answer_model='deepseek-flash', judge_model='deepseek-flash', judge_prompt_version=JUDGE_PROMPT_VERSION, scoring='binary-semantic-correctness',
                            progress={'completed': 0, 'total': 0}, cases=[], memories=[], errors=[])
+        mode = self.options['modules'][0]
+        self.result['retrieval_policy'] = retrieval_policy(mode, self.options.get('window_size'))
+        if mode == 'sliding_window' or mode in HYBRID_MODULES:
+            context_policy = 'full-window' if mode == 'sliding_window' else 'full-window-plus-summary' if mode == 'alpha' else 'full-window-plus-recall-k=5'
+            self.result['protocol'] = f'direct-turn-ingestion; direct-chat-completion; {context_policy}; no-qa-writeback'
+        if mode in HYBRID_MODULES:
+            self.result['hybrid_context_version'] = 1
+        if mode == 'alpha':
+            self.result.update(
+                protocol='batched-window-eviction; direct-chat-completion; full-window-plus-summary; no-qa-writeback',
+                ingestion_unit='turn_batch',
+                memory_batch_settings=dict(max_turns=self.options['summary_batch_size'], max_chars=12000,
+                                           policy='summarize_evicted_prefix'))
         if self.options['modules'] == ['summarization'] and self.options['summary_batch_size'] > 1:
             self.result.update(
                 protocol='session-bounded-summary-batches; direct-chat-completion; retrieval-k=5; no-qa-writeback',
@@ -371,7 +388,7 @@ class BenchmarkJob:
                         self.live_progress(ingestion_completed=self.result['progress']['ingestion_completed'] + turns_total)
                         continue
                     self.live_progress('ingestion', sample_id=sample['sample_id'], conversation_index=conversation_index, conversation_total=len(question_sets), turn_completed=0, turn_total=turns_total)
-                    module = NoMemory() if mode == 'no_memory' else MemoryFactory.create_memory_module(mode, extractor=benchmark_extractor, max_items=100)
+                    module = NoMemory() if mode == 'no_memory' else MemoryFactory.create_memory_module(mode, extractor=benchmark_extractor, max_items=self.options.get('window_size', 100))
                     ingestion = dict(memory_llm_calls=0, memory_tokens=0, write_seconds=0.0, ingested_turns=0, api_cost_usd=None, storage_growth=[dict(session=None, ingested_turns=0, **storage_metrics(module))])
                     start = time.perf_counter()
                     token = collector.set(ingestion)
@@ -384,7 +401,7 @@ class BenchmarkJob:
                             self.live_progress(ingestion_completed=self.result['progress']['ingestion_completed'] + turns_total, turn_completed=turns_total)
                         else:
                             current_session = None
-                            batch_size = self.options['summary_batch_size'] if mode == 'summarization' else 1
+                            batch_size = self.options['summary_batch_size'] if mode in ('summarization', 'alpha') else 1
                             for batch in ingestion_batches(sample['conversation'], batch_size):
                                 entry = batch[0]
                                 if self.cancel.is_set():
@@ -394,7 +411,10 @@ class BenchmarkJob:
                                 current_session = entry.metadata['session']
                                 write_started = time.perf_counter()
                                 try:
-                                    module.write(MemoryEntry('\n\n'.join(e.text for e in batch), entry.metadata) if len(batch) > 1 else entry)
+                                    if mode == 'alpha':
+                                        module.write_batch(batch)
+                                    else:
+                                        module.write(MemoryEntry('\n\n'.join(e.text for e in batch), entry.metadata) if len(batch) > 1 else entry)
                                 finally:
                                     ingestion['write_seconds'] += time.perf_counter() - write_started
                                 ingestion['ingested_turns'] += len(batch)
@@ -462,7 +482,7 @@ class BenchmarkJob:
                                     stop_error = judge_error
                             d['total_seconds'] = time.perf_counter() - case_started
                             d['stored_after'] = len(module.inspect()['entries'])
-                            if (mode in ('sliding_window', 'vector_store') or full_context is not None) and qa.get('evidence'):
+                            if (mode in ('sliding_window', 'vector_store', 'beta') or full_context is not None) and qa.get('evidence'):
                                 ids = {e.metadata['dialogue_id'] for e in conversation_entries(sample['conversation'])} if full_context is not None else {e['metadata'].get('dialogue_id') for e in d['retrieved']}
                                 case['evidence_recall'] = sum(e in ids for e in qa['evidence']) / len(qa['evidence'])
                         except Exception as error:
@@ -537,6 +557,7 @@ def main():
     parser.add_argument('--dataset', required=True)
     parser.add_argument('--output', required=True)
     parser.add_argument('--modules', nargs='+', choices=MODULES, default=[MODULES[0]], help='Select exactly one memory architecture per run.')
+    parser.add_argument('--window-size', type=int, default=argparse.SUPPRESS, help='Recent turns retained by window-based architectures (default: 100).')
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument('--sample-ids', nargs='+')
     selection.add_argument('--all-conversations', action='store_true')

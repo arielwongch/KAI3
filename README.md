@@ -90,10 +90,43 @@ memory = MemoryFactory.create_memory_module("vector_store")
 memory = MemoryFactory.create_memory_module("fact_store")
 ```
 
-All five modes are available in the chat UI, including **No memory** for a
+All eight modes are available in the chat UI, including **No memory** for a
 baseline that stores and retrieves nothing. Each chat keeps its selected mode
 and isolated memory for the lifetime of the server process. Restarting the server
 clears memory; browser history does not restore it.
+
+Three hybrid architectures combine a complete recent window with long-term memory:
+
+| Mode | Long-term memory updates | Context supplied to answers |
+| --- | --- | --- |
+| **Alpha** (`alpha`) | Summarize entries as they leave the window | Earlier summary + full recent window |
+| **Beta** (`beta`) | Embed and archive entries as they leave the window | Up to 5 relevant archived interactions + full recent window |
+| **Gamma** (`gamma`) | Extract/update current facts on every interaction | Up to 5 relevant facts + full recent window |
+
+```python
+memory = MemoryFactory.create_memory_module("alpha", max_items=10, summary_limit=10_000)
+memory = MemoryFactory.create_memory_module("beta", max_items=10)
+memory = MemoryFactory.create_memory_module("gamma", max_items=10)
+```
+
+**Window size** is configurable for Sliding Window, Alpha, Beta, and Gamma.
+Chat defaults to 10 user/assistant interactions; benchmarks default to 100
+individual speaker turns. Chat settings lock on the first request. Both chat
+and benchmarks supply the full configured window, including standalone Sliding
+Window. Direct Python `SlidingWindow.retrieve(query, k)` still respects `k`.
+Hybrid `k` controls only long-term recall; Alpha returns at most one summary.
+The summary limit defaults to 10,000 characters and is configurable in Python.
+
+Alpha and Beta make no long-term writes until an entry is evicted. Gamma updates
+facts immediately, so corrections and retractions do not wait for eviction.
+Hybrid prompts label both tiers and give explicit recent corrections precedence.
+Both tiers remain unchanged if a memory write fails. Inspector records label
+their tier and component while retaining original text, provenance, and scores.
+
+The chat API accepts optional `window_size` on `POST /get`. It must be a positive
+integer and is supported only by window-based architectures. Omit it on later
+requests to reuse the session setting; changing it returns HTTP 409. Chat
+diagnostics expose the effective window size and retrieval policy.
 
 The semantic modes use `sentence-transformers/all-MiniLM-L6-v2` on CPU for
 English-first retrieval. First use downloads the model into the Hugging Face
@@ -188,7 +221,7 @@ module/conversation.
 Supplied image captions are included; images are not fetched. Fact extraction
 uses a benchmark-only adapter that preserves speaker names and accepts assertions
 from both participants. Live chat still extracts only user assertions. Questions
-retrieve `k=5` and use the normal conversational API directly; answers are never
+use each architecture's retrieval policy and the normal conversational API directly; answers are never
 written back.
 Ground truth and evidence labels are used only after prediction.
 
@@ -200,8 +233,8 @@ report also includes normalized exact match, token F1, and a DeepSeek judge scor
 for correctness, completeness, support, and abstention. Judge failures do not
 discard answer metrics. Incomplete/failed predictions are excluded from means
 and shown separately. Evidence recall is available only
-for window/vector retrieval with dialogue IDs and nonempty evidence; it is `null`
-for summary/fact retrieval. DeepSeek supplies the binary semantic correctness judgment.
+for window/vector/Beta retrieval with dialogue IDs and nonempty evidence; it is `null`
+for summary/fact/Alpha/Gamma retrieval. DeepSeek supplies the binary semantic correctness judgment.
 
 Exports include dataset SHA-256 (canonicalized parsed JSON), protocol, answer and
 judge model identifiers, judge prompt version, module configuration, ingestion
@@ -257,9 +290,20 @@ py src/Benchmark.py --dataset data/locomo/locomo10.json --output facts_results.j
 py src/Benchmark.py --dataset data/locomo/locomo10.json --output retrieval_results.json --modules vector_store --all-conversations --question-limit 0
 ```
 
-Every conversation creates an empty, isolated memory instance. Ingestion preserves labelled, timestamped turns in numeric session order. Summarization updates its rolling summary in batches of up to 20 turns and 12,000 characters, without crossing session boundaries; a single oversized turn is kept intact. Other memory architectures write one turn at a time. This reduces the bundled dataset's summary requests from 5,882 to 399 before answering and judging. The question limit only limits QA, so the selected conversations must still be ingested in full. Questions retrieve up to five entries, use the same answer prompt/settings as the full-context baseline, and never write questions or predictions back. `vector_store` is the original-turn retrieval baseline; `fact_store` and `summarization` transform dialogue into memory representations. Summary/fact extraction model settings and summary batch limits are recorded separately. Batching changes the summary construction protocol and can affect scores. Resuming an older saved run preserves its per-turn ingestion; start a new run to use batching.
+Every conversation creates an empty, isolated memory instance. Ingestion preserves labelled, timestamped turns in numeric session order. Summarization updates its rolling summary in batches of up to 20 turns and 12,000 characters, without crossing session boundaries; a single oversized turn is kept intact. Alpha uses the same input batches but summarizes only the evicted prefix and retains each recent turn separately. Beta and Gamma write one turn at a time. This reduces the bundled dataset's summary requests from 5,882 to 399 before answering and judging. The question limit only limits QA, so the selected conversations must still be ingested in full. Standalone semantic stores retrieve up to five entries; Sliding Window supplies its full window; hybrids supply the full window plus their summary or up to five long-term results. Questions use the same answer model/settings as the full-context baseline and never write questions or predictions back. `vector_store` is the original-turn retrieval baseline; `fact_store` and `summarization` transform dialogue into memory representations. Summary/fact extraction model settings and summary batch limits are recorded separately. Batching changes the summary construction protocol and can affect scores. Resuming an older saved run preserves its per-turn ingestion; start a new run to use batching.
 
 Exports include retrieved items with ranks and cosine scores for vector/fact search, ingestion/write latency, session-by-session logical storage growth, final storage size, retrieval/answer latency, API usage, and evidence recall where original dialogue IDs are available. Summary/fact provenance is not treated as proof that an annotated fact survives transformation; evidence recall remains unavailable for those representations. Retrieved token budgets use UTF-8 bytes as a conservative proxy, not exact tokenizer counts. Storage sizes describe text and JSON snapshots, excluding embedding arrays and Python overhead. Monetary costs remain `null` when pricing is unavailable. The `efficiency` report aggregates retrieval budgets, latency, and evidence recall.
+
+To run a hybrid with a custom recent window:
+
+```bash
+python src/Benchmark.py --dataset data/locomo/locomo10.json --output alpha_results.json --modules alpha --window-size 20 --question-limit 10
+```
+
+Use `beta` or `gamma` for the other hybrids. The benchmark API accepts the same
+setting as `options.window_size`. Effective settings, retrieval policy, and Alpha
+batching are exported and preserved on resume. No final-window flush is performed
+before QA. Alpha/Gamma memory LLM work is accounted separately from answer calls.
 
 ### Long benchmark runs and recovery
 

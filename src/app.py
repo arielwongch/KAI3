@@ -6,6 +6,8 @@ from threading import RLock, Thread
 from uuid import uuid4
 from flask import Flask, jsonify, render_template, request
 from MemoryFactory import MemoryFactory
+from MemoryConfig import window_size_for, retrieval_policy
+from MemoryContext import retrieval_k
 from NoMemory import NoMemory
 from ReAct import run_ReAct
 from Diagnostics import totals
@@ -74,15 +76,18 @@ def start_benchmark(job):
 restore_benchmarks()
 
 class ChatSession:
-    def __init__(self, mode):
+    def __init__(self, mode, window_size=None):
         self.mode = mode
-        self.module = NoMemory() if mode == 'no_memory' else MemoryFactory.create_memory_module(mode)
+        self.window_size = window_size_for(mode, {} if window_size is None else {'window_size': window_size}, 10)
+        kwargs = {'max_items': self.window_size} if self.window_size is not None else {}
+        self.module = NoMemory() if mode == 'no_memory' else MemoryFactory.create_memory_module(mode, **kwargs)
         self.lock = RLock()
         self.turns = []
     def snapshot(self, chat_id):
         with self.lock:
             return dict(schema_version=1, chat_id=chat_id, memory_module=self.mode,
-                        model="deepseek-flash", retrieval_k=5, max_iterations=10,
+                        model="deepseek-flash", retrieval_k=retrieval_k(self.module), max_iterations=10,
+                        window_size=self.window_size, retrieval_policy=retrieval_policy(self.mode, self.window_size),
                         memory=self.module.inspect(), turns=deepcopy(self.turns), totals=totals(self.turns))
 
 @app.get('/')
@@ -155,6 +160,10 @@ def get_reply():
         return jsonify(error='Valid chat ID is required.'), 400
     if mode not in AVAILABLE_MEMORY_MODULES:
         return jsonify(error='Choose a known memory module.'), 400
+    try:
+        window_size = window_size_for(mode, payload, 10)
+    except ValueError as error:
+        return jsonify(error=str(error)), 400
     chat_id = chat_id.strip()
     with registry_lock:
         session = chat_memory_modules.get(chat_id)
@@ -162,11 +171,13 @@ def get_reply():
             # Restored browser histories must not silently recreate lost memory.
             if payload.get('requires_existing'):
                 return jsonify(error='Server memory is unavailable. Start a new chat.'), 410
-            session = ChatSession(mode)
+            session = ChatSession(mode, window_size)
             chat_memory_modules[chat_id] = session
     with session.lock:
         if session.mode != mode:
             return jsonify(error='The memory module cannot be changed during a chat.'), 409
+        if 'window_size' in payload and session.window_size != window_size:
+            return jsonify(error='The window size cannot be changed during a chat.'), 409
         d = {'turn_id': str(uuid4())}
         try:
             result, latency, tokens = run_ReAct(message.strip(), memory_module=session.module, diagnostics=d)

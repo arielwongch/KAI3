@@ -36,8 +36,9 @@ memory = MemoryFactory.create_memory_module(
 )
 ```
 
-At the start of a run, the agent calls `retrieve(query=user_input, k=5)` and
-adds the returned entry text to the system prompt. After the run, it writes
+At the start of a run, the agent calls `retrieve(query=user_input, k=5)`, except
+standalone Sliding Window uses its configured capacity for `k`. It adds the
+returned entries to the system prompt. After the run, it writes
 one combined user/assistant `MemoryEntry`. Internal ReAct thoughts, actions,
 and observations are not persisted as long-term conversation memory.
 
@@ -77,6 +78,53 @@ Returned entries are copies; callers cannot mutate stored records through them.
 
 Conversation state is in-process only, without persistence or eviction. Embedding
 weights are cached separately. The existing agent metrics exclude memory work.
+
+## Hybrid modules
+
+Factory identifiers `alpha`, `beta`, and `gamma` construct `Alpha`, `Beta`, and
+`Gamma` from `HybridMemory.py`. All accept `max_items=10`. Alpha additionally
+accepts `summary_limit=10_000`; Beta accepts `embedder`; Gamma accepts `embedder`
+and `extractor`, with the same contracts as their standalone components.
+
+- Alpha summarizes only entries evicted from its window.
+- Beta archives and embeds only evicted entries, preserving original interactions.
+- Gamma updates current facts on every write; recent dialogue and facts can overlap.
+
+`retrieve(query, k)` requires a positive integer `k`, excluding booleans, and
+returns long-term context followed by the full chronological window. Alpha
+returns zero or one summary; Beta/Gamma retrieve up to `k` semantic records.
+Blank semantic queries still return recent entries. Blank writes are ignored.
+Incomplete entries retain the existing component semantics: recent dialogue is
+stored, but Gamma does not extract facts from `completed=False` entries.
+
+Hybrid writes stage a copied window, update the long-term component, and only
+then commit the window. Model, extraction, or embedding failures preserve both
+tiers. Reads, writes, and inspection share a lock. Entries and snapshots are
+detached copies. Metadata adds `memory_tier` (`recent` or `long_term`) and
+`memory_component` while retaining provenance and retrieval scores.
+
+`Alpha.write_batch(list[MemoryEntry])` stages a whole batch, summarizes its
+evicted prefix once, and keeps each recent entry separate. A failed batch commits
+nothing. Benchmark ingestion uses existing session-bounded input batches of up
+to 20 turns and 12,000 characters (a single oversized turn remains intact).
+Chat uses single-entry writes. No final-window flush occurs before benchmark QA.
+
+Shared prompt formatting labels summary, archived turns, current facts, and recent
+dialogue, and states that explicit recent corrections supersede older statements.
+Diagnostics preserve original texts; prompt labels are not written into memory.
+
+`window_size` is optional in chat requests and benchmark options; the CLI exposes
+`--window-size`. It must be a positive integer and applies only to Sliding Window
+and hybrids. Chat defaults to 10 combined interactions; benchmarks default to
+100 speaker turns. Chat configuration becomes immutable with session creation:
+an omitted setting reuses it, an explicit change returns 409, and an invalid
+setting returns 400. Browser history, exports, and benchmark resume preserve it.
+Older records lacking a window setting use the historical surface default.
+
+Reports add effective `window_size`, `retrieval_policy`, hybrid context version,
+and Alpha batch settings without changing export schema version 1. Beta evidence
+recall uses dialogue IDs from both tiers; Alpha/Gamma evidence recall remains
+unavailable. Memory call accounting continues through the existing collector.
 
 
 ## Inspection and diagnostics

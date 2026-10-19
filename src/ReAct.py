@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 from MemoryEntry import MemoryEntry
 from MemoryModule import MemoryModule
+from MemoryContext import format_context, retrieval_k
 from Diagnostics import collector, entries_json
 
 # ==============================================
@@ -47,12 +48,12 @@ def _run_ReAct(
     if memory_module is not None:
         retrieval_start = time.perf_counter()
         try:
-            memory_entries = memory_module.retrieve(query=user_input, k=5)
+            memory_entries = memory_module.retrieve(query=user_input, k=retrieval_k(memory_module))
         finally:
             diagnostics["retrieval_seconds"] = time.perf_counter() - retrieval_start
         diagnostics["retrieved"] = entries_json(memory_entries)
         diagnostics["retrieved_count"] = len(memory_entries)
-        memory_text = "\n".join(entry.text for entry in memory_entries)
+        memory_text = format_context(memory_entries, separator="\n")
     else:
         memory_text = ""
 
