@@ -1,6 +1,9 @@
 ﻿/* Versioned browser sessions; server memory remains process-local. */
 const $ = id => document.getElementById(id);
 const HYBRID_COMPONENTS={delta:['summarization','vector_store'],epsilon:['summarization','fact_store'],zeta:['vector_store','fact_store']};
+const hasWindow=mode=>['sliding_window','alpha','beta','gamma'].includes(mode);
+const isWindowHybrid=mode=>['alpha','beta','gamma'].includes(mode);
+const validWindow=value=>Number.isSafeInteger(value)&&value>0;
 const key = 'kai3-workspace-v1';
 function readJSON(name, fallback) { try { return JSON.parse(localStorage.getItem(name)) ?? fallback; } catch { return fallback; } }
 function newSession() { return {id: crypto.randomUUID(), title: 'New chat', module: null, messages: [], started: false}; }
@@ -30,7 +33,11 @@ function labelMode(mode) { return mode==='vector_store_reranker'?'Vector Store +
 function controlState() {
     const session = active();
     $('userInput').disabled = busy || checking || unavailable || !session.module;
-    $('sendButton').disabled = $('userInput').disabled;
+    $('sendButton').disabled = $('userInput').disabled || (hasWindow(session.module)&&!validWindow(session.window_size??10));
+    $('chatWindowControl').hidden=!hasWindow(session.module);
+    $('chatWindowSize').value=String(session.window_size??10);
+    $('chatWindowSize').disabled=session.started||busy||checking;
+    $('chatWindowDescription').textContent=isWindowHybrid(session.module)?'Keep recent turns alongside long-term memory. Configure before the first message.':'Use the full recent window in chat.';
     $('moduleStatus').textContent = unavailable ? 'Memory unavailable · start a new chat' : checking ? 'Checking memory…' : labelMode(session.module);
     document.querySelectorAll('.memory-choice').forEach(b => { b.disabled = !!session.module || busy || checking; b.classList.toggle('selected', b.dataset.module === session.module); });
     $('userInput').placeholder = session.module ? 'Message KAI3…' : 'Select a memory architecture to start';
@@ -112,7 +119,7 @@ function drawInspection() {
         const rows = document.createElement('tbody');
         filtered.forEach(({entry, i}) => {
             const row = document.createElement('tr'); row.tabIndex = 0; row.classList.toggle('selected', selectedRecord === i);
-            const vals = [String(i + 1), entry.metadata?.type || 'memory', entry.text.slice(0, 150), Object.keys(entry.metadata || {}).filter(k => k !== 'user_text' && k !== 'assistant_text').join(', ') || '—'];
+            const vals = [String(i + 1), [entry.metadata?.memory_tier?.replaceAll('_',' '),entry.metadata?.type || 'memory'].filter(Boolean).join(' / '), entry.text.slice(0, 150), Object.keys(entry.metadata || {}).filter(k => k !== 'user_text' && k !== 'assistant_text').join(', ') || '—'];
             vals.forEach(value => { const cell = document.createElement('td'); cell.textContent = value; row.append(cell); });
             const select = () => { selectedRecord = i; drawInspection(); };
             row.onclick = select; row.onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); select(); } };
@@ -155,6 +162,7 @@ async function refreshInspection() {
     try {
         const data = await jsonRequest(`/api/chats/${encodeURIComponent(session.id)}/diagnostics`);
         if (requestId !== inspectionRequest || active().id !== session.id) return;
+        if(hasWindow(session.module)&&data.window_size){session.window_size=data.window_size;save();}
         setInspection(data, labelMode(session.module));
     } catch (error) {
         if (requestId !== inspectionRequest || active().id !== session.id) return;
@@ -177,10 +185,11 @@ $('chatForm').onsubmit = async event => {
     const requiresExisting=session.started; session.messages.push({role:'user',content:message});
     session.title=session.messages.find(m=>m.role==='user').content.slice(0,60); $('userInput').value=''; busy=true; save(); render();
     const loading=document.createElement('div'); loading.className='chat-loading'; loading.textContent='KAI3 is thinking…'; $('chatMessages').append(loading);
-    try { const data=await jsonRequest('/get',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message,chat_id:session.id,memory_module:session.module,memory_options:session.memory_options,requires_existing:requiresExisting})}); session.started=true; session.messages.push({role:'assistant',content:data.reply,turn_id:data.turn_id}); }
+    try { const data=await jsonRequest('/get',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message,chat_id:session.id,memory_module:session.module,memory_options:session.memory_options,requires_existing:requiresExisting,...(hasWindow(session.module)?{window_size:session.window_size??10}:{})})}); session.started=true; session.messages.push({role:'assistant',content:data.reply,turn_id:data.turn_id}); }
     catch(error) { session.started=true; session.messages.push({role:'assistant',content:`Request failed: ${error.message}`}); }
     finally { busy=false; save(); render(); inspectionSource='chat'; await refreshInspection(); $('userInput').focus(); }
 };
+$('chatWindowSize').oninput=()=>{if(active().started||busy||checking)return;active().window_size=Number($('chatWindowSize').value);save();$('sendButton').disabled=$('userInput').disabled||!validWindow(active().window_size);};
 $('userInput').onkeydown = event => { if (event.key==='Enter'&&!event.shiftKey) { event.preventDefault(); $('chatForm').requestSubmit(); } };
 document.querySelectorAll('.memory-choice').forEach(button=>button.onclick=()=>{if(active().module)return;active().module=button.dataset.module;save();render();});
 $('newChat').onclick=()=>{if(busy)return;const session=newSession();workspace.sessions.push(session);workspace.active=session.id;unavailable=false;checking=false;inspectionSource='chat';inspection=null;save();render();refreshInspection();};
@@ -295,7 +304,7 @@ function selectedSamples(){return [...$('sampleIds').selectedOptions].map(option
 function selectedQuestionCount(data){const ids=$('allConversations').checked?data.map(s=>String(s.sample_id)):selectedSamples();const categories=selectedCategories(),limit=Number($('questionLimit').value);const samples=data.filter(s=>ids.includes(String(s.sample_id)));return samples.reduce((n,s)=>{const count=s.qa.filter(q=>categories.includes(q.category)).length;return n+(limit?Math.min(count,limit):count);},0);}
 const memorySettingDrafts={};
 let memorySettingMode=null;
-function memoryCapabilities(mode){return globalThis.KAI3_MEMORY_CAPABILITIES?.[mode]||{reranker:mode==='vector_store_reranker',records:['sliding_window','vector_store','vector_store_reranker','fact_store'].includes(mode)||!!HYBRID_COMPONENTS[mode],summary:['summarization','delta','epsilon'].includes(mode),hybrid:!!HYBRID_COMPONENTS[mode],memory:['sliding_window','vector_store','vector_store_reranker','fact_store','summarization'].includes(mode)||!!HYBRID_COMPONENTS[mode]};}
+function memoryCapabilities(mode){return globalThis.KAI3_MEMORY_CAPABILITIES?.[mode]||{reranker:mode==='vector_store_reranker',records:['sliding_window','vector_store','vector_store_reranker','fact_store','beta','gamma'].includes(mode)||!!HYBRID_COMPONENTS[mode],summary:['summarization','delta','epsilon','alpha'].includes(mode),hybrid:!!HYBRID_COMPONENTS[mode],memory:['sliding_window','vector_store','vector_store_reranker','fact_store','summarization','alpha','beta','gamma'].includes(mode)||!!HYBRID_COMPONENTS[mode]};}
 function updateMemorySettings(mode){
     const caps=memoryCapabilities(mode);
     if(memorySettingMode!==mode){
@@ -307,6 +316,7 @@ function updateMemorySettings(mode){
     $('memorySettings').hidden=!caps.memory;$('retrievalKField').hidden=!caps.records;$('storageCapacityField').hidden=!caps.records;$('summaryTokensField').hidden=!caps.summary;
     $('retrievalK').disabled=!caps.records;$('storageCapacity').disabled=!caps.records;$('summaryTokens').disabled=!caps.summary;$('memoryContextTokens').disabled=!caps.memory;
     $('candidateKField').hidden=!caps.reranker;$('candidateK').disabled=!caps.reranker;
+    $('benchmarkWindowControl').hidden=!isWindowHybrid(mode);$('benchmarkWindowSize').disabled=!isWindowHybrid(mode);
     $('hybridSettings').hidden=!caps.hybrid;
     if(caps.hybrid)$('hybridShareLabel').textContent=`${labelMode(HYBRID_COMPONENTS[mode][0])} share (%)`;
     $('memorySettingsHint').textContent=caps.reranker?'Rerank the cosine shortlist, then apply retrieval k and the context allowance. Retrieval k = all includes the entire shortlist; set both counts to all to consider every stored turn.':caps.hybrid?'Both components ingest original turns independently. Retrieval k and capacity apply to each record store unless overridden. Summary context may be shortened to its share.':caps.summary?'Summaries use a size limit, with no retrieval k or record capacity.':mode==='fact_store'?'Finite capacity evicts old fact versions and limits historical coverage.':'';
@@ -331,6 +341,7 @@ function benchmarkMemoryOptions(mode){
     const caps=memoryCapabilities(mode),options={};
     if(caps.memory)options.memory_context_tokens=parseMemoryCount($('memoryContextTokens').value,null);
     if(caps.records){options.retrieval_k=parseMemoryCount($('retrievalK').value,'all');options.max_stored_entries=parseMemoryCount($('storageCapacity').value,mode==='sliding_window'?null:'unlimited');}
+    if(isWindowHybrid(mode))options.window_size=parseMemoryCount($('benchmarkWindowSize').value,null);
     if(caps.reranker)options.candidate_k=parseMemoryCount($('candidateK').value,'all');
     if(caps.summary){options.max_summary_tokens=parseMemoryCount($('summaryTokens').value,null);if(options.max_summary_tokens>options.memory_context_tokens)throw new Error('Summary size cannot exceed the context-token allowance.');}
     if(caps.hybrid)Object.assign(options,hybridFormOptions(mode,$('hybridShare').value,$('componentOptions').value));
@@ -493,7 +504,7 @@ function drawBenchmark(){
     body.append(retrievalMetrics);
     const memoryDetails=drawUsageSummary(body);
     const config=reportDetails('Run configuration');config.classList.add('report-config');const configGrid=document.createElement('div');configGrid.className='config-grid';
-    [['Condition',benchmarkConditionLabel(benchmark)],['Conversations',benchmark.config.sample_ids?.join(', ')],['Categories',(benchmark.config.categories||[]).map(categoryName).join(', ')],['Question limit',benchmark.config.question_limit===0?'All matching questions':benchmark.config.question_limit],...(benchmark.config.modules?.[0]==='vector_store_reranker'?[['Candidate pool',benchmark.config.candidate_k===null?'All stored turns':benchmark.config.candidate_k],['Reranker model',benchmark.reranker?.model],['Reranker revision',benchmark.reranker?.revision]]:[]),['Retrieval k',benchmark.config.retrieval_k===null?'All available':benchmark.config.retrieval_k],['Stored-record capacity',benchmark.config.max_stored_entries===null?'Unlimited':benchmark.config.max_stored_entries],['Context-token allowance',benchmark.config.memory_context_tokens],['Maximum summary tokens',benchmark.config.max_summary_tokens],['Answer model',benchmark.answer_model],['Judge model',benchmark.judge_model]].forEach(([k,v])=>addField(configGrid,k,v??'—'));config.append(configGrid);body.append(config);
+    [['Condition',benchmarkConditionLabel(benchmark)],['Conversations',benchmark.config.sample_ids?.join(', ')],['Categories',(benchmark.config.categories||[]).map(categoryName).join(', ')],['Question limit',benchmark.config.question_limit===0?'All matching questions':benchmark.config.question_limit],...(benchmark.config.modules?.[0]==='vector_store_reranker'?[['Candidate pool',benchmark.config.candidate_k===null?'All stored turns':benchmark.config.candidate_k],['Reranker model',benchmark.reranker?.model],['Reranker revision',benchmark.reranker?.revision]]:[]),['Retrieval k',benchmark.config.retrieval_k===null?'All available':benchmark.config.retrieval_k],['Recent window size',benchmark.config.window_size],['Stored-record capacity',benchmark.config.max_stored_entries===null?'Unlimited':benchmark.config.max_stored_entries],['Context-token allowance',benchmark.config.memory_context_tokens],['Maximum summary tokens',benchmark.config.max_summary_tokens],['Answer model',benchmark.answer_model],['Judge model',benchmark.judge_model]].forEach(([k,v])=>addField(configGrid,k,v??'—'));config.append(configGrid);body.append(config);
     const calibration=reportDetails('Human review');calibration.classList.add('calibration-panel');const calibrationText=document.createElement('p');calibrationText.textContent=benchmark.calibration?`${benchmark.calibration.status} · ${benchmark.calibration.reviewed_count} cases reviewed · agreement by rubric dimension`:'Uncalibrated · export a sample, add 0–2 rubric ratings, then import it.';calibration.append(calibrationText);if(benchmark.calibration)for(const [dimension,rating] of Object.entries(benchmark.calibration.agreement||{}))addField(calibration,`${dimension} agreement`,rating.exact_agreement==null?'Unavailable':`${(rating.exact_agreement*100).toFixed(1)}% (${rating.count} reviewed)`);body.append(calibration);
     const cases=document.createElement('section');cases.className='report-section';const casesTitle=document.createElement('h3');casesTitle.textContent='Question results';cases.append(casesTitle);
     const filterBar=document.createElement('div');filterBar.className='case-filters';const categoryFilter=document.createElement('select');categoryFilter.id='caseCategoryFilter';categoryFilter.innerHTML='<option value="all">All categories</option>'+[1,2,3,4,5].map(c=>`<option value="${c}">${categoryName(c)}</option>`).join('');

@@ -8,7 +8,24 @@ from FactStore import FactStore
 class MemoryFactory:
     @staticmethod
     def create_memory_module(module_type:str, **kwargs) -> MemoryModule:
-        from HybridMemory import HYBRIDS, HybridMemory, hybrid_settings
+        from HybridMemory import HYBRIDS, HybridMemory, hybrid_settings, Alpha, Beta, Gamma
+        if module_type in ('alpha', 'beta', 'gamma'):
+            allowed = {'max_items', 'tokenizer', 'embedder', 'extractor'}
+            allowed |= {'summary_limit', 'max_summary_tokens'} if module_type == 'alpha' else {'max_stored_entries'}
+            if module_type == 'gamma':
+                allowed.add('fact_history_mode')
+            if kwargs.keys() - allowed:
+                raise ValueError(f'{sorted(kwargs.keys() - allowed)[0]} does not apply to {module_type}')
+            if kwargs.get('fact_history_mode', 'current') not in ('current', 'versioned'):
+                raise ValueError('Unknown fact history mode')
+            common = dict(max_items=kwargs.get('max_items', 10))
+            if module_type == 'alpha':
+                return Alpha(**common, summary_limit=kwargs.get('summary_limit', 10000),
+                             max_summary_tokens=kwargs.get('max_summary_tokens'), tokenizer=kwargs.get('tokenizer'))
+            common.update(embedder=kwargs.get('embedder'), max_stored_entries=kwargs.get('max_stored_entries'))
+            if module_type == 'beta':
+                return Beta(**common)
+            return Gamma(**common, extractor=kwargs.get('extractor'), fact_history_mode=kwargs.get('fact_history_mode', 'current'))
         if module_type in HYBRIDS:
             names = HYBRIDS[module_type]
             allowed = {'hybrid_shares', 'component_options', 'memory_context_tokens', 'retrieval_k',
@@ -53,12 +70,12 @@ class MemoryFactory:
             raise ValueError('Unknown fact history mode')
         if module_type == "sliding_window":
             max_items = kwargs.get("max_stored_entries", kwargs.get("max_items", 10))
-            if not isinstance(max_items, int) or max_items < 1:
+            if type(max_items) is not int or max_items < 1:
                 raise ValueError("max_items must be a positive integer")
             return SlidingWindow(max_items=max_items)
         elif module_type == "summarization":
             summary_limit = kwargs.get("summary_limit", 10000)
-            if not isinstance(summary_limit, int) or summary_limit < 1:
+            if type(summary_limit) is not int or summary_limit < 1:
                 raise ValueError("summary_limit must be a positive integer")
             return Summarization(summary_limit=summary_limit, max_summary_tokens=kwargs.get('max_summary_tokens'), tokenizer=kwargs.get('tokenizer'))
         elif module_type == "vector_store":

@@ -16,13 +16,14 @@ dates, remaining acceptance work, and unscheduled proposals.
 | [Vector Store + Reranker](memory/vector_store_reranker.md) | Vector shortlist, pinned cross-encoder, whole-turn reranking |
 | [Current facts](memory/fact_store.md) | Live-chat assertions, replacement, removal, current-fact retrieval |
 | [Temporal facts](memory/temporal_fact_store.md) | Benchmark versions, provenance, updates, historical retrieval |
+| [Recent-window hybrids](memory/window_hybrid.md) | Alpha/Beta/Gamma recent windows, long-term writes, and context packing |
 | [No memory](memory/no_memory.md) | No-op storage/retrieval component |
 
 ## Benchmark features
 
 | Feature | Scope |
 | --- | --- |
-| [Lifecycle and configuration](benchmark/lifecycle.md) | Six conditions, defaults, ingestion, isolation, QA, no write-back |
+| [Lifecycle and configuration](benchmark/lifecycle.md) | Conditions, defaults, ingestion, isolation, QA, no write-back |
 | [Reference baselines](benchmark/baselines.md) | Question-only, full context, exemptions and aliases |
 | [Context budget](benchmark/context_budget.md) | Tokenizer, candidate k, whole-record packing, request guard |
 | [Evaluation](benchmark/evaluation.md) | Lexical/judge scores, failures/denominators, evidence, human review |

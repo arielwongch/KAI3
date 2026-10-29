@@ -200,3 +200,6 @@ class HybridMemory(MemoryModule):
                                 candidate_count=len(groups[name]), included_count=len(selected[name]),
                                 retrieval_k=None if name == 'summarization' else self.component_options.get(name, {}).get('retrieval_k', retrieval_k))
                                 for name in names})
+
+# Recent-window architectures are kept separate from independent paired stores.
+from WindowHybridMemory import Alpha, Beta, Gamma

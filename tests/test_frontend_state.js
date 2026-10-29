@@ -190,3 +190,36 @@ test('an upload finishing after switching runs cannot resume the wrong run',asyn
     await act('upload');
     assert.equal(run('requests.length'),0);
 });
+
+
+test('window hybrid chat validates, persists, sends and locks its recent window',async()=>{
+    const {run,act}=await harness();
+    run("active().module='alpha';render();$('chatWindowSize').value='';$('chatWindowSize').oninput()");
+    assert.equal(run("$('sendButton').disabled"),true);
+    run("$('chatWindowSize').value='3';$('chatWindowSize').oninput()");
+    assert.equal(run("$('sendButton').disabled"),false);
+    assert.equal(run("JSON.parse(storage[key]).sessions[0].window_size"),3);
+    run("responseHandler=url=>({status:200,data:url==='/get'?{reply:'ok'}:{window_size:3,memory:{entries:[]},turns:[]}});$('userInput').value='hello'");
+    await act("$('chatForm').onsubmit({preventDefault(){}})");
+    assert.equal(run("JSON.parse(requests.find(r=>r.url==='/get').options.body).window_size"),3);
+    assert.equal(run("$('chatWindowSize').disabled"),true);
+    run("$('chatWindowSize').value='9';$('chatWindowSize').oninput()");
+    assert.equal(run('active().window_size'),3);
+});
+
+test('window hybrid benchmark settings coexist with the existing hybrid controls',async()=>{
+    const {run}=await harness();
+    run("updateMemorySettings('beta');$('benchmarkWindowSize').value='7'");
+    assert.equal(run("$('benchmarkWindowControl').hidden"),false);
+    assert.equal(run("$('hybridSettings').hidden"),true);
+    assert.equal(run("benchmarkMemoryOptions('beta').window_size"),7);
+    assert.equal(run("benchmarkMemoryOptions('beta').retrieval_k"),null);
+    assert.equal(run("benchmarkMemoryOptions('beta').max_stored_entries"),null);
+    run("updateMemorySettings('alpha')");
+    assert.equal(run("'max_stored_entries' in benchmarkMemoryOptions('alpha')"),false);
+    assert.equal(run("benchmarkMemoryOptions('alpha').max_summary_tokens"),2000);
+    run("updateMemorySettings('delta')");
+    assert.equal(run("$('benchmarkWindowControl').hidden"),true);
+    assert.equal(run("'window_size' in benchmarkMemoryOptions('delta')"),false);
+    assert.equal(run("$('hybridSettings').hidden"),false);
+});

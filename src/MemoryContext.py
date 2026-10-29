@@ -69,7 +69,7 @@ def build_memory_context(module, query, token_budget, tokenizer, retrieval_k=Non
         return list(reversed(records)) if is_window else records
 
     def render(records):
-        return '\n\n'.join(e.text for e in ordered(records))
+        return format_context(ordered(records))
 
     for entry in candidates:
         if tokenizer.count(render(selected + [entry])) <= token_budget:
@@ -85,3 +85,24 @@ def build_memory_context(module, query, token_budget, tokenizer, retrieval_k=Non
                 context_truncated=getattr(module, 'truncated', False) or any(e.metadata.get('truncated', False) for e in entries),
                 retrieval_k=retrieval_k, tokenizer=deepcopy(tokenizer.identity),
                 packing_policy=PACKING_POLICY)
+
+
+def retrieval_k(module):
+    from SlidingWindow import SlidingWindow
+    return module.buffer.maxlen if isinstance(module, SlidingWindow) else 5
+
+
+def format_context(entries, separator='\n\n'):
+    if not any(e.metadata.get('memory_tier') for e in entries):
+        return separator.join(e.text for e in entries)
+    labels = {'summarization': 'Earlier conversation summary',
+              'vector_store': 'Retrieved earlier conversation turns',
+              'fact_store': 'Current and historical asserted facts',
+              'sliding_window': 'Recent conversation (oldest to newest)'}
+    sections = []
+    for component, label in labels.items():
+        texts = [e.text for e in entries if e.metadata.get('memory_component') == component]
+        if texts:
+            sections.append(label + ':\n' + separator.join(texts))
+    return ('Explicit recent corrections supersede older statements.\n\n'
+            + '\n\n'.join(sections))

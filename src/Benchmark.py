@@ -17,18 +17,18 @@ from MemoryEntry import MemoryEntry
 from MemoryFactory import MemoryFactory
 from HybridMemory import HYBRIDS, HYBRID_PACKING_POLICY, hybrid_settings
 from NoMemory import NoMemory
+from MemoryConfig import MODULES, HYBRID_MODULES as WINDOW_HYBRIDS, window_size_for
 from SlidingWindow import SlidingWindow
 from RequestPolicy import completion, fatal_provider_error, status_code, cancel_event
 from MemoryContext import build_memory_context, get_benchmark_tokenizer, positive_count, PACKING_POLICY, TOKENIZER_REVISION
 
-MODULES = ['sliding_window', 'summarization', 'vector_store', 'vector_store_reranker', 'fact_store', *HYBRIDS, 'no_memory']
 BENCHMARK_MODULES = MODULES[:-1] + ['question_only', 'full_context']
 PROTOCOL_VERSION = 'locomo-controlled-v3'
 MODULE_CAPABILITIES = {
-    name: dict(records=name in ('sliding_window', 'vector_store', 'vector_store_reranker', 'fact_store') or name in HYBRIDS,
+    name: dict(records=name in ('sliding_window', 'vector_store', 'vector_store_reranker', 'fact_store') or name in (*HYBRIDS, 'beta', 'gamma'),
                reranker=name == 'vector_store_reranker',
-               summary=name == 'summarization' or name in ('delta', 'epsilon'),
-               facts=name in ('fact_store', 'epsilon', 'zeta'),
+               summary=name == 'summarization' or name in ('delta', 'epsilon', 'alpha'),
+               facts=name in ('fact_store', 'epsilon', 'zeta', 'gamma'),
                hybrid=name in HYBRIDS, components=list(HYBRIDS.get(name, ())), memory=name in MODULES[:-1])
     for name in BENCHMARK_MODULES
 }
@@ -273,6 +273,13 @@ def options_for(data, options):
     context_mode = 'full' if mode == 'full_context' else 'question_only'
     caps = MODULE_CAPABILITIES[mode]
     memory_options = {}
+    window_size = window_size_for(mode, options, 100 if mode in WINDOW_HYBRIDS else 10)
+    if 'window_size' in options or mode in WINDOW_HYBRIDS:
+        memory_options['window_size'] = window_size
+    if mode == 'sliding_window' and 'window_size' in options:
+        if 'max_stored_entries' in options and options['max_stored_entries'] != window_size:
+            raise ValueError('Conflicting sliding-window capacities')
+        options = {**options, 'max_stored_entries': window_size}
     allowed = {'memory_context_tokens'} if caps['memory'] else set()
     if caps['records']:
         allowed |= {'retrieval_k', 'max_stored_entries'}
@@ -353,8 +360,8 @@ class BenchmarkJob:
                            config=self.options, model='deepseek-flash', embedding_model=MODEL_NAME,
                            protocol=('full-context; fresh-request-per-question; no-persistent-memory' if mode == 'full_context' else 'question-only; fresh-request-per-question; no-persistent-memory' if mode == 'question_only' else 'direct-turn-ingestion; shared-token-budget; configurable-k; no-qa-writeback'),
                            condition=mode,
-                           memory_model='deepseek-flash' if mode in ('summarization', 'fact_store', *HYBRIDS) else None,
-                           memory_model_settings=dict(thinking='enabled', reasoning_effort='high') if mode in ('summarization', 'fact_store', *HYBRIDS) else None,
+                           memory_model='deepseek-flash' if mode in ('summarization', 'fact_store', 'alpha', 'gamma', *HYBRIDS) else None,
+                           memory_model_settings=dict(thinking='enabled', reasoning_effort='high') if mode in ('summarization', 'fact_store', 'alpha', 'gamma', *HYBRIDS) else None,
                            ingestion_unit='turn', storage_size_definition='UTF-8 text and serialized logical snapshot; excludes embedding arrays and runtime overhead',
                            answer_prompt_version=ANSWER_PROMPT_VERSION, answer_settings=dict(thinking='enabled', reasoning_effort='high', max_tokens=self.options['max_output_tokens'], max_attempts=5, timeout_seconds=180),
                            answer_model='deepseek-flash', judge_model='deepseek-flash', judge_prompt_version=JUDGE_PROMPT_VERSION, scoring='binary-semantic-correctness',
@@ -366,10 +373,10 @@ class BenchmarkJob:
             self.result['protocol'] = 'vector-shortlist-cross-encoder-rerank-v1; shared-token-budget; no-qa-writeback'
         self.result['judge_prompt_hash'] = hashlib.sha256(JUDGE_SYSTEM.encode()).hexdigest()
         self.result['tokenizer_revision'] = TOKENIZER_REVISION if MODULE_CAPABILITIES[mode]['memory'] else None
-        if mode == 'fact_store':
+        if mode in ('fact_store', 'gamma'):
             from TemporalFactStore import TEMPORAL_FACT_PROMPT
             self.result['memory_prompt_hash'] = hashlib.sha256((TEMPORAL_FACT_PROMPT + BENCHMARK_ASSERTIONS).encode()).hexdigest()
-        elif mode == 'summarization':
+        elif mode in ('summarization', 'alpha'):
             from Summarization import SUMMARY_PROMPT
             prompt = SUMMARY_PROMPT + f" Keep the summary within {self.options['max_summary_tokens']} benchmark tokens. Preserve named speakers and dates."
             self.result['memory_prompt_hash'] = hashlib.sha256(prompt.encode()).hexdigest()
@@ -392,6 +399,10 @@ class BenchmarkJob:
                 self.result['dependency_versions'][package] = version(package)
             except PackageNotFoundError:
                 self.result['dependency_versions'][package] = None
+        if mode in WINDOW_HYBRIDS:
+            self.result.update(hybrid_context_version=1, retrieval_policy=dict(strategy='window_plus_summary' if mode == 'alpha' else 'window_plus_recall', window_size=self.options['window_size'], long_term_k=1 if mode == 'alpha' else self.options.get('retrieval_k')), protocol='window-hybrid-v1; shared-token-budget; configurable-k; no-qa-writeback')
+            if mode == 'alpha':
+                self.result.update(ingestion_unit='turn_batch', memory_batch_settings=dict(max_turns=self.options['summary_batch_size'], max_chars=12000, policy='summarize_evicted_prefix'))
         if mode == 'summarization' and self.options['summary_batch_size'] > 1:
             self.result.update(protocol='session-bounded-summary-batches; shared-token-budget; configurable-k; no-qa-writeback', ingestion_unit='turn_batch', memory_batch_settings=dict(max_turns=self.options['summary_batch_size'], max_chars=12000))
         if mode in HYBRIDS:
@@ -546,6 +557,8 @@ class BenchmarkJob:
                         continue
                     self.live_progress('ingestion', sample_id=sample['sample_id'], conversation_index=conversation_index, conversation_total=len(question_sets), turn_completed=0, turn_total=turns_total)
                     factory_options = {key: self.options[key] for key in ('max_stored_entries', 'max_summary_tokens', 'fact_history_mode', 'candidate_k') if key in self.options}
+                    if mode in WINDOW_HYBRIDS:
+                        factory_options['max_items'] = self.options['window_size']
                     if mode in HYBRIDS:
                         factory_options.update({key: self.options[key] for key in ('hybrid_shares', 'component_options', 'memory_context_tokens')})
                     module = NoMemory() if mode in ('full_context', 'question_only') else MemoryFactory.create_memory_module(mode, extractor=benchmark_extractor, tokenizer=self.tokenizer, **factory_options)
@@ -572,7 +585,7 @@ class BenchmarkJob:
                                 current_session = entry.metadata['session']
                                 write_started = time.perf_counter()
                                 try:
-                                    if mode in HYBRIDS:
+                                    if mode in HYBRIDS or mode == 'alpha':
                                         module.write_batch(batch)
                                     else:
                                         module.write(MemoryEntry('\n\n'.join(e.text for e in batch), entry.metadata) if len(batch) > 1 else entry)
@@ -645,7 +658,7 @@ class BenchmarkJob:
                                     stop_error = judge_error
                             d['total_seconds'] = time.perf_counter() - case_started
                             d['stored_after'] = len(module.inspect()['entries'])
-                            if mode in ('sliding_window', 'vector_store', 'vector_store_reranker', 'fact_store', 'full_context') and qa.get('evidence'):
+                            if mode in ('sliding_window', 'vector_store', 'vector_store_reranker', 'fact_store', 'beta', 'full_context') and qa.get('evidence'):
                                 if mode == 'full_context':
                                     ids = {e.metadata['dialogue_id'] for e in conversation_entries(sample['conversation'])}
                                 elif mode == 'fact_store':
@@ -794,6 +807,7 @@ class BenchmarkJob:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--window-size', type=int, default=argparse.SUPPRESS, help='Recent turns retained by window architectures; defaults: hybrids 100, sliding window 10.')
     parser.add_argument('--dataset', required=True)
     parser.add_argument('--output', required=True)
     parser.add_argument('--modules', nargs='+', choices=BENCHMARK_MODULES + ['no_memory'], default=[MODULES[0]], help='Select exactly one condition per run; no_memory is a legacy alias.')
@@ -829,7 +843,7 @@ def main():
     with open(args.dataset) as f:
         data = json.load(f)
     if args.resume:
-        if any(key in vars(args) for key in ('retrieval_k', 'max_stored_entries', 'memory_context_tokens', 'max_summary_tokens', 'no_memory_context', 'hybrid_shares', 'component_options', 'candidate_k')):
+        if any(key in vars(args) for key in ('retrieval_k', 'max_stored_entries', 'memory_context_tokens', 'max_summary_tokens', 'no_memory_context', 'hybrid_shares', 'component_options', 'candidate_k', 'window_size')):
             parser.error('Resume uses saved memory settings; start a new run to change them.')
         with open(args.resume, encoding='utf-8') as source:
             job = BenchmarkJob.resume(data, json.load(source))

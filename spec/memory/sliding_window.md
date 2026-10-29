@@ -22,6 +22,7 @@ Benchmark candidates are detached copies, newest first. Apply k
 to that ordering, then pack whole turns. Render selected turns oldest first so
 the answer model sees their conversational order. The live-chat `retrieve`
 method instead returns the latest k entries already in chronological order.
+The chat agent requests the full window capacity; direct callers can choose k.
 
 ## Example
 

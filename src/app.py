@@ -8,6 +8,8 @@ from flask import Flask, abort, jsonify, render_template, request, send_from_dir
 from MemoryFactory import MemoryFactory
 from HybridMemory import HYBRIDS
 from NoMemory import NoMemory
+from MemoryConfig import window_size_for, retrieval_policy
+from MemoryContext import retrieval_k
 from ReAct import run_ReAct
 from Diagnostics import totals
 from Benchmark import BenchmarkJob, MODULES, BENCHMARK_MODULES, MODULE_CAPABILITIES, PROTOCOL_VERSION
@@ -106,10 +108,13 @@ def start_benchmark(job):
 restore_benchmarks()
 
 class ChatSession:
-    def __init__(self, mode, memory_options=None):
+    def __init__(self, mode, memory_options=None, window_size=None):
         self.mode = mode
         self.memory_options = deepcopy(memory_options or {})
         options = deepcopy(self.memory_options)
+        self.window_size = window_size_for(mode, {} if window_size is None else {"window_size": window_size}, 10)
+        if self.window_size is not None:
+            options["max_items"] = self.window_size
         if 'max_summary_tokens' in options:
             from MemoryContext import get_benchmark_tokenizer
             options['tokenizer'] = get_benchmark_tokenizer()
@@ -120,7 +125,8 @@ class ChatSession:
         with self.lock:
             return dict(schema_version=1, chat_id=chat_id, memory_module=self.mode,
                         memory_options=deepcopy(self.memory_options),
-                        model="deepseek-flash", retrieval_k=5, max_iterations=10,
+                        model="deepseek-flash", retrieval_k=retrieval_k(self.module), max_iterations=10,
+                        window_size=self.window_size, retrieval_policy=retrieval_policy(self.mode, self.window_size),
                         memory=self.module.inspect(), turns=deepcopy(self.turns), totals=totals(self.turns))
 
 @app.get('/')
@@ -193,6 +199,10 @@ def get_reply():
         return jsonify(error='Valid chat ID is required.'), 400
     if mode not in AVAILABLE_MEMORY_MODULES:
         return jsonify(error='Choose a known memory module.'), 400
+    try:
+        window_size = window_size_for(mode, payload, 10)
+    except ValueError as error:
+        return jsonify(error=str(error)), 400
     memory_options = payload.get('memory_options', {})
     allowed = {'hybrid_shares', 'component_options', 'memory_context_tokens', 'retrieval_k',
                'max_stored_entries', 'max_summary_tokens', 'summary_limit'}
@@ -209,13 +219,15 @@ def get_reply():
             if payload.get('requires_existing'):
                 return jsonify(error='Server memory is unavailable. Start a new chat.'), 410
             try:
-                session = ChatSession(mode, memory_options)
+                session = ChatSession(mode, memory_options, window_size)
             except (ValueError, TypeError) as error:
                 return jsonify(error=str(error)), 400
             chat_memory_modules[chat_id] = session
     with session.lock:
         if session.mode != mode:
             return jsonify(error='The memory module cannot be changed during a chat.'), 409
+        if 'window_size' in payload and session.window_size != window_size:
+            return jsonify(error='The window size cannot be changed during a chat.'), 409
         if 'memory_options' in payload and session.memory_options != memory_options:
             return jsonify(error='Memory settings cannot be changed during a chat.'), 409
         d = {'turn_id': str(uuid4())}

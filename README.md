@@ -98,7 +98,7 @@ memory = MemoryFactory.create_memory_module("vector_store")
 memory = MemoryFactory.create_memory_module("fact_store")
 ```
 
-All nine modes are available in the chat UI, including **No memory** for a
+All twelve modes are available in the chat UI, including **No memory** for a
 baseline that stores and retrieves nothing. Each chat keeps its selected mode
 and isolated memory for the lifetime of the server process. Restarting the server
 clears memory; browser history does not restore it.
@@ -142,6 +142,32 @@ Optional real-model smoke test (downloads weights, no paid API calls):
 ```bash
 python tests/smoke_reranker_memory.py
 ```
+
+### Recent-window hybrid modes
+
+**Alpha** keeps recent turns and summarizes only evicted turns. **Beta** keeps
+recent turns and embeds only evicted turns for later recall. **Gamma** keeps
+recent turns and extracts facts from every incoming turn. These complement
+Delta, Epsilon, and Zeta, whose components ingest all original turns independently.
+
+```python
+memory = MemoryFactory.create_memory_module("beta", max_items=10)
+```
+
+Chat exposes an immutable recent-window size before the first message (default
+10). The `/get` API accepts it as `window_size`. Standalone sliding-window chat
+now supplies its entire retained window. Benchmark Alpha/Beta/Gamma default to
+100 recent turns; set `--window-size 10` or choose the window size in the UI.
+Standalone sliding-window benchmarks retain the existing default capacity of 10;
+`--window-size` is an alias for that capacity and conflicting values are rejected.
+
+Benchmark retrieval k limits only the long-term tier; recent turns remain
+candidates independently. Both tiers share the pinned context-token allowance,
+including section labels, and whole records can be omitted when they do not fit.
+Beta/Gamma stored-record capacity limits their long-term tier separately from
+the recent window. Gamma uses current facts in chat and versioned facts in
+benchmarks. Existing legacy benchmark reports remain readable but cannot resume
+under protocol v3. See the [window hybrid specification](spec/memory/window_hybrid.md).
 
 ### Hybrid memory modes
 
@@ -210,11 +236,11 @@ HTTP 503 response; previous stored memory is preserved.
 
 The benchmark now exposes **Question Only**, **Full Context**, **Sliding Window**,
 **Summarization**, **Vector Store**, **Vector Store + Reranker**, **Fact Store**, **Delta**, **Epsilon**, and
-**Zeta** as separate conditions.
+**Zeta**, **Alpha**, **Beta**, and **Gamma** as separate conditions.
 Live-chat modes retain their existing behavior.
 
 Record-based modules (window/vector/facts) expose retrieval `k` and stored-record
-capacity. Summarization exposes only its summary-size limit. All eight memory
+capacity. Summarization exposes only its summary-size limit. All eleven memory
 conditions share a configurable context-token allowance (default 2,000). These
 are fixed, pinned MiniLM tokenizer counts, not exact DeepSeek tokens. The first
 memory benchmark downloads the tokenizer if it is not cached; tokenizer failure

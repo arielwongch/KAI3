@@ -233,3 +233,9 @@ button:disabled { opacity: .5; cursor: default; }
 .report-more-actions > summary::-webkit-details-marker { display: none; }
 .report-more-menu { position: absolute; z-index: 2; right: 0; top: calc(100% + 8px); min-width: 200px; padding: 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel); box-shadow: 0 10px 25px #0005; display: grid; gap: 8px; }
 @media (max-width: 600px) { .headline-metrics { grid-template-columns: 1fr; } }
+
+.window-control { display:block; max-width:360px; margin:20px auto; color:var(--muted); font-size:12px; text-align:left; }
+.window-control[hidden] { display:none; }
+.window-control input { display:block; width:120px; margin:8px 0; padding:9px 12px; border:1px solid var(--line); border-radius:8px; background:var(--panel-2); color:var(--text); }
+.window-control small { display:block; line-height:1.5; }
+.window-control input:disabled { opacity:.6; }

@@ -38,6 +38,9 @@ context. Temporal facts explicitly render selected metadata into their text.
 
 ## Construction and configuration
 
+Alpha, beta, and gamma compose a recent window with a long-term store, as
+specified in [recent-window hybrids](window_hybrid.md).
+
 Delta, epsilon, and zeta compose two independent built-in components. Their
 transactional writes, per-component settings, and shared context packing are
 specified in [hybrid memory](hybrid.md). Live hybrid chat uses the pinned context
@@ -78,8 +81,10 @@ string. NoMemory retains no entries.
 
 ## Agent write and retrieval flow
 
-At the start of `run_ReAct`, the agent calls `retrieve(user_input, k=5)` and joins
-entry texts into its system prompt. After the interaction it normally writes one
+At the start of `run_ReAct`, the agent retrieves context and renders it into its
+system prompt. Standalone sliding windows use their full retained capacity; other
+live modes use k=5. Recent-window hybrids label long-term and recent sections,
+while independent paired hybrids use their shared context packing. After the interaction it normally writes one
 combined user/assistant entry. Metadata includes `user_text`, `assistant_text`,
 and completion information. Internal thoughts/actions/observations are not stored
 as long-term conversation memory. The current fact store treats only user text
