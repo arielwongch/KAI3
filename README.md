@@ -5,9 +5,11 @@
 [Component and feature specifications](spec/README.md) describe current memory,
 benchmark, and frontend behavior. [Development plans and history](plans/README.md)
 record phase status, dates, remaining acceptance work, and future proposals.
-[Updates](UPDATES.md) summarize the latest working-tree changes;
+[Updates](UPDATES.md) summarize the latest committed changes and verification;
 [project progress](PROGRESS.md) records dated evidence and limitations. The
 [documentation review](plans/documentation_review.md) lists the files checked.
+The workspace/result-library update was pushed to `main` as `8035e9b` on
+2026-11-02. Documentation follow-ups do not imply a new release or deployment.
 
 ## Local setup
 

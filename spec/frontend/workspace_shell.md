@@ -53,7 +53,9 @@ configuration files are not public static assets.
 
 Headless Chrome checked 1440px/390px layouts, all three link groups, shared fonts,
 expanded/collapsed widths, mobile open/dismissal, and content focus blocking, with
-no JavaScript errors. The 15 targeted result tests and 14 frontend state tests
-passed after integration; the shell itself was exercised in-browser. Full
+no JavaScript errors. The committed implementation (`8035e9b`) passed the final
+143-test offline suite; earlier scoped checks passed 15 result tests and 14
+frontend state tests. The shell itself was exercised in-browser. The post-commit
+Markdown review did not rerun those tests. Full
 keyboard/screen-reader/accessibility and cross-browser acceptance remains open
 in the [UI plan](../../plans/ui_refinement.md).

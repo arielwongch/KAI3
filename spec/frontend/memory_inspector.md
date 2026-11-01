@@ -66,3 +66,7 @@ definitions and snapshot persistence.
 [Diagnostics tests](../../tests/test_diagnostics_benchmark.py) and
 [frontend state tests](../../tests/test_frontend_state.py) cover snapshots,
 turn selection, isolation, and stale session state.
+The implementation in `8035e9b` passed the full 143-test offline suite, including
+existing diagnostics and frontend-state coverage. Shared-shell browser checks
+remain scoped as recorded in the shell spec; this Markdown review does not claim
+a fresh or comprehensive inspector acceptance run.

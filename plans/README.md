@@ -8,6 +8,9 @@ outstanding work, dependencies, and dated history.
 Use [updates](../UPDATES.md) for current changes, [progress](../PROGRESS.md) for
 implementation evidence, and the [documentation review](documentation_review.md)
 for the complete Markdown audit and retained historical material.
+The implementation was committed and pushed to `main` as `8035e9b` on
+2026-11-02. This documentation follow-up records that milestone without claiming
+a tagged release, deployment, or fresh application test run.
 
 ## Plan register
 
@@ -16,7 +19,7 @@ for the complete Markdown audit and retained historical material.
 | [Product experience](product_experience.md) | 2026-10-05 (`acb7a6f`) | Shared workspaces, managed result library, and named benchmark-to-Compare export implemented; calibration/study acceptance incomplete | Evaluator audit, human calibration, and remaining acceptance; unscheduled |
 | [UI refinement](ui_refinement.md) | 2026-10-05 (`acb7a6f`) | Shared shell and Compare refinements implemented; scoped desktop/phone browser checks passed | Comprehensive keyboard/screen-reader/cross-browser and unreviewed states; unscheduled |
 | [Controlled comparison](controlled_comparison.md) | 2026-10-06 (`c84cb77`) | Protocol implemented; completion of a matched study not established | Choose matched configuration, validate, then run study; unscheduled |
-| [Documentation review](documentation_review.md) | Working-tree audit, 2026-11-02 | Complete inventory, affected docs reconciled, archived contracts preserved | Keep in sync with future feature changes |
+| [Documentation review](documentation_review.md) | 2026-11-02 (`8035e9b`) | Complete inventory and post-commit recheck; affected docs reconciled, archives preserved | Keep in sync with future feature changes |
 
 No new feature implementation or benchmark execution is scheduled by this
 documentation reorganization. Proposed items below remain proposals, not active
@@ -36,15 +39,18 @@ every acceptance review or experiment has been completed.
 | 2026-10-08 | Current documentation review | Component specs separated from plans; statuses reconciled against source |
 | 2026-10-30 | Compare Runs working-tree implementation and 134 passing offline tests | Local uploads/enrichment, cross-run charts, and question-type comparisons implemented; browser visual acceptance unverified |
 | 2026-11-02 | Local setup/recovery working-tree changes and 33 passing targeted offline tests; follow-up Python 3.12.10 setup verification | PowerShell/environment guidance, snapshot validation and warnings, preserved merge-conflict variants, and removal of runtime files from Git tracking; new `venv`, dependency consistency, two recovery tests, and four-page HTTP startup verified on Python 3.12 |
-| 2026-11-02 | Compare refinements and shared shell; latest 15 result tests, 14 frontend state tests, and scoped headless Chrome checks | Shared-folder naming/duplicates/rename/delete, selected JSON downloads, sorting/tooltips, named enriched benchmark export, folder guards, and shared navigation verified; full accessibility and matched-study acceptance remain open |
+| 2026-11-02 | Compare refinements and shared shell; earlier scoped 15 result tests, 14 frontend state tests, and headless Chrome checks | Shared-folder naming/duplicates/rename/delete, selected JSON downloads, sorting/tooltips, named enriched benchmark export, folder guards, and shared navigation verified; full accessibility and matched-study acceptance remain open |
 | 2026-11-02 | Repository-wide Markdown reconciliation | Updates log, canonical shared-shell spec, cross-links, status/evidence corrections, and per-file audit; no application behavior changed by this documentation pass |
 | 2026-11-02 | Final double-check: 143 offline tests passed after edge fixes; fresh headless Chrome flows | Filename/dialog regressions, shared shell, sorting, separate downloads and both saved/imported named exports verified; source reports preserved; broad accessibility/scientific acceptance still separate |
+| 2026-11-02 | Commit `8035e9b` pushed to `origin/main` | Workspace/result-library implementation, result exports, tests, recovery/runtime untracking, and documentation committed; 10 result-analysis tests additionally passed with the added reports before pushing |
+| 2026-11-02 | Post-commit Markdown review | All 38 documents rechecked; commit status and final verification summaries reconciled; no application behavior changed |
 
 Commit references use dates from local Git history, not inferred feature start,
 completion, or release dates. The 2026-10-08 row records this documentation work
 and does not claim a new application release or Git commit.
-The 2026-10-30 and 2026-11-02 rows record working-tree implementation and
-verification, not releases or committed milestones. The initial 33-test recovery
+The earlier 2026-10-30 and 2026-11-02 implementation rows describe work and
+verification before committing; the explicit `8035e9b` row records the later
+commit/push milestone. None is a tagged-release or deployment claim. The initial 33-test recovery
 run used Python 3.11.3; the follow-up checked basic setup/startup and two recovery
 tests under Python 3.12.10. Those recovery/setup checks did not rerun the full suite.
 The 138-test run preceded the final UI refinements; later scoped checks passed

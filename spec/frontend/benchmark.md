@@ -109,11 +109,13 @@ and defaults are owned by the benchmark feature specs, not this UI specification
 [result library tests](../../tests/test_result_library.py), and
 [lifecycle tests](../../tests/test_benchmark_lifecycle.py) cover these flows.
 
-The named Compare export passed the expanded import/export DOM suite, all 15
-targeted result tests, and 14 frontend state tests. Coverage includes source
+The implementation committed and pushed as `8035e9b` passed the full 143-test
+offline suite. Earlier focused checks passed the expanded import/export DOM suite,
+15 targeted result tests, and 14 frontend state tests. Coverage includes source
 preservation, fresh saved snapshots, duplicate choices, invalid names, missing
 saved runs, and reopening the dialog. Headless Chrome saved a renamed imported
 report, verified derived answer/judge/memory token totals and UTF-8 storage bytes,
 and exercised Keep both and Replace against a temporary library. Desktop/phone
 previews showed no overflow or JavaScript errors; no user files or provider calls
 were involved in that browser verification.
+This post-commit documentation review did not rerun application/provider tests.

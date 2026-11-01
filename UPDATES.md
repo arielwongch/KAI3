@@ -1,10 +1,13 @@
 # Updates
 
-## Unreleased — 2026-11-02
+## Main branch update — 2026-11-02
 
-These are working-tree changes, not a published release. [Progress](PROGRESS.md)
-records implementation history; [specifications](spec/README.md) define current
-contracts; [plans](plans/README.md) track remaining work.
+Implemented changes were committed and pushed to `origin/main` as
+`8035e9bb0026211c7dff1bc3cc2a97e1fd804b67` — **Add managed run comparisons and
+unify workspace UI**. This records a main-branch update, not a tagged release or
+deployment. [Progress](PROGRESS.md) records implementation history;
+[specifications](spec/README.md) define current contracts;
+[plans](plans/README.md) track remaining work.
 
 ### Compare Runs and result files
 
@@ -24,6 +27,9 @@ contracts; [plans](plans/README.md) track remaining work.
   values stay last. Run numbers/colors remain consistent across sort changes.
 - Bar tooltips show the filename, module, value, scope, and relevant coverage or
   totals; keyboard focus and mobile touch expose the same details.
+- The commit includes nine additional benchmark result exports and derived
+  `comparison` data for six existing reports. Original fields in those six
+  reports are unchanged. These files do not establish a matched benchmark study.
 
 ### Benchmark export and shared design
 
@@ -69,11 +75,20 @@ The earlier **138-test full offline run** remains historical evidence; the
 also fixed malformed-Unicode filename validation, prevented duplicate suffixes
 from bypassing the filename byte limit, and protected reopened rename dialogs
 from queued close events. Regression assertions cover those edge cases.
-Comprehensive
-accessibility acceptance, real-provider/model validation, human calibration, and
+Comprehensive accessibility acceptance, real-provider/model validation, human calibration, and
 a matched benchmark study remain outstanding. The documentation-only
 reconciliation did not rerun application tests; the later double-check did.
 
 The [documentation review](plans/documentation_review.md) inventories every
 Markdown file, updates affected guides/specs/plans, preserves archived history,
 and records the link and stale-contract checks.
+
+### Post-commit documentation recheck
+
+Rechecked all 38 Markdown files after the push. Updated affected guides, progress,
+plans, and verification sections to identify commit `8035e9b` and distinguish
+the final 143-test run from earlier targeted evidence. Historical archive text
+and unaffected memory/protocol contracts were retained. This follow-up changes
+Markdown only; application tests were not rerun for the prose changes.
+Before the push, the 10-test result-analysis suite passed again with the added
+reports, and result parsing and credential-pattern checks passed.

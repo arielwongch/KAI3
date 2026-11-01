@@ -57,8 +57,10 @@ plan does not assign all current functionality to that one commit.
    selected-only individual downloads, enrichment, sortable charts/table, tooltips,
    filters, and coverage. Benchmark reports save named comparison copies through
    the same restricted API. Shared-shell, desktop/phone, and key interaction checks
-   passed in headless Chrome after the built-in browser sandbox failed. Latest
-   automated checks passed 15 targeted result tests and 14 frontend state tests.
+   passed in headless Chrome after the built-in browser sandbox failed. The final
+   full offline suite passed 143 tests; earlier scoped checks passed 15 result
+   tests and 14 frontend state tests. The implementation is committed on `main`
+   as `8035e9b`; no new application test run is claimed for this Markdown update.
    Comprehensive accessibility/cross-browser acceptance, automatic matched-cohort/
    configuration-difference analysis, and stratified review sampling remain open.
 4. **Acceptance review (after the selected scope; unscheduled):** inspect representative

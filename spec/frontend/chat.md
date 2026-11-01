@@ -84,6 +84,7 @@ has no user-facing chat token-budget/capacity editor.
 [Frontend state tests](../../tests/test_frontend_state.py) and
 [memory integration tests](../../tests/test_memory_integration.py) cover state and
 API behavior. Visual acceptance history belongs to the [UI plan](../../plans/ui_refinement.md).
-The 2026-11-02 implementation checks passed 14 frontend state tests and browser
-navigation checks on desktop and phone widths. This does not establish a full
+The implementation committed in `8035e9b` passed the full 143-test offline suite,
+including the 14 frontend state tests, and browser navigation checks at desktop
+and phone widths. This does not establish a full
 chat or screen-reader acceptance review; see [verification scope](../../UPDATES.md#verification-and-outstanding-work).

@@ -5,6 +5,9 @@ source review: 2026-10-08. Check dates are not implementation/release dates.
 The shared shell, Compare Runs, benchmark export/result-library integration, local
 setup, and recovery documentation were reconciled on 2026-11-02. This focused
 update does not change the review date of unaffected memory/protocol components.
+The implementation is committed and pushed on `main` as `8035e9b`; current
+verification includes the 143-test offline suite and scoped desktop/phone browser
+checks. The post-commit Markdown review changes documentation only.
 [Development plans](../plans/README.md) separately track sequences, historical
 dates, remaining acceptance work, and unscheduled proposals.
 See [updates](../UPDATES.md), [progress](../PROGRESS.md), and the

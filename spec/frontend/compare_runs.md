@@ -248,6 +248,11 @@ design ownership, and sources are documented in the
 | 14 frontend state tests | Shared workspace regression coverage for chat, inspection, settings and saved-run recovery/resume |
 | Headless Chrome at 1440px and 390px | Shared sidebars/fonts/collapse/drawer; empty/selected library, sorted graphs, tooltip/touch/focus, file dialogs, named export/enrichment, and individual downloads; no horizontal overflow or JavaScript exceptions observed |
 
+The implementation above was committed and pushed to `origin/main` as `8035e9b`.
+The nine added result reports were also covered by a passing 10-test result-
+analysis run before the push. This later Markdown-only review records the commit
+and existing verification; it does not claim a fresh application test run.
+
 Tests used temporary fixtures for file writes and no provider calls. Browser smoke
 checks are not a comprehensive accessibility, screen-reader, cross-browser, or
 scientific acceptance review. The final double-check repeated shared-shell,

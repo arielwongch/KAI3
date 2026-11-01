@@ -95,6 +95,7 @@ establish real-model extraction accuracy, calibration, or completed experimental
 derived metrics, coverage, metric sorting, and tooltips, with
 [benchmark-to-Compare export](../spec/frontend/benchmark.md#reports-and-inspection).
 These tools do not enforce cohort/model/protocol matching or calculate statistical
-significance. Latest targeted/browser evidence and outstanding acceptance are in
+significance. The implementation in commit `8035e9b` passed the full 143-test
+offline suite and scoped browser checks. Verification and outstanding acceptance are in
 [updates](../UPDATES.md#verification-and-outstanding-work); no matched run was
 executed as part of this documentation reconciliation.

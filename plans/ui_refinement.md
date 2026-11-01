@@ -3,6 +3,8 @@
 Status: core redesign implemented; complete visual/accessibility acceptance is
 unverified. Original source review: 2026-10-08. Shared-shell/Compare/export status
 and documentation update: 2026-11-02; scoped browser checks passed on that date.
+The implementation and final verification record were committed and pushed to
+`main` as `8035e9b`; this follow-up reconciles documentation after that push.
 
 First recorded: 2026-10-05, commit `acb7a6f`. Exact design approval, implementation
 start, and final acceptance dates are unknown. The [archived proposal](archive/ui_refinement_plan.md)

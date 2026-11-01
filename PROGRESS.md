@@ -20,6 +20,11 @@ Current contracts are indexed under [spec/](spec/README.md).
 
 ## Current workspace status — 2026-11-02
 
+The implementation and its documentation were committed and pushed to
+`origin/main` as `8035e9b` (**Add managed run comparisons and unify workspace UI**).
+The verification below covers that implementation. This is a commit milestone,
+not a tagged release or deployment.
+
 | Area | Current behavior |
 | --- | --- |
 | Shared workspace design | Chat, Test Benchmark, and Compare use one sidebar template/script, common fonts/tokens, desktop collapse, and a mobile drawer; Compare uses the benchmark-style header and internal scroll area |
@@ -72,6 +77,21 @@ with no user result mutations or provider calls. The final-tree full-suite gap
 noted in earlier entries is now closed; full accessibility and scientific/model
 acceptance remain separate.
 
+## Commit and post-commit documentation recheck — 2026-11-02
+
+Commit `8035e9bb0026211c7dff1bc3cc2a97e1fd804b67` was pushed to `origin/main`.
+The commit includes the workspace/result-library implementation, result exports,
+runtime-file untracking, tests, and documentation. The nine new result reports
+were parsed and credential-pattern checked before committing; the six modified
+existing reports changed only their derived `comparison` objects. The result
+analysis suite passed 10 tests with the added reports before the push.
+
+The subsequent Markdown-only pass rechecked all 38 documentation files, corrected
+pre-commit status wording, and aligned verification summaries with the full
+143-test implementation run. Earlier audit counts and implementation history are
+retained as dated records. No application behavior changed or application tests
+were rerun during this documentation follow-up.
+
 ## Local setup and saved-run recovery update - 2026-11-02
 
 Implemented clearer Windows/PowerShell setup instructions, Python 3.12 and
@@ -86,7 +106,8 @@ markers. Preserved the exact original file and both valid legacy variants under
 SHA-256 manifest; neither variant was selected automatically. All **44** remaining
 top-level JSON files parsed successfully. Removed nine runtime files from Git
 tracking while preserving local content; `instance/`, `venv/`, and `.venv/` are
-ignored. These changes remain working-tree/index changes, not a committed release.
+ignored. These changes were initially working-tree/index changes and were later
+included in commit `8035e9b` on `main`; no tagged release is claimed.
 
 Startup and refresh now validate snapshot object shape and run-ID/filename
 agreement. Invalid files remain unchanged; startup warns with recovery guidance

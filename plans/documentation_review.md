@@ -1,7 +1,7 @@
 # Documentation reconciliation — 2026-11-02
 
 Status: complete. Scope: the Compare/result-library, benchmark export, shared
-workspace design, and related setup/progress changes in the current working tree.
+workspace design, and related setup/progress changes committed in `8035e9b`.
 This records a documentation review, not a release or a fresh application test run.
 
 ## Method and ownership
@@ -28,6 +28,9 @@ acceptance remains open.
 ## Complete Markdown inventory
 
 Initial inventory: **35** Markdown files. Final inventory: **38** files: **16 updated**, **3 added**, and **19 reviewed and retained**. Every file is listed below.
+These outcomes describe the initial pre-commit reconciliation. All 38 documents
+are now tracked in the committed baseline; the post-commit review below records
+the subsequent documentation-only changes.
 
 | File | Outcome | Reason |
 | --- | --- | --- |
@@ -87,3 +90,22 @@ The later user-requested double-check reran the full 143-test offline suite and
 browser flows, fixed small filename/dialog edge cases, and updated current
 verification claims. The initial documentation-only audit counts above remain
 the record of that earlier pass.
+
+## Post-commit review — 2026-11-02
+
+Rechecked all 38 Markdown files after `8035e9b` was pushed to `origin/main`.
+Corrected current working-tree/uncommitted descriptions, recorded the commit/push
+milestone, and aligned remaining verification summaries with the final 143-test
+offline run. Commit publication is distinct from a tagged release or deployment.
+The earlier 10-test result-analysis run also checked the nine added result
+reports before committing. No application tests were rerun for this prose-only pass.
+
+Updated 15 documents: `README.md`, `UPDATES.md`, `PROGRESS.md`,
+`plans/README.md`, `plans/documentation_review.md`, `plans/product_experience.md`,
+`plans/ui_refinement.md`, `plans/controlled_comparison.md`, `spec/README.md`,
+`spec/benchmark/results_and_resume.md`, `spec/frontend/chat.md`,
+`spec/frontend/benchmark.md`, `spec/frontend/compare_runs.md`,
+`spec/frontend/workspace_shell.md`, and `spec/frontend/memory_inspector.md`.
+The other 23 documents were checked and retained, including historical archives
+and unaffected protocol/memory specifications. Inventory, local links, headings,
+and whitespace were revalidated after editing.

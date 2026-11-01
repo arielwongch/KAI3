@@ -4,6 +4,9 @@ Status: implemented behavior. Last checked against repository source: 2026-10-08
 This check date is not an implementation or release date.
 Snapshot loading and recovery behavior reviewed and updated on 2026-11-02.
 Result-library and named Compare export integration reconciled on 2026-11-02.
+That implementation was committed and pushed to `main` as `8035e9b`. The
+post-commit documentation check records the completed milestone without changing
+the result schema, resume rules, or verification scope.
 
 ## Purpose and interfaces
 
