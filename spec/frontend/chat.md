@@ -1,11 +1,16 @@
 # Chat workspace
 
 Status: implemented behavior. Last checked against repository source: 2026-10-08.
-This check date is not an implementation or release date.
+Focused shared-shell documentation/source update: 2026-11-02. These check dates
+are not implementation or release dates.
 
 ## Purpose and page structure
 
-Flask serves a landing page at `/` with Chat and Test Benchmark destinations.
+Flask serves a landing page at `/` with Chat, Test Benchmark, and
+[Compare Runs](compare_runs.md) destinations. The shared sidebar also links to
+Compare Runs at `/compare`. All three pages now render the same
+[workspace shell](workspace_shell.md), with the three page links grouped above
+page actions, shared branding/active state, desktop collapse, and a mobile drawer.
 `/chat` renders `index.html` with the chat workspace selected. The dark charcoal
 and lime interface has workspace navigation, recent chats, a selected-memory
 status, a scrolling message area, and a bottom composer. The
@@ -63,7 +68,9 @@ failure. Diagnostics/export endpoints are specified in
 
 Workspace content scrolls within the viewport. The `kai-app` CSS container
 controls compact layouts, including off-canvas sidebar navigation and flexible
-conversation/composer widths. Browser storage preserves visible history, not
+conversation/composer widths. Shared drawer behavior, backdrop/Escape dismissal,
+inert background/closed navigation, and focus restoration are owned by
+`workspace-shell.js`. Browser storage preserves visible history, not
 server memory or a durable continuation guarantee. The current implementation
 has no user-facing chat token-budget/capacity editor.
 
@@ -72,6 +79,11 @@ has no user-facing chat token-budget/capacity editor.
 [home.html](../../src/home.html), [index.html](../../src/index.html),
 [workspace.js](../../src/workspace.js), [style.css](../../src/style.css), and
 [app.py](../../src/app.py) implement the UI and endpoints.
+[workspace_sidebar.html](../../src/workspace_sidebar.html) and
+[workspace-shell.js](../../src/workspace-shell.js) supply common navigation.
 [Frontend state tests](../../tests/test_frontend_state.py) and
 [memory integration tests](../../tests/test_memory_integration.py) cover state and
 API behavior. Visual acceptance history belongs to the [UI plan](../../plans/ui_refinement.md).
+The 2026-11-02 implementation checks passed 14 frontend state tests and browser
+navigation checks on desktop and phone widths. This does not establish a full
+chat or screen-reader acceptance review; see [verification scope](../../UPDATES.md#verification-and-outstanding-work).

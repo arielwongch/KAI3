@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#111214">
+  <title>KAI3 — Compare Runs</title>
+  <link rel="icon" href="/assets/favicon.png?v=2">
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/compare.css">
+  <script src="/workspace-shell.js" defer></script>
+  <script src="/compare.js" defer></script>
+</head>
+<body class="compare-page">
+  <div class="app-shell">
+  {% from 'workspace_sidebar.html' import workspace_sidebar %}
+  {{ workspace_sidebar('compare') }}
+  <main class="benchmark-workspace compare-workspace">
+    <header class="benchmark-topbar compare-topbar"><button id="openSidebarCompare" class="icon-button mobile-menu" type="button" data-open-sidebar aria-label="Open sidebar">☰</button><div><p class="eyebrow">EVALUATION WORKSPACE</p><h1>Compare Runs</h1></div><a class="subtle-button" href="/">← <span>Home</span></a></header>
+    <div class="benchmark-scroll compare-scroll"><div class="compare-content">
+    <div class="view-intro"><h2>Compare your benchmark runs</h2><p>Select saved results to compare accuracy, token use, memory, and runtime.</p></div>
+    <section id="resultLibrarySection" class="library panel" aria-labelledby="libraryTitle">
+      <div class="section-heading"><div><p class="step">01 / SELECT RESULTS</p><h2 id="libraryTitle">Your result library <span id="libraryCount" class="count">0</span></h2><p>Upload or manage saved JSON results. Sorted by filename, A–Z.</p></div><label class="upload"><span aria-hidden="true">＋</span> Upload JSON<input id="uploads" type="file" accept=".json,application/json" multiple aria-label="Upload benchmark JSON files"></label></div>
+      <div class="library-actions"><label class="search-field">Find a run <input id="search" type="search" placeholder="Search filenames…"></label><button id="selectVisible" type="button">Select all visible</button><button id="clearSelection" type="button" disabled>Clear selection</button><button id="refresh" class="refresh" type="button">Refresh library</button></div>
+      <p id="status" role="status" aria-live="polite">Loading local results…</p>
+      <div id="library" class="file-list" aria-label="Select runs to compare"></div>
+      <div class="selection-bar"><div><strong id="selectedTotal">0 files selected</strong><small id="selectionHint">Choose one or more files to start comparing.</small></div><div class="selection-actions"><button id="save" type="button" disabled>Save computed metrics</button><button id="downloadSelected" class="primary" type="button" disabled>Download selected</button></div></div>
+    </section>
+    <section id="comparisonSection" aria-labelledby="comparisonTitle">
+      <div class="section-heading controls"><div><p class="step">02 / EXPLORE THE DIFFERENCE</p><h2 id="comparisonTitle">Compare selected runs</h2><p id="selectionCount">Select runs above to begin.</p></div><label>Question type<select id="category"><option value="overall">All question types</option><option value="1">Multi-hop</option><option value="2">Temporal</option><option value="3">Open-domain</option><option value="4">Single-hop</option><option value="5">Adversarial</option></select></label><label>Chart headroom<select id="headroom"><option value="10">10%</option><option value="20">20%</option><option value="30">30%</option></select></label></div>
+      <p id="scope" class="notice">Compare runs with matching questions, models, and protocols for a fair comparison. Partial runs may have fewer recorded measurements. Means use recorded values only.</p>
+      <div class="sort-controls"><label>Sort charts by<select id="chartSort"><option value="name">Name</option><option value="accuracy">Judged accuracy</option><option value="tokens">Tokens per question</option><option value="storage">Stored memory text</option><option value="runtime">Runtime per question</option></select></label><label>Chart order<select id="chartOrder"><option value="asc">Ascending</option><option value="desc">Descending</option></select></label><p>One field orders all four charts. Missing values appear last.</p></div>
+      <div id="runLegend" class="run-legend" aria-label="Chart run colors"></div>
+      <p id="chartHint" class="chart-hint" hidden>Hover over a bar or focus a chart row to see its result details.</p>
+      <div id="comparisonEmpty" class="empty-state"><span aria-hidden="true">▥</span><h3>Your comparison starts here</h3><p>Select results from your library above. Each condition gets a consistent color across all four charts.</p></div>
+      <div id="charts" class="charts"></div>
+      <section class="panel"><h2>Accuracy by question type</h2><p>Each cell shows percent correct and judged / selected questions. Accuracy excludes unjudged questions; judge completion shows coverage. Without a question manifest, selected counts use exported cases.</p><div class="sort-controls"><label>Sort table by<select id="tableSort"><option value="name">Name</option><option value="category:1">Multi-hop accuracy</option><option value="category:2">Temporal accuracy</option><option value="category:3">Open-domain accuracy</option><option value="category:4">Single-hop accuracy</option><option value="category:5">Adversarial accuracy</option><option value="completion">Judge completion (filter)</option></select></label><label>Table order<select id="tableOrder"><option value="asc">Ascending</option><option value="desc">Descending</option></select></label><p>Choose one field at a time. Missing values appear last.</p></div><div class="table-scroll"><table id="types"></table></div></section>
+      <details class="panel"><summary>How metrics are computed</summary><p>Missing answer or judge token totals are filled from prompt + completion tokens when both are available. Derived comparisons are stored in the JSON’s <code>comparison</code> object. Accuracy uses saved binary correctness labels; importing never calls a model or guesses labels.</p><p>Tokens and runtime show means per recorded question, with coverage counts below. Storage sums final stored UTF-8 text across conversations, excluding embedding arrays and runtime overhead. Storage remains a run-level measurement when filtering question types. No memory snapshot means storage is unavailable.</p><div id="coverage" class="table-scroll"></div></details>
+    </section>
+    </div></div>
+  </main>
+  </div>
+  <div id="chartTooltip" class="chart-tooltip" role="tooltip" hidden></div>
+  <dialog id="deleteDialog" aria-labelledby="deleteTitle" aria-describedby="deleteDescription"><form method="dialog"><p class="step">MANAGE RESULT</p><h2 id="deleteTitle">Delete result file?</h2><p id="deleteDescription">This permanently removes the saved file from your result library.</p><p id="deleteFilename" class="delete-filename"></p><div class="dialog-actions"><button id="cancelDelete" value="cancel">Keep file</button><button id="confirmDelete" class="danger" value="delete">Delete file</button></div></form></dialog>
+  <dialog id="renameDialog" aria-labelledby="renameTitle" aria-describedby="renameDescription"><form id="renameForm"><p class="step">MANAGE RESULT</p><h2 id="renameTitle">Rename result</h2><p id="renameDescription">Enter a filename ending in .json. The file stays in its current library folder.</p><p id="renameCurrent" class="delete-filename"></p><label class="rename-field">New filename<input id="renameName" type="text" required autocomplete="off" spellcheck="false"></label><p id="renameError" class="form-error" role="alert"></p><div class="dialog-actions"><button id="renameCancel" type="button">Cancel</button><button id="renameSubmit" class="primary" type="submit">Save name</button></div></form></dialog>
+  <dialog id="duplicateDialog" aria-labelledby="duplicateTitle" aria-describedby="duplicateDescription">
+    <form method="dialog">
+      <p id="duplicateProgress" class="step">UPLOAD CONFLICT</p>
+      <h2 id="duplicateTitle">This filename already exists</h2>
+      <p id="duplicateDescription">Choose what to do with this file. Your choice applies only to this upload.</p>
+      <p id="duplicateFilename" class="delete-filename"></p>
+      <label class="replace-target">Existing file to replace<select id="replaceTarget" aria-label="Existing file to replace"></select></label>
+      <div class="duplicate-actions">
+        <button id="skipDuplicate" value="skip" autofocus><strong>Skip this file</strong><small>Keep the existing file and continue uploading.</small></button>
+        <button id="keepDuplicate" class="primary" value="duplicate"><strong>Keep both</strong><small id="duplicateNewName"></small></button>
+        <button id="replaceDuplicate" class="danger" value="replace"><strong>Replace existing</strong><small>Overwrite the selected existing file with this upload.</small></button>
+      </div>
+    </form>
+  </dialog>
+</body>
+</html>

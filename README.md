@@ -5,11 +5,16 @@
 [Component and feature specifications](spec/README.md) describe current memory,
 benchmark, and frontend behavior. [Development plans and history](plans/README.md)
 record phase status, dates, remaining acceptance work, and future proposals.
+[Updates](UPDATES.md) summarize the latest working-tree changes;
+[project progress](PROGRESS.md) records dated evidence and limitations. The
+[documentation review](plans/documentation_review.md) lists the files checked.
 
 ## Local setup
 
 Install Python 3.12 first, then run the commands below from the project folder.
-Choose the instructions for your terminal.
+Choose the instructions for your operating system and terminal. Run each command
+in order and stop if it fails; continuing can install packages into a different
+Python environment. PowerShell users must use the Windows block below.
 
 ### macOS / Linux (Bash or Zsh)
 
@@ -23,25 +28,47 @@ python src/app.py
 
 ### Windows (PowerShell)
 
+First check that the Windows Python launcher can find Python 3.12:
+
 ```powershell
-Copy-Item src/.env.example src/.env
+py -0p
+py -3.12 --version
+```
+
+The version check must report Python 3.12.x. If it fails, install Python 3.12
+with the Windows launcher and reopen your terminal before continuing. With
+Windows Package Manager available, install it using:
+
+```powershell
+winget install --id Python.Python.3.12 --exact --source winget --scope user
+```
+
+Then repeat `py -3.12 --version` successfully before running setup.
+
+```powershell
+if (-not (Test-Path -LiteralPath src/.env)) { Copy-Item src/.env.example src/.env }
 py -3.12 -m venv venv
+.\venv\Scripts\python.exe -X utf8 -c "import sys; print(sys.version); print(sys.executable); print('Virtual environment:', sys.prefix != sys.base_prefix)"
 .\venv\Scripts\python.exe -m pip install -r requirements.txt
 .\venv\Scripts\python.exe src/app.py
 ```
 
 The Windows commands use the virtual environment's Python directly, so activation
 and PowerShell execution-policy changes are unnecessary. If `py -3.12` cannot
-find Python, install Python 3.12 and reopen your terminal.
+find Python, install Python 3.12 and reopen your terminal. The environment check
+must print Python 3.12.x, a path ending in `venv\Scripts\python.exe`, and
+`Virtual environment: True`. `python3.12` and `source venv/bin/activate` belong
+to the macOS/Linux instructions; `source` is not a PowerShell command.
+The check uses UTF-8 so non-ASCII workspace paths can be printed on Windows.
 
 Edit `src/.env` and replace `YOUR_API_KEY` with your DeepSeek API key before using
 the chat. Copy the example file only during initial setup; copying it again
 overwrites your saved configuration.
 
-The server binds to loopback (`127.0.0.1`) by default. Set `HOST` explicitly if a different bind address is needed. Only the stylesheet, workspace script, and favicon are served as public files.
+The server binds to loopback (`127.0.0.1`) by default. Set `HOST` explicitly if a different bind address is needed. Only the workspace/comparison stylesheets and scripts, and favicon, are served as public files.
 
-Open http://localhost:5000 after starting the app. The home page links to Chat
-and Test Benchmark. Press **Ctrl+C** to stop it.
+Open http://localhost:5000 after starting the app. The home page links to Chat,
+Test Benchmark, and Compare Runs. Press **Ctrl+C** to stop it.
 On subsequent runs, macOS/Linux users activate the environment and run
 `python src/app.py`; Windows users run `.\venv\Scripts\python.exe src/app.py`.
 Install dependencies again when `requirements.txt` changes.
@@ -63,6 +90,69 @@ $env:PORT = "5001"
 ```
 
 Then open http://localhost:5001. The default remains port 5000.
+
+### Startup messages and saved-run recovery
+
+`Requirement already satisfied` and pip update notices are informational. Flask's
+development-server warning is expected when running this app locally.
+
+A `Skipping unreadable benchmark snapshot` warning means one saved run could
+not be restored. Other valid runs still load, and the unreadable file is left
+unchanged. Inspect the named file in `instance/benchmark_runs/`, restore a valid
+JSON backup, or move it into a recovery subdirectory to exclude it from loading.
+Git conflict markers such as `<<<<<<< HEAD` make a file invalid JSON; preserve
+both versions before resolving the conflict. Legacy reports remain viewable but
+cannot resume under the current benchmark protocol.
+
+`instance/` contains local runtime data and is excluded from Git. Keep exported
+reports intended for sharing under `data/result/` instead.
+
+## Compare saved benchmark runs
+
+From a benchmark report, choose **Export to Compare Runs**, edit the JSON
+filename, and save. The export fills in calculable missing metrics and offers
+**Open Compare Runs** when saved. It works for saved runs and imported reports;
+duplicate names offer Skip, Keep both, or Replace.
+
+Open **Compare Runs** from the home page or visit `/compare`. It uses the same
+sidebar and workspace layout as Chat and Test Benchmark, with collapsible desktop
+navigation and a mobile drawer. Select existing results from `data/result/`, or
+upload multiple benchmark JSON exports. Uploads
+are enriched and saved directly in `data/result/` with their original filenames.
+Duplicate names prompt separately for **Skip**, **Keep both** with `(1)`, `(2)`,
+etc., or **Replace** a chosen existing copy. Uploaded and existing results share
+the same **Rename** and **Delete** controls. Use **Download selected** for downloads.
+The library sorts by
+filename on load and refresh; older nested uploads remain usable.
+
+Use **Save computed metrics** to persist enrichment. **Download selected** saves
+each selected result as a separate JSON file; allow multiple downloads if your
+browser asks. Rename keeps the file in its current library folder and rejects
+name collisions. Delete asks for confirmation. All result operations are limited
+to JSON files inside `data/result/`; traversal, absolute paths, symlinks, and
+Windows junctions are rejected. Uploads use the app's 32 MiB request limit.
+
+Missing answer, judge, and memory token totals are filled when prompt and
+completion counts are available. Missing stored text bytes and entry counts are
+derived from memory snapshots. Existing source fields are preserved. A versioned
+`comparison` object records derived metrics, definitions, and added fields.
+No API calls are made during analysis; missing correctness labels remain unknown.
+
+Charts compare judged accuracy (fixed 0–100%), mean answer + judge tokens per
+question, mean question runtime in seconds, and total stored text in KiB.
+Non-percentage axes start at zero with configurable headroom. Filter by question
+type, or use the question-type accuracy table to compare all types at once.
+Sort the charts by name, accuracy, tokens, storage, or runtime. The accuracy
+table defaults to name order and has its own single-field sort selector for
+question-type accuracy or judge completion. Both support ascending/descending
+order; unavailable values stay last and run colors remain consistent.
+Coverage counts expose partial data. Storage remains run-level under filters;
+token and runtime means exclude ingestion. Match questions, models, and protocols
+before interpreting differences between runs.
+
+See the [Compare Runs specification](spec/frontend/compare_runs.md) for the JSON
+contract, formulas, API endpoints, and coverage limitations. The benchmark's
+read-only import view remains available separately at `/benchmark`.
 
 ## Agent memory modes
 
@@ -397,6 +487,9 @@ dependency, NLTK, uses its bundled Porter stemmer; no corpus downloads are neede
 Install `requirements-test.txt` and Node.js 22+ to run the complete unittest
 suite. DOM-free JavaScript tests cover history migration, restart blocking,
 safe text rendering, inspector views, and saved-run resume/upload behavior.
+Result suites additionally cover Compare selection/sorting/tooltips, individual
+downloads, duplicate handling, rename/delete boundaries, and named benchmark
+exports. See [latest verification scope](UPDATES.md#verification-and-outstanding-work).
 They use Node's built-in test runner with no npm dependencies or browser needed.
 A missing Node runtime fails the frontend tests instead of silently skipping them.
 GitHub Actions installs Python 3.12 and Node.js 22 and runs the full suite with
@@ -451,7 +544,12 @@ Resume validates the dataset hash and model/prompt compatibility, keeps fully sc
 
 On **Test Benchmark**, choose **Import results JSON** in the top bar and select a previously exported results file. The browser restores score tables, question details, retrieved evidence, memory snapshots, and timing fields locally without API calls. Older exports display their saved judge rubric; absent binary accuracy or newer metrics remain unavailable. Dataset files and malformed exports receive a clear validation message.
 
-Imported reports are read-only: resume and human-label uploads are disabled. **Export JSON** downloads the original imported data locally. Choose **New run** to return to normal benchmarking. To view an imported report after refreshing the page, select the file again. The source file and server runs are unchanged.
+Imported reports are read-only: resume and human-label uploads are disabled.
+**Export JSON** downloads the original imported data locally. **Export to Compare
+Runs** saves an explicitly named, enriched comparison copy with duplicate choices.
+Choose **New benchmark** to return to setup. To view an imported report after
+refreshing the page, select the file again. The source file and server runs are
+unchanged by saving a comparison copy.
 
 ### Live progress, memory review, and background workers
 
@@ -463,4 +561,10 @@ Progress counts ingestion turns and question stages separately, reports answered
 
 Snapshots, the original dataset, control files, and worker logs are stored in the server's `instance/benchmark_runs/` directory. No API key is stored in those files. The original dataset allows resuming after a restart without reuploading it. For older saved runs without a saved dataset, click Resume and use the requested original-dataset upload. Uncheck **Run in background** to use the existing server-thread execution. CLI behavior is unchanged; interactive review is available through the web UI.
 
-The benchmark top bar also has **View saved results**, which lists JSON files under `data/result/`, including nested folders. Add more reports or folders there, then press the refresh button beside the dropdown. Selecting a file opens the same read-only report view; no model calls are made.
+The benchmark top bar also has **View saved results**, which lists JSON files
+under `data/result/`, including normal nested folders, sorted by displayed
+filename. Linked folders are excluded. Upload/manage results through Compare Runs,
+or save a named copy with Export to Compare Runs; refresh the dropdown to see
+external changes. Selecting a file opens the same read-only report view without
+model calls. [Result-library rules](spec/frontend/compare_runs.md#library-upload-and-save-flow)
+also define filename preservation, duplicate handling, and the folder boundary.

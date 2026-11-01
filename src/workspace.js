@@ -19,7 +19,8 @@ if (!workspace || workspace.version !== 1 || !Array.isArray(workspace.sessions) 
 }
 let busy = false, unavailable = false, checking = false;
 let inspection = null, inspectionTab = 'contents', inspectionSource = 'chat', selectedRecord = null;
-let importedBenchmark = false, importedOriginal = null;
+let importedBenchmark = false, importedOriginal = null, importedFilename = '';
+let compareExportSource = null, compareExportBusy = false;
 let benchmark = null, runId = null, pollTimer = null, inspectionRequest = 0, previewDataset = null;
 const page = typeof location !== 'undefined' && location.pathname === '/benchmark' ? 'benchmark' : 'chat';
 $('chatWorkspace').hidden = page !== 'chat';
@@ -81,7 +82,7 @@ function render() {
 }
 async function jsonRequest(url, options) {
     const response = await fetch(url, options); const data = await response.json();
-    if (!response.ok) { const error = new Error(data.error || 'Request failed'); error.status = response.status; error.code = data.code; throw error; }
+    if (!response.ok) { const error = new Error(data.error || 'Request failed'); error.status = response.status; error.code = data.code; error.details = data; throw error; }
     return data;
 }
 function addCard(parent, title, value) {
@@ -193,9 +194,6 @@ $('chatWindowSize').oninput=()=>{if(active().started||busy||checking)return;acti
 $('userInput').onkeydown = event => { if (event.key==='Enter'&&!event.shiftKey) { event.preventDefault(); $('chatForm').requestSubmit(); } };
 document.querySelectorAll('.memory-choice').forEach(button=>button.onclick=()=>{if(active().module)return;active().module=button.dataset.module;save();render();});
 $('newChat').onclick=()=>{if(busy)return;const session=newSession();workspace.sessions.push(session);workspace.active=session.id;unavailable=false;checking=false;inspectionSource='chat';inspection=null;save();render();refreshInspection();};
-$('collapseSidebar').onclick=()=>document.body.classList.toggle('sidebar-collapsed');
-$('openSidebar').onclick=()=>document.body.classList.toggle('sidebar-open');
-$('openSidebarBenchmark').onclick=()=>document.body.classList.toggle('sidebar-open');
 $('openInspector').onclick=()=>{inspectionSource='chat';$('inspector').hidden=false;document.body.classList.add('memory-open');refreshInspection();};
 $('closeInspector').onclick=()=>{ $('inspector').hidden=true; document.body.classList.remove('memory-open'); };
 $('refreshInspector').onclick=refreshInspection; $('turnSelector').onchange=drawInspection;
@@ -243,7 +241,7 @@ function showImportedBenchmark(value,filename){
     if(benchmark&&['queued','running','waiting_review'].includes(benchmark.status)&&!importedBenchmark)throw new Error('Finish or cancel the active benchmark before importing results.');
     const report=normalizeBenchmarkImport(value);
     $('resumeDatasetControl').hidden=true;
-    importedOriginal=value;importedBenchmark=true;benchmark=report;clearTimeout(pollTimer);runId=null;
+    importedOriginal=value;importedFilename=String(filename||'imported-results.json').replaceAll('\\','/').split('/').pop();importedBenchmark=true;benchmark=report;clearTimeout(pollTimer);runId=null;
     localStorage.removeItem('kai3-benchmark-run');
     $('benchmarkSetup').hidden=true;$('benchmarkRunning').hidden=true;$('benchmarkReport').hidden=false;
     $('reportMoreActions').hidden=true;$('reportMoreActions').open=false;$('reportTitle').textContent='Benchmark results';$('reportMode').hidden=false;$('reviewLabelsControl').hidden=true;
@@ -272,6 +270,50 @@ function download(url) { const a=document.createElement('a');a.href=url;a.downlo
 $('exportInspector').onclick=()=>{if(inspection&&importedBenchmark&&inspectionSource==='benchmark'){downloadJSON(inspection,'imported-memory.json');return;}if(inspection)download(inspectionSource==='chat'?`/api/chats/${encodeURIComponent(active().id)}/export`:`/api/benchmarks/${runId}/export`);};
 $('cancelBenchmark').onclick=async()=>{try{await jsonRequest(`/api/benchmarks/${runId}/cancel`,{method:'POST'});}catch(e){$('reportStatus').textContent=e.message;}};
 $('exportBenchmark').onclick=()=>importedBenchmark?downloadJSON(importedOriginal,'imported-results.json'):download(`/api/benchmarks/${runId}/export`);
+$('exportToCompare').onclick=()=>{
+    if(!benchmark||compareExportBusy)return;
+    compareExportSource={runId:importedBenchmark?null:runId,report:importedBenchmark?JSON.parse(JSON.stringify(importedOriginal)):null};
+    $('compareExportName').value=importedBenchmark?importedFilename:`locomo-results(${benchmarkConditionLabel(benchmark)})${runId?'-'+runId.slice(0,8):''}.json`;
+    $('compareExportFields').hidden=false;$('compareExportConflict').hidden=true;$('compareExportOpen').hidden=true;$('compareExportSubmit').hidden=false;
+    $('compareExportStatus').textContent='';$('compareExportCancel').textContent='Cancel';
+    $('compareExportDialog').showModal();$('compareExportName').focus();$('compareExportName').select();
+};
+async function saveBenchmarkToCompare(action='ask'){
+    if(compareExportBusy||!compareExportSource)return;
+    compareExportBusy=true;
+    const controls=['compareExportName','compareExportSubmit','compareExportCancel','compareExportSkip','compareExportDuplicate','compareExportReplace','compareExportTarget'];
+    controls.forEach(id=>$(id).disabled=true);$('compareExportStatus').textContent='Saving comparison result…';
+    try{
+        // Fetch the full saved snapshot once; retries keep that same export.
+        if(!compareExportSource.report){
+            if(!compareExportSource.runId)throw new Error('Open a saved benchmark report before exporting.');
+            compareExportSource.report=await jsonRequest(`/api/benchmarks/${encodeURIComponent(compareExportSource.runId)}/export`);
+        }
+        const form=new FormData();form.append('file',new Blob([JSON.stringify(compareExportSource.report)],{type:'application/json'}),$('compareExportName').value);form.append('action',action);
+        if(action==='replace')form.append('replace_path',$('compareExportTarget').value);
+        const result=await jsonRequest('/api/results/import',{method:'POST',body:form});
+        $('compareExportFields').hidden=true;$('compareExportConflict').hidden=true;$('compareExportSubmit').hidden=true;$('compareExportOpen').hidden=false;$('compareExportCancel').textContent='Done';
+        $('compareExportStatus').textContent=`Saved ${result.path.split('/').pop()} to Compare Runs with computed metrics.`;
+        await loadResultLibrary();
+    }catch(error){
+        const conflict=error.details;
+        if(error.status===409&&Array.isArray(conflict?.conflicts)&&conflict.conflicts.length){
+            const target=$('compareExportTarget');target.replaceChildren();
+            for(const path of conflict.conflicts){const option=document.createElement('option');option.value=path;option.textContent=path;target.append(option);}target.value=conflict.conflicts[0];
+            $('compareExportDuplicate').textContent='Keep both as '+conflict.duplicate_name;
+            $('compareExportConflict').hidden=false;$('compareExportSubmit').hidden=true;
+            $('compareExportStatus').textContent='This filename already exists. Choose how to save this result.';
+        }else{$('compareExportConflict').hidden=true;$('compareExportSubmit').hidden=false;$('compareExportStatus').textContent=error.message;}
+    }finally{compareExportBusy=false;controls.forEach(id=>$(id).disabled=false);}
+}
+$('compareExportForm').onsubmit=event=>{event.preventDefault();return saveBenchmarkToCompare();};
+$('compareExportName').oninput=()=>{$('compareExportConflict').hidden=true;$('compareExportSubmit').hidden=false;$('compareExportStatus').textContent='';};
+$('compareExportDuplicate').onclick=()=>saveBenchmarkToCompare('duplicate');
+$('compareExportReplace').onclick=()=>saveBenchmarkToCompare('replace');
+$('compareExportSkip').onclick=()=>{$('reportStatus').textContent='Export to Compare Runs skipped.';$('compareExportDialog').close();};
+$('compareExportCancel').onclick=()=>$('compareExportDialog').close();
+$('compareExportDialog').oncancel=event=>{if(compareExportBusy)event.preventDefault();};
+$('compareExportDialog').onclose=()=>{if(!$('compareExportDialog').open)compareExportSource=null;};
 $('exportReview').onclick=()=>{if(importedBenchmark)return;download(`/api/benchmarks/${runId}/review`);};
 $('reviewFile').onchange=async()=>{if(importedBenchmark)return;try{const data=JSON.parse(await $('reviewFile').files[0].text());const reviews=data.reviews||data.cases.filter(c=>c.ratings).map(c=>({case_index:c.case_index,ratings:c.ratings,notes:c.notes}));const result=await jsonRequest(`/api/benchmarks/${runId}/review`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reviews})});benchmark.calibration=result.calibration;drawBenchmark();$('reportStatus').textContent='Human labels imported and agreement updated.';}catch(error){$('reportStatus').textContent=error.message;}};
 async function resumeSavedBenchmark(dataset){

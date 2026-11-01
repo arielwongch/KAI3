@@ -9,20 +9,15 @@
     <link rel="icon" type="image/png" href="/assets/favicon.png?v=2">
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
+    <script src="/workspace-shell.js" defer></script>
 </head>
 <body>
 <div class="app-shell">
-    <aside class="sidebar" id="sidebar">
-        <div class="sidebar-topline"><a class="brand" href="/" aria-label="KAI3 home"><span class="brand-mark">K</span><span>KAI3</span></a><button class="icon-button" id="collapseSidebar" type="button" aria-label="Collapse sidebar">‹</button></div>
-        <nav class="workspace-nav" aria-label="Workspaces"><a href="/chat" class="workspace-nav-item" data-page="chat">◉ <span>Chat</span></a><a href="/benchmark" class="workspace-nav-item" data-page="benchmark">▦ <span>Test Benchmark</span></a></nav>
-        <button class="new-chat-button" id="newChat" type="button"><span>+</span> New chat</button>
-        <div id="chatHistoryHeading" class="history-heading"><span>Recent chats</span><span class="history-count" id="historyCount">0</span></div>
-        <nav class="chat-history" id="chatHistory" aria-label="Chat history"></nav><div id="benchmarkSidebar" hidden><button class="new-chat-button" id="sidebarNewBenchmark" type="button"><span>+</span> New benchmark</button><div class="history-heading"><span>Saved runs</span><button class="icon-button" id="refreshRuns" type="button" aria-label="Refresh saved runs">&#8635;</button></div><nav id="savedRuns" class="chat-history" aria-label="Saved benchmark runs"></nav></div>
-        <div class="sidebar-footer"><div class="profile-avatar">K</div><div><strong>Local workspace</strong><small>Memory connected</small></div><span class="online-dot"></span></div>
-    </aside>
+    {% from 'workspace_sidebar.html' import workspace_sidebar %}
+    {{ workspace_sidebar('benchmark' if request.path == '/benchmark' else 'chat') }}
 
     <main class="main-stage" id="chatWorkspace">
-        <header class="topbar"><button class="icon-button mobile-menu" id="openSidebar" type="button" aria-label="Open sidebar">☰</button><div class="page-title"><span class="status-dot"></span><span>Chat</span><small>DeepSeek Flash</small></div><button class="subtle-button" id="openInspector" type="button">▤ <span>Memory</span></button></header>
+        <header class="topbar"><button class="icon-button mobile-menu" id="openSidebar" data-open-sidebar type="button" aria-label="Open sidebar">☰</button><div class="page-title"><span class="status-dot"></span><span>Chat</span><small>DeepSeek Flash</small></div><button class="subtle-button" id="openInspector" type="button">▤ <span>Memory</span></button></header>
         <section class="conversation" id="conversation">
             <div class="empty-state" id="emptyState"><div class="spark">✦</div><p class="eyebrow">MEMORY-FIRST CHAT</p><h1>A conversation that<br><em>remembers.</em></h1><p class="empty-copy">Choose one memory architecture for this chat. It stays fixed for the conversation.</p>
                 <div class="memory-choices" id="memoryChoices">{% for module in memory_modules %}<button type="button" class="memory-choice" data-module="{{ module }}"><strong>{{ 'Vector Store + Reranker' if module == 'vector_store_reranker' else module.replace('_', ' ')|title }}</strong><span>{% if module == 'no_memory' %}Answer without storing or retrieving chat history.{% elif module == 'sliding_window' %}Recent conversation turns{% elif module == 'summarization' %}A rolling conversation summary{% elif module == 'alpha' %}Recent turns + summary of evicted turns{% elif module == 'beta' %}Recent turns + searchable evicted turns{% elif module == 'gamma' %}Recent turns + facts extracted from every turn{% elif module == 'delta' %}Summary + searchable original turns{% elif module == 'epsilon' %}Summary + extracted facts{% elif module == 'zeta' %}Searchable original turns + extracted facts{% elif module == 'vector_store_reranker' %}Semantic retrieval followed by relevance reranking.{% elif module == 'vector_store' %}Semantic retrieval over turns{% else %}Extracted and updated facts{% endif %}</span></button>{% endfor %}</div>
@@ -47,7 +42,7 @@
     </main>
 
     <main id="testing" class="benchmark-workspace" hidden>
-        <header class="benchmark-topbar"><button class="icon-button mobile-menu" id="openSidebarBenchmark" type="button" aria-label="Open sidebar">☰</button><div><p class="eyebrow">EVALUATION WORKSPACE</p><h1>LoCoMo benchmark</h1></div><div class="result-library-picker"><label for="resultLibrary">View saved results</label><select id="resultLibrary"><option value="">Select a report from data/result</option></select><button id="refreshResultLibrary" class="icon-button" type="button" aria-label="Refresh result files">&#8635;</button></div><label class="secondary-action import-review">Import results JSON<input id="resultsFile" type="file" accept="application/json,.json"></label><a class="subtle-button" href="/">← <span>Home</span></a></header>
+        <header class="benchmark-topbar"><button class="icon-button mobile-menu" id="openSidebarBenchmark" data-open-sidebar type="button" aria-label="Open sidebar">☰</button><div><p class="eyebrow">EVALUATION WORKSPACE</p><h1>LoCoMo benchmark</h1></div><div class="result-library-picker"><label for="resultLibrary">View saved results</label><select id="resultLibrary"><option value="">Select a report from data/result</option></select><button id="refreshResultLibrary" class="icon-button" type="button" aria-label="Refresh result files">&#8635;</button></div><label class="secondary-action import-review">Import results JSON<input id="resultsFile" type="file" accept="application/json,.json"></label><a class="subtle-button" href="/">← <span>Home</span></a></header>
         <div class="benchmark-scroll">
             <section id="benchmarkSetup" class="benchmark-view">
                 <div class="view-intro"><h2>Configure a run</h2><p>Choose one memory architecture, set the LoCoMo question range, then review the expected evaluation workload.</p></div>
@@ -64,7 +59,7 @@
 
             <section id="benchmarkRunning" class="benchmark-view run-progress-view" hidden><div class="progress-mark">◌</div><p class="eyebrow">RUN IN PROGRESS</p><h2 id="progressTitle">Preparing your run</h2><p id="progressDetail">Your results will appear here as the run completes.</p><div class="progress-track"><span id="progressBar"></span></div><strong id="progressCount">0 / 0 questions</strong><p id="progressActivity" role="status" aria-live="polite"></p><p id="backgroundHint" class="background-hint"></p><div class="progress-actions"><button class="secondary-action" id="reviewMemoryButton" type="button" hidden>Inspect memory</button><button class="primary-action" id="continueBenchmark" type="button" hidden>Continue evaluation</button><button class="secondary-action" id="cancelBenchmark" type="button">Cancel run</button></div></section>
 
-            <section id="benchmarkReport" class="benchmark-view" hidden><div class="report-header"><div><p class="eyebrow">RUN REPORT</p><h2 id="reportTitle">Benchmark results</h2><span id="reportMode" class="report-mode" hidden>Read-only &middot; Imported report</span><p id="reportSubtitle"></p></div><div class="report-actions"><button class="secondary-action" id="exportBenchmark" type="button">Export JSON</button><details id="reportMoreActions" class="report-more-actions"><summary class="secondary-action">More actions</summary><div class="report-more-menu"><button class="secondary-action" id="exportReview" type="button">Review sample</button><label id="reviewLabelsControl" class="secondary-action import-review">Import labels<input id="reviewFile" type="file" accept="application/json,.json"></label><button class="secondary-action" id="resumeBenchmark" type="button">Resume unfinished work</button></div></details><button class="primary-action" id="newBenchmarkRun" type="button">New benchmark</button></div></div>
+            <section id="benchmarkReport" class="benchmark-view" hidden><div class="report-header"><div><p class="eyebrow">RUN REPORT</p><h2 id="reportTitle">Benchmark results</h2><span id="reportMode" class="report-mode" hidden>Read-only &middot; Imported report</span><p id="reportSubtitle"></p></div><div class="report-actions"><button class="secondary-action" id="exportBenchmark" type="button">Export JSON</button><button class="secondary-action" id="exportToCompare" type="button">Export to Compare Runs</button><details id="reportMoreActions" class="report-more-actions"><summary class="secondary-action">More actions</summary><div class="report-more-menu"><button class="secondary-action" id="exportReview" type="button">Review sample</button><label id="reviewLabelsControl" class="secondary-action import-review">Import labels<input id="reviewFile" type="file" accept="application/json,.json"></label><button class="secondary-action" id="resumeBenchmark" type="button">Resume unfinished work</button></div></details><button class="primary-action" id="newBenchmarkRun" type="button">New benchmark</button></div></div>
                 <div id="reportStatus" role="status"></div><label id="resumeDatasetControl" class="secondary-action import-review" hidden>Upload original dataset to resume<input id="resumeDatasetFile" type="file" accept="application/json,.json"></label><div id="benchmarkResults"></div>
             </section>
         </div>
@@ -75,6 +70,19 @@
         <div class="memory-layout"><nav class="memory-nav"><h2>Explore</h2><button data-tab="contents" type="button" class="selected">▤ <span>Stored records</span><b id="recordCount">0</b></button><button data-tab="retrieved" type="button">⌕ <span>Retrieved context</span></button><button data-tab="metrics" type="button">◷ <span>Turn metrics</span></button><div class="memory-turn-picker"><label for="turnSelector">Conversation turn</label><select id="turnSelector"></select></div><div class="memory-note">Memory lives for the current server session. Export a snapshot to keep diagnostics.</div></nav><div class="memory-content"><div class="memory-content-toolbar"><div><h2 id="memoryViewTitle">Stored records</h2><p id="memoryViewSubtitle">Browse the records currently held by this architecture.</p></div><label class="memory-search">⌕ <input id="memorySearch" type="search" placeholder="Search records and fields"></label></div><div id="inspectionBody" class="inspection-body"></div></div></div>
     </section>
 </div>
+<dialog id="compareExportDialog" class="compare-export-dialog" aria-labelledby="compareExportTitle" aria-describedby="compareExportDescription">
+    <form id="compareExportForm">
+        <p class="eyebrow">RESULT LIBRARY</p><h2 id="compareExportTitle">Export to Compare Runs</h2>
+        <p id="compareExportDescription">Save a comparison copy with a name you choose. Missing calculable metrics are filled in automatically.</p>
+        <div id="compareExportFields"><label>Filename<input id="compareExportName" type="text" required autocomplete="off" spellcheck="false"></label><small>Use a filename ending in .json.</small></div>
+        <div id="compareExportConflict" class="compare-export-conflict" hidden>
+            <label>Existing file to replace<select id="compareExportTarget"></select></label>
+            <div class="compare-export-choices"><button id="compareExportSkip" class="secondary-action" type="button">Skip</button><button id="compareExportDuplicate" class="secondary-action" type="button">Keep both</button><button id="compareExportReplace" class="secondary-action danger-action" type="button">Replace selected file</button></div>
+        </div>
+        <p id="compareExportStatus" class="compare-export-status" role="status" aria-live="polite"></p>
+        <div class="compare-export-actions"><button id="compareExportCancel" class="secondary-action" type="button">Cancel</button><button id="compareExportSubmit" class="primary-action" type="submit">Save to Compare Runs</button><a id="compareExportOpen" class="primary-action" href="/compare" hidden>Open Compare Runs</a></div>
+    </form>
+</dialog>
 <script>globalThis.KAI3_MEMORY_CAPABILITIES = {{ module_capabilities|tojson }};</script>
 <script src="/workspace.js"></script>
 </body>

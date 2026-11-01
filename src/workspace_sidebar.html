@@ -1,0 +1,20 @@
+{% macro workspace_sidebar(page) -%}
+<aside class="sidebar" id="sidebar" aria-label="Workspace sidebar">
+    <div class="sidebar-topline"><a class="brand" href="/" aria-label="KAI3 home"><span class="brand-mark">K</span><span>KAI3</span></a><button class="icon-button" id="collapseSidebar" type="button" aria-label="Collapse sidebar" aria-expanded="true">‹</button></div>
+    <nav class="workspace-nav" aria-label="Workspaces">
+        {% for key, url, icon, label in [('chat', '/chat', '◉', 'Chat'), ('benchmark', '/benchmark', '▦', 'Test Benchmark'), ('compare', '/compare', '⇄', 'Compare Runs')] %}
+        <a href="{{ url }}" class="workspace-nav-item{% if page == key %} active{% endif %}" data-page="{{ key }}" title="{{ label }}"{% if page == key %} aria-current="page"{% endif %}>{{ icon }} <span>{{ label }}</span></a>
+        {% endfor %}
+    </nav>
+    {% if page == 'compare' %}
+    <div class="compare-sidebar-sections"><div class="history-heading">On this page</div><a href="#resultLibrarySection">Result library</a><a href="#comparisonSection">Run comparison</a></div>
+    {% else %}
+    <button class="new-chat-button" id="newChat" type="button"><span>+</span> New chat</button>
+    <div id="chatHistoryHeading" class="history-heading"><span>Recent chats</span><span class="history-count" id="historyCount">0</span></div>
+    <nav class="chat-history" id="chatHistory" aria-label="Chat history"></nav>
+    <div id="benchmarkSidebar" hidden><button class="new-chat-button" id="sidebarNewBenchmark" type="button"><span>+</span> New benchmark</button><div class="history-heading"><span>Saved runs</span><button class="icon-button" id="refreshRuns" type="button" aria-label="Refresh saved runs">&#8635;</button></div><nav id="savedRuns" class="chat-history" aria-label="Saved benchmark runs"></nav></div>
+    {% endif %}
+    <div class="sidebar-footer"><div class="profile-avatar">K</div><div><strong>Local workspace</strong><small>{{ 'Local results' if page == 'compare' else 'Memory connected' }}</small></div><span class="online-dot"></span></div>
+</aside>
+<button id="sidebarBackdrop" class="sidebar-backdrop" type="button" aria-label="Close sidebar" tabindex="-1"></button>
+{%- endmacro %}

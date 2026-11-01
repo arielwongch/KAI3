@@ -2,6 +2,8 @@
 
 Status: implemented behavior. Last checked against repository source: 2026-10-08.
 This check date is not an implementation or release date.
+Snapshot loading and recovery behavior reviewed and updated on 2026-11-02.
+Result-library and named Compare export integration reconciled on 2026-11-02.
 
 ## Purpose and interfaces
 
@@ -56,6 +58,33 @@ detached worker remains authoritative on disk. Missing worker liveness turns an
 active detached run into an interrupted report. Launch/persistence failures are
 surfaced as failed runs rather than leaving a permanent queued state.
 
+### Snapshot validation and damaged-file recovery
+
+`app.read_benchmark_snapshot` is shared by startup restoration and periodic
+refresh. It reads UTF-8 JSON, requires an object, validates `run_id` through
+`BenchmarkStore.path_for`, and requires the resulting filename to match the
+snapshot's filename. This is an identity/object check, not complete result-schema
+or resume-protocol validation. Both scans consider top-level `.json` files only;
+`.input.json`, `.continue.json`, and files in recovery subdirectories are excluded.
+
+Unreadable, malformed, or mismatched snapshots are skipped without modifying
+their files; valid runs still load. Startup logs a warning beginning
+`Skipping unreadable benchmark snapshot`, with the filename, reason, and guidance
+to restore a valid JSON backup or move the file out of the run directory. It does
+not log a traceback for these handled failures. Periodic refresh skips the same
+failures silently to avoid repeating warnings on every poll.
+
+The application does not repair or quarantine snapshots automatically. For a
+merge-conflicted file, preserve the original and both valid variants before
+manual resolution. Moving recovery material below a subdirectory of the store
+excludes it from scans. Legacy schema-v1 variants remain non-resumable under v3;
+removing conflict markers does not upgrade their protocol.
+
+The runtime `instance/` directory is excluded from Git; shared reports belong
+under `data/result/`. Removing previously tracked runtime files from the index
+retains their local content. Environment and startup-message guidance belongs to
+the [local setup specification](../local_setup.md).
+
 The web server permits one active benchmark at a time. Cancellation is cooperative,
 not an instantaneous termination of a pending provider call. Browser closure
 does not delete saved results. The CLI writes checkpoints to its selected output
@@ -68,6 +97,27 @@ Saved runs can be reopened/exported by run ID. Repository library JSON files und
 shape/schema, preserve the original JSON for re-export, and do not create live
 jobs. Resume and human-label mutation controls are unavailable for imported files.
 Library reads constrain resolved paths to its root.
+
+The [Compare Runs workspace](../frontend/compare_runs.md) saves new uploads
+directly as `data/result/<original-filename>`, preserving valid basename characters.
+Older nested/UUID uploads remain readable and manageable. Duplicate names prompt
+individually for Skip, Keep both with `(1)`, `(2)`, etc., or Replace a matching copy.
+All library results have Rename/Delete controls; Download selected requests
+separate JSON files. Renames retain their parent folder and bytes and reject
+collisions. Reads/mutations reject traversal, absolute paths, unsafe names,
+symlinks, and Windows junctions; the feature spec owns the full folder boundary.
+
+Selection alone computes analysis without writing; Save computed metrics enriches
+an existing library JSON in place. Enrichment fills calculable missing token/
+storage fields and recomputes a versioned `comparison` object, preserving source
+scores, predictions, protocol, and evidence. Labels/timings are not inferred.
+These library files do not become resumable server jobs.
+
+Benchmark reports offer [Export to Compare Runs](../frontend/benchmark.md#reports-and-inspection)
+with a filename chosen before saving. Saved jobs fetch their full current export
+snapshot once; imported reports copy the original JSON. Both then use the same
+validated import/enrichment API and duplicate choices. Saving a comparison copy
+does not modify the job, uploaded source, or the separate Export JSON behavior.
 
 Resume uses the persisted original dataset first, then available in-memory data,
 then a supplied original dataset as fallback. If unavailable, the API returns
@@ -90,11 +140,16 @@ Schema-v1 results remain readable with their original metrics. Fields absent fro
 old exports are unavailable unless unambiguously derivable; selected denominators
 are not invented from saved case counts. Baseline labels follow
 [baseline compatibility](baselines.md). Inspecting/importing old results does not
-upgrade or modify their stored evidence/scores.
+upgrade or modify their stored evidence/scores. The Compare Runs view explicitly
+uses exported case counts as a fallback for its comparison completion/success
+percentages when no nonempty question manifest exists; those counts do not
+recover the original selected-question denominator. See its
+[metric definitions](../frontend/compare_runs.md#metric-meaning-and-coverage).
 
 Snapshots do not restore embedding arrays or serialize live module objects.
-Malformed result files, incompatible resume settings, unavailable datasets, and
-active-run conflicts produce explicit errors. Partial reports remain inspectable.
+Malformed imported result files, incompatible resume settings, unavailable datasets,
+and active-run conflicts produce explicit errors. Unreadable local run snapshots
+follow the skip-and-warn recovery behavior above. Partial reports remain inspectable.
 Logical snapshot size is not a measurement of embedding-model RAM or total disk
 usage. A completed execution is not evidence of a completed, matched scientific
 comparison; outstanding experiment work is tracked in the
@@ -109,3 +164,21 @@ comparison; outstanding experiment work is tracked in the
 [import tests](../../tests/test_result_import.py), and
 [library tests](../../tests/test_result_library.py) cover persistence/resume and
 legacy or imported reports.
+
+[Snapshot-restore tests](../../tests/test_snapshot_restore.py) cover conflicted,
+empty, non-object, invalid-encoding, missing/invalid-ID, mismatched-filename, and
+unreadable snapshots; unchanged file contents; control/archive-file exclusion;
+valid-run restoration; and refresh tolerance. On 2026-11-02, these two tests and
+the lifecycle, recovery, audit-regression, result-library, and result-analysis
+modules passed **33 targeted offline tests** using Python 3.11.3, with no model
+downloads or paid API calls. This was not a full-suite or clean Python 3.12 setup
+check. A same-day follow-up installed Python 3.12.10 and requirements in a clean
+`venv`, passed `pip check` and both snapshot-restore tests, and verified HTTP 200
+for the app's four pages using a temporary server. See
+[local setup verification](../local_setup.md#source-and-verification) for scope
+and limits. That setup-only follow-up did not rerun the full suite. Later Compare
+work recorded an earlier 138-test full offline run followed by 15 targeted result
+tests and 14 frontend state tests. The subsequent final double-check passed all
+143 offline tests after filename/dialog edge fixes and exercised saved-run and
+imported-report exports in the browser with unchanged sources.
+See [latest verification scope](../../UPDATES.md#verification-and-outstanding-work).

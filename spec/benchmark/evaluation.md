@@ -117,6 +117,15 @@ cost estimates are not fabricated. Remaining calibration work belongs to the
 
 ## Source and verification
 
+Comparison-library analysis is owned by [ResultAnalysis.py](../../src/ResultAnalysis.py)
+and the [Compare metric specification](../frontend/compare_runs.md#metric-meaning-and-coverage).
+Uploads and named benchmark-to-Compare exports derive only calculable fields;
+they do not call the evaluator, guess correctness labels, change saved source
+scores, or establish matched cohorts. The `comparison` object is versioned
+separately from the source schema/protocol. Sorting and tooltips do not alter
+metric definitions, denominators, or measurement scope. Integration notes updated
+2026-11-02; the scoring protocol itself is unchanged by these UI/library changes.
+
 [Benchmark.py](../../src/Benchmark.py) owns scoring/accounting and
 [app.py](../../src/app.py) owns review endpoints.
 [Binary benchmark tests](../../tests/test_binary_benchmark.py),

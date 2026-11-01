@@ -2,6 +2,8 @@
 
 Status: v3 protocol implemented; completion of a matched six-condition experiment
 and its scientific review is not established. Source review date: 2026-10-08.
+Comparison-tool integration/status notes reconciled 2026-11-02; this does not
+change the experiment's completion status.
 
 First recorded: 2026-10-06, commit `c84cb77`. The old design states implementation
 on 2026-10-06; that is preserved as a historical claim, not a fresh acceptance
@@ -26,7 +28,7 @@ provenance, and manifest-based accounting. It extends the
 | 2. Tokenizer/candidate packing | Implemented: pinned counting, first-k whole-record packing, independent capacity, summary caps | Present at review; exact phase completion unknown |
 | 3. Temporal history/provenance | Implemented: versions, validated sources, status labels, atomic writes, eviction | Present at review; exact phase completion unknown |
 | 4. Failure-aware accounting | Implemented: judged accuracy, completion, end-to-end success, evidence coverage | Present at review; exact phase completion unknown |
-| 5. UI/export/resume compatibility | Implemented capabilities, schema-v2 reporting and compatibility checks | Present at review; comprehensive acceptance run not claimed |
+| 5. UI/export/resume compatibility | Implemented capabilities, schema-v2 reporting/resume, named enriched Compare export, managed result library and shared shell | Focused result/UI/browser checks passed 2026-11-02; full scientific/accessibility acceptance not claimed |
 | 6. Matched benchmark study | Not verified complete; legacy saved runs do not establish matching selection/protocol | Unscheduled |
 
 Summary batching is already implemented and defaults to 20 session-bounded turns.
@@ -71,7 +73,7 @@ task does not run a paid experiment or establish that existing results are match
 | Vector neighboring-turn expansion | New retrieval policy and evidence/accounting validation | Unscheduled |
 | Attributed summaries | Implement validated source attribution before reporting source coverage | Unscheduled |
 | Current-only versus temporal facts | Separate condition/protocol label; preserve historical interpretation | Unscheduled |
-| Hybrid memory | Independent architecture and acceptance scope | Unscheduled |
+| Hybrid comparative studies | Window and long-term hybrid modules are implemented; matched experiments need their own architecture/configuration scope | Unscheduled |
 | Monetary cost estimator | Dated provider prices and separate answer/judge/ingestion accounting | Unscheduled |
 
 ## Current specifications and acceptance evidence
@@ -88,3 +90,11 @@ Existing acceptance coverage is in [controlled comparison tests](../tests/test_c
 [recovery tests](../tests/test_benchmark_recovery.py), with frontend/report tests
 linked by the feature specs. These tests verify mechanics using mocks; they do not
 establish real-model extraction accuracy, calibration, or completed experimental runs.
+
+[Compare Runs](../spec/frontend/compare_runs.md) now provides named result storage,
+derived metrics, coverage, metric sorting, and tooltips, with
+[benchmark-to-Compare export](../spec/frontend/benchmark.md#reports-and-inspection).
+These tools do not enforce cohort/model/protocol matching or calculate statistical
+significance. Latest targeted/browser evidence and outstanding acceptance are in
+[updates](../UPDATES.md#verification-and-outstanding-work); no matched run was
+executed as part of this documentation reconciliation.

@@ -1,10 +1,11 @@
 import os
 import json
+import re
 from pathlib import Path
 from copy import deepcopy
 from threading import RLock, Thread
 from uuid import uuid4
-from flask import Flask, abort, jsonify, render_template, request, send_from_directory
+from flask import Flask, abort, jsonify, render_template, request, send_file, send_from_directory
 from MemoryFactory import MemoryFactory
 from HybridMemory import HYBRIDS
 from NoMemory import NoMemory
@@ -14,10 +15,11 @@ from ReAct import run_ReAct
 from Diagnostics import totals
 from Benchmark import BenchmarkJob, MODULES, BENCHMARK_MODULES, MODULE_CAPABILITIES, PROTOCOL_VERSION
 from BenchmarkStore import ACTIVE, atomic_json, path_for, read_json, launch, worker_active
+from ResultAnalysis import enrich_report
 
 app = Flask(__name__, template_folder='.', static_folder=None)
 # Keep the existing asset URLs without exposing the source/configuration directory.
-PUBLIC_ASSETS = frozenset(('style.css', 'workspace.js', 'assets/favicon.png'))
+PUBLIC_ASSETS = frozenset(('style.css', 'workspace.js', 'workspace-shell.js', 'compare.js', 'compare.css', 'assets/favicon.png'))
 
 @app.get('/<path:filename>', endpoint='static')
 def public_asset(filename):
@@ -39,19 +41,32 @@ def persist_benchmark(snapshot):
         return
     atomic_json(path_for(RUN_STORE, run_id), snapshot)
 
+def read_benchmark_snapshot(path):
+    path = Path(path)
+    snapshot = read_json(path)
+    if not isinstance(snapshot, dict):
+        raise ValueError('A benchmark snapshot must be a JSON object.')
+    run_id = snapshot.get('run_id')
+    if path_for(path.parent, run_id).name != path.name:
+        raise ValueError('Snapshot run_id must match its filename.')
+    return snapshot
+
+
 def restore_benchmarks():
     for filename in os.listdir(RUN_STORE):
         if not filename.endswith('.json') or filename.endswith(('.input.json', '.continue.json')):
             continue
         try:
-            with open(os.path.join(RUN_STORE, filename), encoding='utf-8') as source:
-                snapshot = json.load(source)
+            snapshot = read_benchmark_snapshot(os.path.join(RUN_STORE, filename))
             job = BenchmarkJob.restore(snapshot)
             if worker_active(RUN_STORE, snapshot):
                 job.result = snapshot
             jobs[job.result['run_id']] = job
-        except (OSError, ValueError, KeyError, TypeError):
-            app.logger.exception('Could not restore saved benchmark run %s', filename)
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            app.logger.warning(
+                'Skipping unreadable benchmark snapshot %s (%s). File left unchanged; '
+                'restore a valid JSON backup or move it out of %s.',
+                filename, error, RUN_STORE)
 
 def refresh_jobs():
     # Active in-process jobs are authoritative; disk is authoritative for detached workers.
@@ -59,7 +74,7 @@ def refresh_jobs():
         if not filename.endswith('.json') or filename.endswith(('.input.json', '.continue.json')):
             continue
         try:
-            snapshot = read_json(os.path.join(RUN_STORE, filename))
+            snapshot = read_benchmark_snapshot(os.path.join(RUN_STORE, filename))
             run_id = snapshot['run_id']
             existing = jobs.get(run_id)
             if existing is not None and not existing.result.get('worker'):
@@ -142,33 +157,225 @@ def benchmark_page():
     return render_template('index.html', memory_modules=AVAILABLE_MEMORY_MODULES, benchmark_modules=BENCHMARK_MODULES, module_capabilities=MODULE_CAPABILITIES)
 
 RESULT_LIBRARY = Path(__file__).resolve().parents[1] / 'data' / 'result'
+result_library_lock = RLock()
 
-@app.get('/api/results')
-def result_library():
+@app.get('/compare')
+def compare_page():
+    return render_template('compare.html')
+
+
+def result_display_name(name):
+    """Keep original basenames; hide the prefix used by older uploads."""
+    parts = name.split('/')
+    if len(parts) == 2 and parts[0] == 'uploads':
+        return re.sub(r'^[a-f0-9]{32}-', '', parts[-1])
+    return parts[-1]
+
+
+def valid_result_filename(name):
+    """Accept a JSON basename, never a directory or Windows device name."""
+    if not isinstance(name, str):
+        return False
+    try:
+        size = len(name.encode('utf-8'))
+    except UnicodeError:
+        return False
+    return (bool(name) and name.lower().endswith('.json') and size <= 200
+            and not any(ord(char) < 32 or ord(char) == 127 or char in '/\\<>:"|?*' for char in name)
+            and name.split('.')[0].rstrip(' .').upper() not in {'CON', 'PRN', 'AUX', 'NUL',
+                *(f'COM{i}' for i in range(1, 10)), *(f'LPT{i}' for i in range(1, 10))})
+
+
+def result_location(name):
+    """Resolve only canonical relative JSON paths inside the result folder.
+
+    Reject traversal, absolute/drive paths, and linked files/directories (also
+    Windows junctions). Every library read and mutation uses this boundary.
+    """
+    if (not isinstance(name, str) or not name or '\\' in name or ':' in name
+            or any(ord(char) < 32 or ord(char) == 127 for char in name)):
+        return None
+    parts = name.split('/')
+    if any(part in ('', '.', '..') for part in parts):
+        return None
+    try:
+        if RESULT_LIBRARY.is_symlink() or RESULT_LIBRARY.is_junction():
+            return None
+        root = RESULT_LIBRARY.resolve()
+        candidate = root
+        for part in parts:
+            candidate = candidate / part
+            if candidate.is_symlink() or candidate.is_junction():
+                return None
+        if candidate.resolve().is_relative_to(root) and candidate.suffix.lower() == '.json':
+            return candidate
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def result_path(name):
+    candidate = result_location(name)
+    return candidate if candidate is not None and candidate.is_file() else None
+
+
+def result_sort_key(name):
+    return ([int(part) if part.isdigit() else part for part in re.split(r'(\d+)', result_display_name(name).casefold())], name.casefold())
+
+
+def result_library_paths():
+    if RESULT_LIBRARY.is_symlink() or RESULT_LIBRARY.is_junction():
+        return []
     root = RESULT_LIBRARY.resolve()
     files = []
     if root.is_dir():
-        for candidate in root.rglob('*.json'):
-            resolved = candidate.resolve()
-            if resolved.is_file() and resolved.is_relative_to(root):
-                files.append(candidate.relative_to(root).as_posix())
-    return jsonify(files=sorted(files, key=str.casefold))
+        # Do not traverse symlinks/junctions even when they point back inside.
+        for directory, folders, names in os.walk(root, followlinks=False):
+            folders[:] = [folder for folder in folders if not (Path(directory)/folder).is_symlink() and not (Path(directory)/folder).is_junction()]
+            for name in names:
+                relative = (Path(directory)/name).relative_to(root).as_posix()
+                if result_path(relative) is not None:
+                    files.append(relative)
+    return sorted(files, key=result_sort_key)
+
+
+def numbered_result_name(name, files):
+    used = {result_display_name(path).casefold() for path in files}
+    original = Path(name)
+    index = 1
+    while True:
+        candidate = f'{original.stem} ({index}){original.suffix}'
+        if candidate.casefold() not in used:
+            return candidate
+        index += 1
+
+
+@app.post('/api/results/import')
+def import_result():
+    upload = request.files.get('file')
+    if upload is None or not upload.filename or not upload.filename.lower().endswith('.json'):
+        return jsonify(error='Choose a benchmark .json file.'), 400
+    action = request.form.get('action', 'ask')
+    if action not in ('ask', 'duplicate', 'replace'):
+        return jsonify(error='Choose how to handle the duplicate upload.'), 400
+    try:
+        report = enrich_report(json.loads(upload.read().decode('utf-8-sig'),
+                                          parse_constant=lambda _: (_ for _ in ()).throw(ValueError('Invalid JSON number.'))))
+        name = upload.filename
+        if not valid_result_filename(name):
+            return jsonify(error='Use a .json filename without folders or reserved characters (maximum 200 UTF-8 bytes).'), 400
+        # Decide names and write under one lock so simultaneous uploads cannot
+        # silently claim the same display name or numbered suffix.
+        with result_library_lock:
+            files = result_library_paths()
+            matches = [path for path in files if result_display_name(path).casefold() == name.casefold()]
+            target = request.form.get('replace_path')
+            if (action == 'ask' and matches) or (action == 'replace' and target not in matches):
+                return jsonify(error='A file with this name already exists. Choose what to do.'
+                               if action == 'ask' else 'The replacement target changed. Choose again.',
+                               conflicts=matches, duplicate_name=numbered_result_name(name, files)), 409
+            if action == 'replace':
+                candidate = result_path(target)
+                if candidate is None:
+                    return jsonify(error='The replacement file is unavailable. Refresh the library.'), 404
+                atomic_json(candidate, report)
+                return jsonify(path=target, report=report, replaced=True), 200
+            if action == 'duplicate':
+                name = numbered_result_name(name, files)
+                if not valid_result_filename(name):
+                    return jsonify(error='Choose a shorter filename before keeping both copies.'), 400
+            candidate = result_location(name)
+            if candidate is None:
+                return jsonify(error='The result filename is unavailable.'), 400
+            if candidate.exists():
+                return jsonify(error='The result filename is already in use.'), 409
+            atomic_json(candidate, report)
+            return jsonify(path=name, report=report), 201
+    except (ValueError, TypeError, UnicodeError) as error:
+        return jsonify(error=str(error)), 400
+    except OSError:
+        return jsonify(error='Could not save the result in the local repository.'), 503
+
+
+@app.post('/api/results/enrich')
+def enrich_result():
+    payload = request.get_json(silent=True)
+    name = payload.get('path') if isinstance(payload, dict) else None
+    if not isinstance(name, str) or not name:
+        return jsonify(error='Choose a result file.'), 400
+    with result_library_lock:
+        candidate = result_path(name)
+        if candidate is None:
+            return jsonify(error='Result file is unavailable.'), 404
+        try:
+            report = enrich_report(json.loads(candidate.read_text(encoding='utf-8-sig')))
+            atomic_json(candidate, report)
+            return jsonify(path=name, report=report)
+        except (ValueError, TypeError) as error:
+            return jsonify(error=str(error)), 400
+        except OSError:
+            return jsonify(error='Could not update the result file.'), 503
+
+@app.get('/api/results')
+def result_library():
+    return jsonify(files=result_library_paths())
 
 @app.get('/api/results/file')
 def result_library_file():
     name = request.args.get('path', '')
-    root = RESULT_LIBRARY.resolve()
-    candidate = (root / name).resolve()
-    if not name or not candidate.is_relative_to(root) or candidate.suffix.lower() != '.json' or not candidate.is_file():
+    candidate = result_path(name)
+    if candidate is None:
         return jsonify(error='Result file is unavailable.'), 404
     try:
         with candidate.open(encoding='utf-8-sig') as source:
             report = json.load(source)
         if not isinstance(report, dict) or not isinstance(report.get('cases'), list):
             return jsonify(error='This file is not a benchmark results export.'), 400
-        return jsonify(report=report)
+        if request.args.get('download') == '1':
+            return send_file(candidate, as_attachment=True, download_name=result_display_name(name))
+        return jsonify(report=enrich_report(report) if request.args.get('analysis') == '1' else report)
     except (OSError, ValueError):
         return jsonify(error='Could not read this results JSON file.'), 400
+
+
+@app.post('/api/results/rename')
+def rename_result():
+    payload = request.get_json(silent=True)
+    previous = payload.get('path') if isinstance(payload, dict) else None
+    name = payload.get('name') if isinstance(payload, dict) else None
+    if not valid_result_filename(name):
+        return jsonify(error='Use a .json filename without folders or reserved characters (maximum 200 UTF-8 bytes).'), 400
+    with result_library_lock:
+        candidate = result_path(previous)
+        if candidate is None:
+            return jsonify(error='Result file is unavailable.'), 404
+        relative = (candidate.parent / name).relative_to(RESULT_LIBRARY.resolve()).as_posix()
+        destination = result_location(relative)
+        if destination is None:
+            return jsonify(error='The result filename is unavailable.'), 400
+        conflicts = [path for path in result_library_paths() if result_display_name(path).casefold() == name.casefold() and result_path(path) != candidate]
+        if conflicts or (destination.exists() and destination != candidate):
+            return jsonify(error='A result with this filename already exists. Choose another name.'), 409
+        try:
+            if candidate.name != name:
+                candidate.rename(destination)
+            return jsonify(path=relative, previous_path=previous)
+        except OSError:
+            return jsonify(error='Could not rename this result file.'), 503
+
+
+@app.delete('/api/results/file')
+def delete_result():
+    name = request.args.get('path', '')
+    with result_library_lock:
+        candidate = result_path(name)
+        if candidate is None:
+            return jsonify(error='Result file is unavailable.'), 404
+        try:
+            candidate.unlink()
+            return jsonify(deleted=name)
+        except OSError:
+            return jsonify(error='Could not delete this result file.'), 503
 
 @app.get('/api/benchmarks/dataset')
 def default_benchmark_dataset():

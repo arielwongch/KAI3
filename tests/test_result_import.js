@@ -8,6 +8,10 @@ class Node {
   querySelectorAll(){return [];}
   setAttribute(){}
   click(){if(this.onclick)return this.onclick();}
+  focus(){}
+  select(){}
+  showModal(){this.open=true;}
+  close(){this.open=false;this.onclose?.();}
 }
 const nodes={};let requests=0;const downloaded=[];const storage={};
 const context=vm.createContext({
@@ -16,7 +20,8 @@ const context=vm.createContext({
   localStorage:{getItem:k=>storage[k]??null,setItem:(k,v)=>storage[k]=v,removeItem:k=>delete storage[k]},
   crypto:{randomUUID:()=> 'test-id'},setTimeout:()=>1,clearTimeout(){},
   fetch(){requests++;throw new Error('Import must not use the network');},
-  Blob:class {constructor(parts){downloaded.push(parts.join(''));}},
+  Blob:class {constructor(parts){this.parts=parts;downloaded.push(parts.join(''));}},
+  FormData:class {constructor(){this.fields=new Map();}append(key,value,name){this.fields.set(key,value);if(key==='file')this.filename=name;}get(key){return this.fields.get(key);}},
   URL:{createObjectURL:()=> 'blob:test',revokeObjectURL(){}},
 });
 // Skip page startup to isolate import actions from the initial dataset request.
@@ -140,11 +145,74 @@ assert.match(text(nodes.benchmarkResults),/Average tokens per question/);
     assert.equal(requests,0);
     console.log('Actual 100-question export rendered successfully.');
   }
+  const exports=[],responses=[];
+  context.fetch=async (url,options={})=>{
+    exports.push({url,...options});
+    if(url==='/api/results')return {ok:true,json:async()=>({files:['renamed (trial).json']})};
+    const response=responses.shift();assert(response,'Unexpected export request: '+url);
+    return {ok:response.status<400,status:response.status,json:async()=>response.data};
+  };
+  const save=()=>run("$('compareExportForm').onsubmit({preventDefault(){}})");
+  const close=()=>run("$('compareExportCancel').onclick()");
+  const before=JSON.stringify(fixture);
+  run("$('exportToCompare').onclick()");
+  assert.equal(nodes.compareExportDialog.open,true);
+  assert.equal(nodes.compareExportName.value,'legacy.json');
+  run("$('compareExportDialog').onclose()");
+  assert.equal(run('compareExportSource!==null'),true,'A queued close from an earlier dialog must not clear a reopened export');
+  nodes.compareExportName.value='renamed (trial).json';
+  responses.push({status:201,data:{path:'renamed (trial).json',report:{comparison:{rows:[]}}}});
+  await save();
+  const firstExport=exports.find(r=>r.url==='/api/results/import');
+  assert.equal(firstExport.body.filename,'renamed (trial).json');
+  assert.deepEqual(JSON.parse(firstExport.body.get('file').parts.join('')),fixture,'Export preserves original imported fields');
+  assert.equal(JSON.stringify(fixture),before);
+  assert.equal(nodes.compareExportOpen.hidden,false);
+  assert.match(nodes.compareExportStatus.textContent,/renamed \(trial\).json.*computed metrics/);
+  assert.equal(exports.some(r=>r.url.includes('/api/benchmarks/')),false,'Imported reports need no benchmark API lookup');
+  close();
+  const conflict={status:409,data:{error:'Duplicate',conflicts:['old.json','uploads/old.json'],duplicate_name:'old (1).json'}};
+  run("$('exportToCompare').onclick();$('compareExportName').value='old.json'");
+  responses.push(conflict);await save();
+  assert.equal(nodes.compareExportConflict.hidden,false);
+  assert.equal(nodes.compareExportTarget.children.length,2);
+  assert.equal(nodes.compareExportSubmit.hidden,true);
+  nodes.compareExportTarget.value='uploads/old.json';responses.push({status:200,data:{path:'uploads/old.json',replaced:true}});
+  await run("$('compareExportReplace').onclick()");
+  let last=exports.filter(r=>r.url==='/api/results/import').at(-1);
+  assert.equal(last.body.get('action'),'replace');assert.equal(last.body.get('replace_path'),'uploads/old.json');
+  close();
+  run("$('exportToCompare').onclick();$('compareExportName').value='old.json'");
+  responses.push(conflict);await save();responses.push({status:201,data:{path:'old (1).json'}});
+  await run("$('compareExportDuplicate').onclick()");
+  last=exports.filter(r=>r.url==='/api/results/import').at(-1);assert.equal(last.body.get('action'),'duplicate');
+  assert.match(nodes.compareExportStatus.textContent,/old \(1\).json/);close();
+  run("$('exportToCompare').onclick()");responses.push(conflict);await save();
+  const count=exports.length;run("$('compareExportSkip').onclick()");
+  assert.equal(exports.length,count,'Skip makes no save request');assert.equal(nodes.compareExportDialog.open,false);
+  run("$('exportToCompare').onclick();$('compareExportName').value='../outside.json'");
+  responses.push({status:400,data:{error:'Use a JSON basename.'}});await save();
+  assert.match(nodes.compareExportStatus.textContent,/basename/);assert.equal(nodes.compareExportOpen.hidden,true);
+  assert.equal(nodes.compareExportDialog.open,true);assert.equal(nodes.compareExportName.disabled,false);close();
+  run("importedBenchmark=false;runId='saved-run';benchmark={status:'completed',config:{modules:['vector_store']},cases:[]};$('exportToCompare').onclick();runId='another-run'");
+  assert.match(nodes.compareExportName.value,/vector store.*saved-ru.*\.json/i);
+  const fresh={...fixture,run_id:'saved-run',status:'fresh-snapshot'};
+  responses.push({status:200,data:fresh},conflict);await save();
+  responses.push({status:201,data:{path:'old (1).json'}});await run("$('compareExportDuplicate').onclick()");
+  assert.equal(exports.filter(r=>r.url==='/api/benchmarks/saved-run/export').length,1,'Fresh snapshot is read once and retained for duplicate retries');
+  assert.equal(exports.some(r=>r.url==='/api/benchmarks/another-run/export'),false);
+  last=exports.filter(r=>r.url==='/api/results/import').at(-1);
+  assert.equal(JSON.parse(last.body.get('file').parts.join('')).status,'fresh-snapshot');close();
+  run("$('exportToCompare').onclick()");responses.push({status:404,data:{error:'Benchmark run is unavailable.'}});
+  const beforeMissing=exports.filter(r=>r.url==='/api/results/import').length;await save();
+  assert.equal(exports.filter(r=>r.url==='/api/results/import').length,beforeMissing);
+  assert.match(nodes.compareExportStatus.textContent,/unavailable/);close();
+  assert.equal(JSON.stringify(fixture),before);assert.equal(responses.length,0);
   context.fetch=async url=>({ok:true,status:200,json:async()=>url==='/api/benchmarks'?{runs:[]}:({...context.liveReport,config:{modules:['no_memory']},cases:[],review:{token:'token'}})});
   run("importedBenchmark=false;runId='test-run';");
   await run('pollBenchmark()');
   assert.equal(nodes.benchmarkRunning.hidden,false);
   assert.equal(nodes.reportMode.hidden,true);
   assert.equal(nodes.continueBenchmark.hidden,false);
-  console.log('Result import tests passed: legacy/current reports, validation, rendering, local export, no network.');
+  console.log('Result import/export tests passed: imported preservation, named Compare export, fresh saved snapshots, duplicate skip/keep/replace, and failures.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

@@ -2,8 +2,19 @@
 
 This directory describes implemented behavior, organized by ownership. Last
 source review: 2026-10-08. Check dates are not implementation/release dates.
+The shared shell, Compare Runs, benchmark export/result-library integration, local
+setup, and recovery documentation were reconciled on 2026-11-02. This focused
+update does not change the review date of unaffected memory/protocol components.
 [Development plans](../plans/README.md) separately track sequences, historical
 dates, remaining acceptance work, and unscheduled proposals.
+See [updates](../UPDATES.md), [progress](../PROGRESS.md), and the
+[complete documentation review](../plans/documentation_review.md) for scope.
+
+## Local development
+
+| Feature | Scope |
+| --- | --- |
+| [Local setup and startup](local_setup.md) | Python 3.12, shell-specific setup, environment checks, startup messages, local runtime files |
 
 ## Memory components
 
@@ -27,7 +38,7 @@ dates, remaining acceptance work, and unscheduled proposals.
 | [Reference baselines](benchmark/baselines.md) | Question-only, full context, exemptions and aliases |
 | [Context budget](benchmark/context_budget.md) | Tokenizer, candidate k, whole-record packing, request guard |
 | [Evaluation](benchmark/evaluation.md) | Lexical/judge scores, failures/denominators, evidence, human review |
-| [Results and resume](benchmark/results_and_resume.md) | Exports, diagnostics, persistence, imports, recovery, compatibility |
+| [Results and resume](benchmark/results_and_resume.md) | Exports, comparison copies, diagnostics, persistence, imports, recovery, compatibility |
 
 The [hybrid memory specification](memory/hybrid.md) covers delta (summary + vector),
 epsilon (summary + facts), and zeta (vector + facts), including independent
@@ -37,8 +48,10 @@ ingestion, configurable context shares, atomic writes, and component diagnostics
 
 | Feature | Scope |
 | --- | --- |
+| [Shared workspace shell](frontend/workspace_shell.md) | Common sidebar, typography, headers, collapse/mobile drawer, focus and asset ownership |
 | [Chat](frontend/chat.md) | Home/navigation, sessions, composer, messages, chat API |
-| [Benchmark workspace](frontend/benchmark.md) | Setup, progress/review, reports, saved/imported results, API |
+| [Benchmark workspace](frontend/benchmark.md) | Setup, progress/review, reports, saved/imported results, named export to Compare, API |
+| [Compare Runs](frontend/compare_runs.md) | JSON library/enrichment, duplicates, rename/delete, separate downloads, sorted charts/table, tooltips, coverage and folder boundary |
 | [Memory inspector](frontend/memory_inspector.md) | Stored records, turn context, metrics, snapshot export |
 
 ## Documentation ownership

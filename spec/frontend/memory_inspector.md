@@ -2,6 +2,8 @@
 
 Status: implemented behavior. Last checked against repository source: 2026-10-08.
 This check date is not an implementation or release date.
+Shared-shell/export integration notes updated 2026-11-02; the inspection contract
+was not changed by that update.
 
 ## Purpose and interfaces
 
@@ -34,6 +36,9 @@ clicks and Enter/Space. Vector snapshots expose chunk counts rather than arrays;
 fact metadata exposes provenance and, for temporal facts, status/version links.
 Export downloads the appropriate chat or benchmark JSON; imported snapshots use
 local JSON export.
+This inspector Export action exports memory/diagnostics. To save an entire result
+to the comparison library with a filename and derived metrics, use
+[Export to Compare Runs on the benchmark report](benchmark.md#reports-and-inspection).
 
 ## Configuration, failures, and limitations
 
@@ -43,6 +48,9 @@ navigation/table/details stack using responsive styles. Stale async requests are
 guarded when switching sessions. A fresh chat without server state displays empty
 memory; lost state for a started chat displays unavailable memory and requires a
 new chat to continue. Inspection/export does not reconstruct evicted or lost records.
+The surrounding Chat/Benchmark shell uses the
+[shared navigation component](workspace_shell.md); its drawer is separate from the
+inspector's record/turn navigation. The inspector keeps its own full-height layout.
 
 Timing values are seconds. Agent usage is separate from memory LLM usage; local
 embedding arrays/model RAM are excluded from logical storage snapshots. Full
