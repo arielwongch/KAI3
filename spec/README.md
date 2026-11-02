@@ -6,9 +6,12 @@ The shared shell, Compare Runs, benchmark export/result-library integration, loc
 setup, and recovery documentation were reconciled on 2026-11-02. This focused
 update does not change the review date of unaffected memory/protocol components.
 The earlier workspace/result-library update is committed and pushed on `main` as `8035e9b`; current
-verification includes the 143-test offline suite and scoped desktop/phone browser
-checks. The post-commit Markdown review changed documentation only. Subsequent local
-periodic-memory, reranking, and scatter-plot changes are recorded in [updates](../UPDATES.md).
+verification at that milestone included the 143-test offline suite and scoped desktop/phone browser
+checks. The post-commit Markdown review changed documentation only. Subsequent
+periodic-memory, reranking, and scatter-plot changes were committed in `6679238`.
+The 2026-11-03 audit adds offline adjudication and focused policy regressions;
+human calibration and effectiveness confirmation remain pending. The current
+offline suite passed 179 tests. See [updates](../UPDATES.md).
 [Development plans](../plans/README.md) separately track sequences, historical
 dates, remaining acceptance work, and unscheduled proposals.
 See [updates](../UPDATES.md), [progress](../PROGRESS.md), and the
@@ -43,6 +46,7 @@ See [updates](../UPDATES.md), [progress](../PROGRESS.md), and the
 | [Reference baselines](benchmark/baselines.md) | Question-only, full context, exemptions and aliases |
 | [Context budget](benchmark/context_budget.md) | Tokenizer, candidate k, whole-record packing, request guard |
 | [Evaluation](benchmark/evaluation.md) | Lexical/judge scores, failures/denominators, evidence, human review |
+| [Offline adjudication](benchmark/adjudication.md) | Blinded packets, private keys, human labels, calibration denominators and schema |
 | [Results and resume](benchmark/results_and_resume.md) | Exports, comparison copies, diagnostics, persistence, imports, recovery, compatibility, confirmed run deletion |
 
 The [hybrid memory specification](memory/hybrid.md) covers delta (summary + vector),

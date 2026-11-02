@@ -1,5 +1,36 @@
 # Updates
 
+## Approved audit follow-up - 2026-11-03
+
+Reviewed commit `6679238` independently: the existing 165-test offline suite
+passed, and saved results reproduced 30 versus 47 successes, 18 gains, one
+regression, one unresolved judgment, and a 35-question priority review union.
+The periodic-memory, shared-reranking, recent-first packing, and provenance work
+is committed at that revision. The earlier local/uncommitted descriptions below
+refer to their pre-commit implementation stages.
+
+Added standard-library offline adjudication tooling with deterministic blinded
+packets, a private condition/judge key, source hashes, category-stratified agreement
+sampling, human-label import, explicit calibration denominators, and conservative
+failure attribution when legacy traces are missing. Original exports remain
+unchanged. [Review instructions and schema](spec/benchmark/adjudication.md)
+describe the handoff; human labels are pending.
+
+Added focused policy/accounting regressions and prepared the
+[standalone reranker confirmation contract](plans/reranker_confirmation.md).
+The contract is not frozen or executed: human calibration, power/sample-size
+review, frozen-state execution support, and provider spending approval remain.
+No real-model effectiveness result or paid provider run is added.
+
+Verification: **179 offline tests passed** (14 new), plus a focused 10-test rerun
+after strengthening full-history dataset identity validation. Diff whitespace
+checks passed. The prepared packet at `instance/audit_review/2026-11-03/` contains
+42 questions / 84 responses: 35 priority questions and seven seeded agreements.
+CLI import of the untouched template reports zero human labels and 84 pending
+answers. Source byte hashes were unchanged; no filename/config discrepancy was
+found in these two source reports. Share only `reviewer/`; retain `private/`
+with the coordinator. Generated artifacts are ignored runtime files, not commits.
+
 ## Saved benchmark deletion - 2026-11-02
 
 Added **Delete** to Test Benchmark's Saved runs entries, with a run-specific
@@ -17,14 +48,14 @@ Verification: **164 offline tests passed**, including eight deletion API/storage
 tests and 20 frontend-state tests. JavaScript syntax and whitespace checks passed.
 Isolated desktop/phone Chrome checks at 1440px/390px exercised confirm/cancel,
 active guards, actual fixture cleanup, and report reset; dialog screenshots were
-visually reviewed. Only temporary synthetic runs were deleted. Changes are local
-and uncommitted.
+visually reviewed. Only temporary synthetic runs were deleted. These changes
+were subsequently committed as part of `6679238`.
 
 
-## Local approved implementation - 2026-11-02
+## Approved implementation - 2026-11-02
 
-These changes are local and uncommitted; the earlier main-branch update below
-remains historical.
+These changes were initially verified locally and subsequently committed as
+part of `6679238`; the earlier main-branch update below remains historical.
 
 - Added **Windowed Summary** (`windowed_summarization`) and **Windowed Fact Store**
   (`windowed_fact_store`), preserving the existing architectures. One k controls

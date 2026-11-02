@@ -3,6 +3,10 @@
 Status: implemented behavior. Last checked against repository source: 2026-10-08.
 This check date is not an implementation or release date.
 
+The [offline adjudication contract](adjudication.md), added 2026-11-03, owns
+blinded saved-result packets, human-label import, calibration denominators, and
+trace limitations. Human calibration remains pending.
+
 ## Purpose and inputs
 
 Evaluation consumes a question, its reference, a saved prediction, and the exact

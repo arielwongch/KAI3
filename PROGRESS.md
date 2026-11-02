@@ -1,6 +1,6 @@
 # Project progress
 
-Original phase review: 2026-10-08. Latest implementation/status update: 2026-11-02.
+Original phase review: 2026-10-08. Latest implementation/status update: 2026-11-03.
 The original five-item Phase 1 outline is preserved in
 [the development-plan archive](plans/archive/initial_phase.md), first recorded
 on 2026-09-15 in commit `df2e17f`.
@@ -17,6 +17,23 @@ This is an evidence-based status summary, not an assertion that every experiment
 or acceptance criterion is complete. Use the [plan register](plans/README.md) for
 dated milestones, dependencies, remaining work, and unscheduled proposals.
 Current contracts are indexed under [spec/](spec/README.md).
+
+## Approved audit follow-up - 2026-11-03
+
+Independent verification of `6679238` passed the original 165 offline tests.
+The approved follow-up adds deterministic offline blinded-review export/import,
+source identities, a separate private mapping key, and regression coverage for
+recent-first packing, resume rejection, pool/final/packed trace separation, and
+lifecycle accounting. See [review instructions](spec/benchmark/adjudication.md).
+Original benchmark exports are unchanged; actual human labels remain pending.
+
+Final verification: 179 offline tests passed, with a focused 10-test recheck after
+full-history dataset validation was strengthened. The generated ignored review
+packet contains 42 questions / 84 responses with zero human labels so far.
+
+The [reranker confirmation contract](plans/reranker_confirmation.md) is prepared,
+not frozen or executed. Calibration, power/sample-size review, verified frozen
+states, analysis-script review, and paid-run approval remain prerequisites.
 
 ## Current workspace status — 2026-11-02
 

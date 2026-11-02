@@ -1,7 +1,9 @@
 # External audit follow-up plan
 
 First recorded and reviewed: 2026-11-02.
-Status: proposed; implementation and experiments are unscheduled.
+Reviewed and updated: 2026-11-03.
+Status: packing and provenance implemented at `6679238`; offline review tooling
+implemented in the approved follow-up. Human calibration and experiments pending.
 Scope: follow-up to the external decision brief for commit `d52eb6d` and its
 independent verification against the current working tree.
 
@@ -18,21 +20,22 @@ automated labels, not adjudicated human correctness. Mean delivered context is
 580.96 versus 594.01 benchmark tokens. All reports use the first ten questions
 per conversation and contain no adversarial questions.
 
-The current working tree includes periodic modes and shared reranking beyond the
-audited commit. Existing exports do not validate those additions. The current
-165-test offline suite passed during verification; browser/provider execution
-was not repeated. Preserve existing uncommitted work and original exports.
+Commit `6679238` includes periodic modes and shared reranking beyond the original
+audited commit. Existing exports do not validate those additions. Independent
+verification on 2026-11-03 passed all 165 existing offline tests before this
+follow-up; browser/provider execution was not repeated. Preserve original exports.
+The review priority union contains 35 unique questions before agreement sampling.
 
 ## 1. Make recent-window admission explicit
 
-Priority: high. Size: small to medium. Dependency: none.
+Status: implemented at `6679238`; focused regression coverage added 2026-11-03.
+Real-model current/historical answer accuracy remains unverified.
 
-Problem: `WindowHybridMemory.iter_context_candidates` supplies long-term records
-before recent turns, and `MemoryContext.build_memory_context` packs greedily.
-Verification reproduced an old statement surviving while a recent correction was
-omitted, even though that correction fit alone.
+Original problem: long-term candidates could consume the budget before a fitting
+recent correction. `MemoryContext.build_memory_context` now prioritizes recent
+admission independently of candidate/display order.
 
-Proposed policy for Alpha/Beta/Gamma and the two periodic window modes:
+Implemented policy for Alpha/Beta/Gamma and the two periodic window modes:
 
 - Admit recent whole records newest first, counting headings and separators.
 - Spend the remaining allowance on long-term records in retrieval order.
@@ -63,9 +66,10 @@ Acceptance:
 
 ## 2. Build an adjudication set before trusting judge gains
 
-Priority: high. Size: medium. Dependency: existing reports only; independent of 1.
+Status: offline tooling implemented 2026-11-03; actual human review pending.
+Dependency: existing reports only; independent of 1.
 
-Add an offline review export/tool with stable dataset/sample/question identities.
+The [offline review tool](../tools/audit_results.py) exports stable identities.
 Include the union of the 18 improvements, one regression, unresolved judgment,
 and 16 evidence-complete reranker failures. Deduplicate cases, then add a seeded,
 category-stratified sample of agreements. Record selected and total counts so an
@@ -83,8 +87,11 @@ unknown when the original trace lacks the required candidate-pool evidence.
 Investigate `conv-49`, question index 7, without treating a missing judge result
 as an incorrect answer. Human labels require actual human review.
 
-Files: proposed `tools/audit_results.py`, offline tests, and a review-output schema.
-Keep generated review outputs separate from the source reports.
+Files: `tools/audit_results.py`, `tests/test_audit_results.py`, and the
+[review contract/schema](../spec/benchmark/adjudication.md). Generated review
+outputs are separate from source reports, with the condition key in `private/`
+and shareable packets/templates in `reviewer/`. Human labels remain pending;
+mock test labels must never be presented as actual adjudication.
 
 Acceptance: reproducible blinded packets, adjudicated labels with provenance,
 explicit calibration denominators and disagreement counts, and a decision on
@@ -92,9 +99,11 @@ whether reference/judge problems need correction before confirmation.
 
 ## 3. Record enough provenance and lifecycle accounting
 
-Priority: high. Size: medium. Dependency: define the confirmation contract first.
+Status: additive diagnostics implemented at `6679238`; regression checks added
+2026-11-03. Actual frozen-state confirmation and historical missing-data recovery
+are not established.
 
-Extend exports additively with:
+Exports now include:
 
 - Cosine candidate-pool IDs/ranks and pool evidence completeness, separate from
   final selected and packed evidence. Gold annotations remain diagnostic-only.
@@ -122,8 +131,10 @@ renaming is requested separately.
 
 ## 4. Freeze and execute a held-out reranker confirmation
 
-Priority: next experiment. Size: medium. Depends on 2 and 3; freeze code after 1
-if that change is included in the tested revision.
+Status: [confirmation contract](reranker_confirmation.md) prepared 2026-11-03;
+not frozen or executed. Depends on actual human calibration, reviewed statistical
+and power decisions, frozen-state execution support, and separately authorized
+provider spending.
 
 Use standalone Vector Store for the baseline and Vector Store + Reranker for the
 treatment. Existing 100 questions are exploratory only.
@@ -176,7 +187,8 @@ separate from model effectiveness.
 
 ## Sequence and completion
 
-Implement 1 first; prepare 2 in parallel with the offline reporting work in 3.
+Packing and diagnostic implementation in 1 and 3 is complete; maintain regression
+coverage. Use the prepared tooling in 2 for actual human review.
 Complete human calibration before spending on 4. Run 5 only after confirmation
 provides a reliable reference. These are dependency stages, not calendar promises.
 No architecture expansion, clustering, broad tuning sweep, or automatic rewrite

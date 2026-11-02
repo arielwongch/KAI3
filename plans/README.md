@@ -1,7 +1,8 @@
 # Development plans and history
 
 Original status review: 2026-10-08. Latest Compare/shared-shell/export, local setup,
-recovery, and documentation reconciliation: 2026-11-02.
+recovery, and documentation reconciliation: 2026-11-02. Audit tooling/policy
+verification and confirmation-contract update: 2026-11-03.
 Current behavior is documented under
 [spec/](../spec/README.md). This directory owns implementation sequences,
 outstanding work, dependencies, and dated history.
@@ -19,7 +20,8 @@ a tagged release, deployment, or fresh application test run.
 | [Product experience](product_experience.md) | 2026-10-05 (`acb7a6f`) | Shared workspaces, managed result library, and named benchmark-to-Compare export implemented; calibration/study acceptance incomplete | Evaluator audit, human calibration, and remaining acceptance; unscheduled |
 | [UI refinement](ui_refinement.md) | 2026-10-05 (`acb7a6f`) | Shared shell and Compare refinements implemented; scoped desktop/phone browser checks passed | Comprehensive keyboard/screen-reader/cross-browser and unreviewed states; unscheduled |
 | [Controlled comparison](controlled_comparison.md) | 2026-10-06 (`c84cb77`) | Protocol implemented; completion of a matched study not established | Choose matched configuration, validate, then run study; unscheduled |
-| [External audit follow-up](audit_followup.md) | 2026-11-02 (local plan) | Proposed after independent verification; current offline suite passes 165 tests | Correction admission, calibration, provenance/accounting, then held-out reranker confirmation; unscheduled |
+| [External audit follow-up](audit_followup.md) | 2026-11-02 | Packing/provenance implemented at `6679238`; offline review tooling added 2026-11-03 | Actual human calibration, then frozen standalone reranker confirmation; unscheduled |
+| [Reranker confirmation contract](reranker_confirmation.md) | 2026-11-03 | Prepared; not frozen or executed | Seal cohort, power/analysis and frozen states after calibration; provider execution separately authorized |
 | [Documentation review](documentation_review.md) | 2026-11-02 (`8035e9b`) | Complete inventory and post-commit recheck; affected docs reconciled, archives preserved | Keep in sync with future feature changes |
 
 No new feature implementation or benchmark execution is scheduled by this

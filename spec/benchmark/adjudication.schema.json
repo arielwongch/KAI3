@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "KAI3 human review document",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "packet_sha256", "reviews"],
+  "properties": {
+    "schema_version": {"const": "kai3-adjudication-v1"},
+    "packet_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "reviews": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["answer_id", "reviewer_id", "reviewed_at", "provenance", "correct", "reference_ambiguity", "failure_stage", "notes"],
+        "properties": {
+          "answer_id": {"type": "string", "pattern": "^[a-f0-9]{24}$"},
+          "reviewer_id": {"type": ["string", "null"], "minLength": 1},
+          "reviewed_at": {"type": ["string", "null"], "format": "date-time"},
+          "provenance": {"enum": [null, "human_review"]},
+          "correct": {"enum": [null, 0, 1]},
+          "reference_ambiguity": {"type": ["boolean", "null"]},
+          "failure_stage": {"enum": [null, "candidate_retrieval", "reranking", "packing", "answering", "judging", "unresolved"]},
+          "notes": {"type": "string"}
+        },
+        "allOf": [{
+          "if": {"properties": {"correct": {"type": "integer"}}},
+          "then": {"properties": {
+            "reviewer_id": {"type": "string", "minLength": 1},
+            "reviewed_at": {"type": "string", "format": "date-time"},
+            "provenance": {"const": "human_review"},
+            "reference_ambiguity": {"type": "boolean"},
+            "failure_stage": {"type": "string"}
+          }}
+        }]
+      }
+    }
+  }
+}
