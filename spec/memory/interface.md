@@ -58,7 +58,8 @@ Factory options are module-specific. Window supports `max_items` and
 `max_stored_entries`; summary supports `summary_limit`, `max_summary_tokens`,
 and an injected tokenizer; vector/facts support `max_stored_entries` and an
 injected embedder. Facts also support an extractor and `fact_history_mode`.
-The standalone [reranked vector store](vector_store_reranker.md) also supports
+All embedded stores except standalone Vector Store use the shared
+[reranking policy](vector_store_reranker.md), supporting
 `candidate_k` and an injected reranker; final k is supplied at retrieval time.
 The default fact mode is `current`; benchmark v3 requires `versioned`.
 
@@ -117,3 +118,8 @@ define transactional guarantees and the benchmark records stage failures.
 [Diagnostics.py](../../src/Diagnostics.py) implement this contract.
 [Memory integration tests](../../tests/test_memory_integration.py) and
 [diagnostics tests](../../tests/test_diagnostics_benchmark.py) cover integration.
+
+
+The [periodic window modes](periodic_window.md) add a recent window with one
+shared k for retention and update frequency. They update summary/facts from the
+latest k entries every k writes and flush a benchmark remainder before QA.

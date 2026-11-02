@@ -61,6 +61,15 @@ detached worker remains authoritative on disk. Missing worker liveness turns an
 active detached run into an interrupted report. Launch/persistence failures are
 surfaced as failed runs rather than leaving a permanent queued state.
 
+On Windows, workers use `CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP` with
+redirected standard streams. `DETACHED_PROCESS` is deliberately excluded: a venv
+redirector can start the base Python interpreter with a new visible console.
+The Windows lifecycle regression checks console visibility inside that interpreter;
+the launcher-exit test checks that independent execution still works.
+For recurring popups, run `venv\Scripts\python.exe tools\watch_console_windows.py`
+from an existing terminal. It records console process ancestry and visible windows
+for five minutes in `instance/console-popups.jsonl`, without launching child shells.
+
 ### Snapshot validation and damaged-file recovery
 
 `app.read_benchmark_snapshot` is shared by startup restoration and periodic
@@ -185,3 +194,38 @@ tests and 14 frontend state tests. The subsequent final double-check passed all
 143 offline tests after filename/dialog edge fixes and exercised saved-run and
 imported-report exports in the browser with unchanged sources.
 See [latest verification scope](../../UPDATES.md#verification-and-outstanding-work).
+
+
+## Periodic memory and reranker compatibility (2026-11-02)
+
+New periodic-mode reports record `memory_batch_settings` with the shared k,
+latest-k update policy, and before-QA flush. Resume compares batch settings and
+memory prompts. Reranked modes record the pinned model identity and retrieval
+policy version; incompatible earlier cosine-only fact/hybrid runs require a new
+run. Existing standalone reranker reports with matching model/configuration
+remain eligible. Existing saved result files remain readable and are not rewritten.
+
+
+## Deleting saved benchmark runs (2026-11-02)
+
+`DELETE /api/benchmarks/<run_id>` permanently removes the selected stopped run
+from the registry and deletes these exact files under the configured run store:
+`<id>.json`, `<id>.input.json`, `<id>.log`, `<id>.cancel`,
+`<id>.continue.json`, and `<id>.lease`. Missing files are accepted. Other runs,
+backup files, the global worker lease, and separately exported result-library or
+downloaded JSON files are not deleted. This operation never recursively removes
+folders and rejects linked/non-file targets.
+
+The API validates IDs and returns 400 for invalid IDs, 404 for unknown runs,
+409 for active/finishing execution, and 503 for cleanup failures. It holds the
+registry lock against resume/cancel/review mutations, checks the actual server
+thread, and acquires any retained per-run worker lease before cleanup. Thus a
+terminal status alone does not permit deleting a worker still finishing writes.
+A recently queued worker remains protected by the existing startup grace policy.
+
+The snapshot is removed last. On a file error the run remains listed with its
+snapshot, so deletion can be retried; some earlier ancillary files may already
+have been removed. Successful deletion detaches persistence and removes the
+registry entry so normal restore/listing cannot resurrect the run. The UI asks
+for confirmation before sending the DELETE request. See the
+[benchmark workspace](../frontend/benchmark.md#delete-saved-runs) for the flow.

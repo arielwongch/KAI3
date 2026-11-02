@@ -11,24 +11,25 @@ import time
 from uuid import uuid4
 from nltk.stem import PorterStemmer
 from API import call_api, client
-from Diagnostics import collector
+from Diagnostics import collector, retrieval_collector
 from Embeddings import MODEL_NAME
 from MemoryEntry import MemoryEntry
 from MemoryFactory import MemoryFactory
 from HybridMemory import HYBRIDS, HYBRID_PACKING_POLICY, hybrid_settings
 from NoMemory import NoMemory
-from MemoryConfig import MODULES, HYBRID_MODULES as WINDOW_HYBRIDS, window_size_for
+from MemoryConfig import MODULES, HYBRID_MODULES as WINDOW_HYBRIDS, PERIODIC_MODULES, RERANKED_MODULES, window_size_for
 from SlidingWindow import SlidingWindow
 from RequestPolicy import completion, fatal_provider_error, status_code, cancel_event
-from MemoryContext import build_memory_context, get_benchmark_tokenizer, positive_count, PACKING_POLICY, TOKENIZER_REVISION
+from MemoryContext import build_memory_context, get_benchmark_tokenizer, positive_count, PACKING_POLICY, WINDOW_PACKING_POLICY, TOKENIZER_REVISION
+from AuditProvenance import code_identity, hardware_identity, memory_identity
 
 BENCHMARK_MODULES = MODULES[:-1] + ['question_only', 'full_context']
 PROTOCOL_VERSION = 'locomo-controlled-v3'
 MODULE_CAPABILITIES = {
-    name: dict(records=name in ('sliding_window', 'vector_store', 'vector_store_reranker', 'fact_store') or name in (*HYBRIDS, 'beta', 'gamma'),
-               reranker=name == 'vector_store_reranker',
-               summary=name == 'summarization' or name in ('delta', 'epsilon', 'alpha'),
-               facts=name in ('fact_store', 'epsilon', 'zeta', 'gamma'),
+    name: dict(records=name in ('sliding_window', 'vector_store', 'vector_store_reranker', 'fact_store') or name in (*HYBRIDS, 'beta', 'gamma', 'windowed_fact_store'),
+               reranker=name in RERANKED_MODULES,
+               summary=name == 'summarization' or name in ('delta', 'epsilon', 'alpha', 'windowed_summarization'),
+               facts=name in ('fact_store', 'epsilon', 'zeta', 'gamma', 'windowed_fact_store'),
                hybrid=name in HYBRIDS, components=list(HYBRIDS.get(name, ())), memory=name in MODULES[:-1])
     for name in BENCHMARK_MODULES
 }
@@ -134,11 +135,19 @@ def direct_answer(module, question, diagnostics, conversation_text=None,
                   context_limit=1_000_000, max_output_tokens=8192,
                   memory_context_tokens=None, retrieval_k=None, tokenizer=None):
     started = time.perf_counter()
+    import Embeddings
+    import Reranker
+    model_state = dict(embedding_loaded_before=Embeddings._load_model.cache_info().currsize > 0,
+                       reranker_loaded_before=Reranker._load_model.cache_info().currsize > 0)
     if conversation_text is not None:
         entries = []
         context = conversation_text
     elif memory_context_tokens is not None:
-        packed = build_memory_context(module, question, memory_context_tokens, tokenizer, retrieval_k)
+        token = retrieval_collector.set(diagnostics)
+        try:
+            packed = build_memory_context(module, question, memory_context_tokens, tokenizer, retrieval_k)
+        finally:
+            retrieval_collector.reset(token)
         entries = packed.pop('entries')
         context = packed.pop('text')
         diagnostics.update(packed)
@@ -147,6 +156,10 @@ def direct_answer(module, question, diagnostics, conversation_text=None,
         entries = module.retrieve(query=question, k=k)
         context = '\n\n'.join(e.text for e in entries)
     diagnostics['retrieval_seconds'] = time.perf_counter() - started
+    diagnostics['retrieval_model_state'] = dict(**model_state,
+        embedding_loaded_after=Embeddings._load_model.cache_info().currsize > 0,
+        reranker_loaded_after=Reranker._load_model.cache_info().currsize > 0,
+        timing_scope='retrieval including any lazy loading and packing; injected models may bypass caches')
     diagnostics['retrieved'] = [dict(text=e.text, metadata=e.metadata, rank=i, retrieval_score=e.metadata.get('retrieval_score')) for i, e in enumerate(entries, 1)]
     diagnostics['retrieved_count'] = len(entries)
     diagnostics['retrieved_text_bytes'] = sum(len(e.text.encode('utf-8')) for e in entries)
@@ -360,23 +373,31 @@ class BenchmarkJob:
                            config=self.options, model='deepseek-flash', embedding_model=MODEL_NAME,
                            protocol=('full-context; fresh-request-per-question; no-persistent-memory' if mode == 'full_context' else 'question-only; fresh-request-per-question; no-persistent-memory' if mode == 'question_only' else 'direct-turn-ingestion; shared-token-budget; configurable-k; no-qa-writeback'),
                            condition=mode,
-                           memory_model='deepseek-flash' if mode in ('summarization', 'fact_store', 'alpha', 'gamma', *HYBRIDS) else None,
-                           memory_model_settings=dict(thinking='enabled', reasoning_effort='high') if mode in ('summarization', 'fact_store', 'alpha', 'gamma', *HYBRIDS) else None,
+                           memory_model='deepseek-flash' if mode in ('summarization', 'fact_store', 'alpha', 'gamma', *PERIODIC_MODULES, *HYBRIDS) else None,
+                           memory_model_settings=dict(thinking='enabled', reasoning_effort='high') if mode in ('summarization', 'fact_store', 'alpha', 'gamma', *PERIODIC_MODULES, *HYBRIDS) else None,
                            ingestion_unit='turn', storage_size_definition='UTF-8 text and serialized logical snapshot; excludes embedding arrays and runtime overhead',
                            answer_prompt_version=ANSWER_PROMPT_VERSION, answer_settings=dict(thinking='enabled', reasoning_effort='high', max_tokens=self.options['max_output_tokens'], max_attempts=5, timeout_seconds=180),
                            answer_model='deepseek-flash', judge_model='deepseek-flash', judge_prompt_version=JUDGE_PROMPT_VERSION, scoring='binary-semantic-correctness',
                            progress={'completed': 0, 'total': 0}, cases=[], memories=[], errors=[])
         self.result['config_hash'] = hashlib.sha256(json.dumps(self.options, sort_keys=True).encode()).hexdigest()
-        if mode == 'vector_store_reranker':
+        self.result['provenance_version'] = 1
+        self.result['code_identity'] = code_identity()
+        self.result['hardware'] = hardware_identity()
+        self.result['embedding_identity'] = dict(model=MODEL_NAME, revision=None,
+            immutable_version_available=False, policy='unversioned-local-model; compare embedded_state_sha256')
+        self.result['judge_settings'] = dict(stream=False, response_format={'type': 'json_object'},
+            max_attempts=5, timeout_seconds=180, unspecified_parameters='provider defaults')
+        if mode in RERANKED_MODULES:
             from Reranker import reranker_identity
             self.result['reranker'] = reranker_identity()
             self.result['protocol'] = 'vector-shortlist-cross-encoder-rerank-v1; shared-token-budget; no-qa-writeback'
         self.result['judge_prompt_hash'] = hashlib.sha256(JUDGE_SYSTEM.encode()).hexdigest()
         self.result['tokenizer_revision'] = TOKENIZER_REVISION if MODULE_CAPABILITIES[mode]['memory'] else None
-        if mode in ('fact_store', 'gamma'):
-            from TemporalFactStore import TEMPORAL_FACT_PROMPT
-            self.result['memory_prompt_hash'] = hashlib.sha256((TEMPORAL_FACT_PROMPT + BENCHMARK_ASSERTIONS).encode()).hexdigest()
-        elif mode in ('summarization', 'alpha'):
+        if mode in ('fact_store', 'gamma', 'windowed_fact_store'):
+            from TemporalFactStore import TEMPORAL_FACT_PROMPT, TEMPORAL_BATCH_PROMPT
+            prompt = TEMPORAL_BATCH_PROMPT if mode == 'windowed_fact_store' else TEMPORAL_FACT_PROMPT
+            self.result['memory_prompt_hash'] = hashlib.sha256((prompt + BENCHMARK_ASSERTIONS).encode()).hexdigest()
+        elif mode in ('summarization', 'alpha', 'windowed_summarization'):
             from Summarization import SUMMARY_PROMPT
             prompt = SUMMARY_PROMPT + f" Keep the summary within {self.options['max_summary_tokens']} benchmark tokens. Preserve named speakers and dates."
             self.result['memory_prompt_hash'] = hashlib.sha256(prompt.encode()).hexdigest()
@@ -400,7 +421,7 @@ class BenchmarkJob:
             except PackageNotFoundError:
                 self.result['dependency_versions'][package] = None
         if mode in WINDOW_HYBRIDS:
-            self.result.update(hybrid_context_version=1, retrieval_policy=dict(strategy='window_plus_summary' if mode == 'alpha' else 'window_plus_recall', window_size=self.options['window_size'], long_term_k=1 if mode == 'alpha' else self.options.get('retrieval_k')), protocol='window-hybrid-v1; shared-token-budget; configurable-k; no-qa-writeback')
+            self.result.update(packing_policy=WINDOW_PACKING_POLICY, hybrid_context_version=2, retrieval_policy=dict(strategy='window_plus_summary' if mode in ('alpha', 'windowed_summarization') else 'window_plus_recall', window_size=self.options['window_size'], long_term_k=1 if mode in ('alpha', 'windowed_summarization') else self.options.get('retrieval_k')), protocol='window-hybrid-v2; recent-first-admission; shared-token-budget; configurable-k; no-qa-writeback')
             if mode == 'alpha':
                 self.result.update(ingestion_unit='turn_batch', memory_batch_settings=dict(max_turns=self.options['summary_batch_size'], max_chars=12000, policy='summarize_evicted_prefix'))
         if mode == 'summarization' and self.options['summary_batch_size'] > 1:
@@ -410,6 +431,13 @@ class BenchmarkJob:
                                ingestion_unit='hybrid_batch' if MODULE_CAPABILITIES[mode]['summary'] else 'turn',
                                memory_batch_settings=dict(max_turns=self.options['summary_batch_size'] if MODULE_CAPABILITIES[mode]['summary'] else 1,
                                                           max_chars=12000, batched_component='summarization' if MODULE_CAPABILITIES[mode]['summary'] else None))
+        if mode in PERIODIC_MODULES:
+            self.result.update(protocol='periodic-window-v2; recent-first-admission; flush-before-qa; shared-token-budget; no-qa-writeback',
+                               memory_batch_settings=dict(max_turns=self.options['window_size'],
+                                                          policy='latest_k_every_k_writes', flush='before_qa'))
+        if mode in RERANKED_MODULES:
+            self.result['retrieval_version'] = 'vector-shortlist-cross-encoder-rerank-v1'
+
     @classmethod
     def resume(cls, data, previous):
         config = deepcopy(previous.get('config', {}))
@@ -419,10 +447,13 @@ class BenchmarkJob:
         if config.get('modules') == ['no_memory'] and 'no_memory_context' not in config:
             config['no_memory_context'] = 'full' if 'full-context' in previous.get('protocol', '') else 'question_only'
         job = cls(data, config)
-        if job.options['modules'] == ['vector_store_reranker'] and previous.get('reranker') != job.result['reranker']:
+        if job.options['modules'][0] in RERANKED_MODULES and (
+                previous.get('reranker') != job.result['reranker'] or
+                (job.options['modules'][0] != 'vector_store_reranker' and
+                 previous.get('retrieval_version') != job.result['retrieval_version'])):
             raise ValueError('Resume requires matching reranker model, revision, and scoring policy')
-        for field in ('question_manifest_hash', 'packing_policy', 'answer_prompt_hash', 'judge_prompt_hash', 'memory_prompt_hash', 'tokenizer_revision', 'config_hash'):
-            if previous.get(field) != job.result[field]:
+        for field in ('question_manifest_hash', 'packing_policy', 'answer_prompt_hash', 'judge_prompt_hash', 'memory_prompt_hash', 'tokenizer_revision', 'config_hash', 'memory_batch_settings'):
+            if previous.get(field) != job.result.get(field):
                 raise ValueError(f'Resume requires matching {field}')
         job._resume_tokenizer = deepcopy(previous.get('tokenizer'))
         if job.result['dataset_hash'] != previous.get('dataset_hash'):
@@ -436,6 +467,7 @@ class BenchmarkJob:
         job.result['cases'] = deepcopy(previous.get('cases', []))
         job.result['resume_count'] = previous.get('resume_count', 0) + 1
         job.result['previous_ingestions'] = deepcopy(previous.get('previous_ingestions', [])) + deepcopy(previous.get('memories', []))
+        job.result['previous_code_identities'] = deepcopy(previous.get('previous_code_identities', [])) + [deepcopy(previous.get('code_identity'))]
         job.result['resumed_from_status'] = previous.get('status')
         return job
 
@@ -575,7 +607,7 @@ class BenchmarkJob:
                             self.live_progress(ingestion_completed=self.result['progress']['ingestion_completed'] + turns_total, turn_completed=turns_total)
                         else:
                             current_session = None
-                            batch_size = self.options['summary_batch_size'] if MODULE_CAPABILITIES[mode]['summary'] else 1
+                            batch_size = self.options['summary_batch_size'] if MODULE_CAPABILITIES[mode]['summary'] and mode not in PERIODIC_MODULES else 1
                             for batch in ingestion_batches(sample['conversation'], batch_size):
                                 entry = batch[0]
                                 if self.cancel.is_set():
@@ -593,6 +625,12 @@ class BenchmarkJob:
                                     ingestion['write_seconds'] += time.perf_counter() - write_started
                                 ingestion['ingested_turns'] += len(batch)
                                 self.live_progress(ingestion_completed=self.result['progress']['ingestion_completed'] + len(batch), turn_completed=ingestion['ingested_turns'])
+                            if mode in PERIODIC_MODULES and not self.cancel.is_set():
+                                write_started = time.perf_counter()
+                                try:
+                                    module.flush()
+                                finally:
+                                    ingestion['write_seconds'] += time.perf_counter() - write_started
                             if current_session is not None:
                                 ingestion['storage_growth'].append(dict(session=current_session, ingested_turns=ingestion['ingested_turns'], **storage_metrics(module)))
                     except Exception as error:
@@ -606,7 +644,7 @@ class BenchmarkJob:
                         ingestion['total_seconds'] = time.perf_counter() - start
                         ingestion['final_storage'] = storage_metrics(module)
                         with self.lock:
-                            self.result['memories'].append(dict(sample_id=sample['sample_id'], module=mode, memory=module.inspect(), ingestion=ingestion, error=ingestion_error))
+                            self.result['memories'].append(dict(sample_id=sample['sample_id'], module=mode, memory=module.inspect(), identity=memory_identity(module), ingestion=ingestion, error=ingestion_error))
                         self.persist()
                     if ingestion_error:
                         with self.lock:
@@ -623,6 +661,8 @@ class BenchmarkJob:
                         self.live_progress('answer', question_number=question_number, question_total=len(questions), question_index=index)
                         stop_error = None
                         d = {}
+                        previous_execution_seconds = (previous_case or {}).get('diagnostics', {}).get('execution_total_seconds',
+                            (previous_case or {}).get('diagnostics', {}).get('total_seconds', 0))
                         case = dict(sample_id=sample['sample_id'], module=mode, question_index=index, question=qa['question'], category=qa['category'], answer=qa.get('answer'), evidence=qa.get('evidence', []), diagnostics=d, score=None, exact_match=None, token_f1=None, judge=None, correct=None, evidence_recall=None)
                         try:
                             case_started = time.perf_counter()
@@ -638,6 +678,14 @@ class BenchmarkJob:
                             else:
                                 d['final_answer'] = direct_answer(module, qa['question'], d, conversation_text=full_context, context_limit=self.options['context_limit'], max_output_tokens=self.options['max_output_tokens'], memory_context_tokens=self.options.get('memory_context_tokens'), retrieval_k=self.options.get('retrieval_k'), tokenizer=self.tokenizer)
                             d.update(status='completed', answer_status='completed')
+                            # Diagnostic-only annotations run after retrieval and answering.
+                            for trace in d.get('retrieval_traces', []):
+                                evidence = set(qa.get('evidence', []))
+                                ids = {r['dialogue_id'] for r in trace['records'] if r.get('dialogue_id')}
+                                ids.update(source for r in trace['records'] for source in r.get('source_ids', []))
+                                trace['evidence_complete'] = evidence <= ids if evidence else None
+                                trace['evidence_recall'] = len(evidence & ids)/len(evidence) if evidence else None
+                                trace['evidence_basis'] = 'fact_source_provenance' if any(r.get('fact_id') for r in trace['records']) else 'original_turn'
                             case['prediction'] = d['final_answer']
                             case['score'] = score(d['final_answer'], qa.get('answer', ''), qa['category'])
                             case['exact_match'] = exact_match(d['final_answer'], qa.get('answer', ''), qa['category'])
@@ -686,6 +734,9 @@ class BenchmarkJob:
                             if fatal_provider_error(error):
                                 stop_error = error
                             d.update(status='context_limit_exceeded' if isinstance(error, ContextLimitExceeded) else 'error', error=str(error), total_seconds=time.perf_counter() - case_started)
+                        elapsed = time.perf_counter() - case_started
+                        d['execution_total_seconds'] = (previous_execution_seconds + elapsed
+                            if isinstance(previous_execution_seconds, (int, float)) else None)
                         self.save_case(case)
                         if stop_error is not None:
                             self.update(status='failed', error=str(stop_error), failure_status_code=status_code(stop_error))
@@ -827,7 +878,7 @@ def main():
         except ValueError as error:
             raise argparse.ArgumentTypeError(str(error)) from error
     parser.add_argument('--retrieval-k', type=count_option, default=argparse.SUPPRESS, help='Record modules only: positive count or all.')
-    parser.add_argument('--candidate-k', type=count_option, default=argparse.SUPPRESS, help='Vector Store + Reranker only: cosine shortlist count or all (default 50). Retrieval k applies after reranking.')
+    parser.add_argument('--candidate-k', type=count_option, default=argparse.SUPPRESS, help='Embedded retrieval: cosine shortlist count per component or all (default 50). Retrieval k applies after reranking.')
     parser.add_argument('--max-stored-entries', type=count_option, default=argparse.SUPPRESS, help='Record modules only: positive count or unlimited (vector/facts).')
     parser.add_argument('--memory-context-tokens', type=int, default=argparse.SUPPRESS)
     parser.add_argument('--max-summary-tokens', type=int, default=argparse.SUPPRESS)

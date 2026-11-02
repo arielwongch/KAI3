@@ -28,6 +28,21 @@ answering, judging, review, and finalization activity, plus progress and cancell
 Optional memory review shows the ingested snapshot and requires explicit Continue
 with its current token. A cancelled or failed run opens a partial report.
 
+## Delete saved runs
+
+Each Saved runs entry has a Delete action. It is disabled while the run is active
+or its server thread is finishing. The confirmation identifies the architecture
+and full run ID and explains permanent deletion of the saved result, dataset,
+log, and control files; exported Compare Runs/downloaded copies are kept.
+Keep run or Escape cancels without a request. While deletion is pending, controls
+and Escape dismissal are blocked to prevent duplicate/ambiguous actions.
+
+On success, refresh the list and show a deletion status. If the deleted run is
+open, clear its report, localStorage selection, polling timer, and benchmark
+inspector and return to setup. Deleting another run preserves the current view.
+Out-of-order list responses cannot restore older sidebar contents. Errors stay
+in the dialog for retry; the API rechecks execution state before any deletion.
+
 ## Reports and inspection
 
 Reports show configuration/status, accuracy and completion metrics with denominators,
@@ -61,7 +76,7 @@ unchanged original-file download behavior.
 The sidebar groups Chat, Test Benchmark, and [Compare Runs](compare_runs.md)
 above New benchmark and saved-run actions. Compare saves named results directly
 to `data/result/`, handles duplicates and file management, and compares results
-with sortable charts/table and metric tooltips.
+with a configurable scatter plot, independently sortable table, and metric tooltips.
 The read-only import behavior described above applies to `/benchmark`.
 
 ## API contracts
@@ -70,8 +85,9 @@ The read-only import behavior described above applies to `/benchmark`.
 | --- | --- |
 | `GET /api/benchmarks/dataset` | Read the bundled LoCoMo dataset |
 | `POST /api/benchmarks` | Validate `{dataset, options}` and start one job; return 202/run ID |
-| `GET /api/benchmarks` | List saved runs and resumability |
+| `GET /api/benchmarks` | List saved runs, resumability, and `deletable` |
 | `GET /api/benchmarks/<run_id>` | Poll full snapshot/status |
+| `DELETE /api/benchmarks/<run_id>` | Delete a stopped run and its owned files; 200/deleted run ID |
 | `GET /api/benchmarks/<run_id>/export` | Download saved result JSON |
 | `POST /api/benchmarks/<run_id>/cancel` | Request cooperative cancellation |
 | `POST /api/benchmarks/<run_id>/continue` | Continue pending ingestion review using `{token}` |
@@ -119,3 +135,22 @@ and exercised Keep both and Replace against a temporary library. Desktop/phone
 previews showed no overflow or JavaScript errors; no user files or provider calls
 were involved in that browser verification.
 This post-commit documentation review did not rerun application/provider tests.
+
+
+The periodic modes expose one window/update-interval setting (default 100 speaker
+messages), with summary-size controls or fact candidate/retrieval/capacity controls
+as applicable. All embedded modes except standalone Vector Store expose the
+reranker candidate limit. Reports display the recorded candidate pool and model
+identity; component snapshots retain per-store overrides.
+
+
+## Saved-run deletion verification (2026-11-02)
+
+The full 164-test offline suite passed, including eight backend deletion tests
+and 20 frontend-state tests. Checks cover exact file ownership, stopped/active
+runs, live worker leases, final thread checkpoints, cleanup failures/retry,
+confirmation/cancel, report reset, and duplicate submission. Isolated Chrome at
+1440px/390px exercised confirmation, cancel, actual deletion, disabled active-run
+actions, and report/selection reset. Disk assertions verified removal of selected
+fixture files and preservation of the active fixture and exported copy. Dialog
+screenshots were visually inspected. No user runs or provider calls were used.

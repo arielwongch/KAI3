@@ -114,7 +114,7 @@ class RerankedStoreTests(unittest.TestCase):
         for value in (0, True, None):
             with self.assertRaises(ValueError):
                 store.retrieve('q', value)
-        for mode in ('vector_store', 'fact_store', 'sliding_window', 'summarization', 'delta'):
+        for mode in ('vector_store', 'sliding_window', 'summarization', 'alpha', 'windowed_summarization'):
             with self.subTest(mode=mode), self.assertRaises(ValueError):
                 MemoryFactory.create_memory_module(mode, candidate_k=5)
 

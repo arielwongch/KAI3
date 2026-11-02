@@ -32,6 +32,12 @@ def temporal_extract(prompt, payload):
                            source_ids=[turn['metadata']['dialogue_id']], supporting_version_ids=[]))
 
 
+
+def setUpModule():
+    from benchmark_helpers import offline_reranking
+    offline_reranking()
+
+
 class HybridTests(unittest.TestCase):
     def make(self, mode='delta', **options):
         return MemoryFactory.create_memory_module(mode, embedder=FakeEmbeddings(),

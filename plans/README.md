@@ -19,6 +19,7 @@ a tagged release, deployment, or fresh application test run.
 | [Product experience](product_experience.md) | 2026-10-05 (`acb7a6f`) | Shared workspaces, managed result library, and named benchmark-to-Compare export implemented; calibration/study acceptance incomplete | Evaluator audit, human calibration, and remaining acceptance; unscheduled |
 | [UI refinement](ui_refinement.md) | 2026-10-05 (`acb7a6f`) | Shared shell and Compare refinements implemented; scoped desktop/phone browser checks passed | Comprehensive keyboard/screen-reader/cross-browser and unreviewed states; unscheduled |
 | [Controlled comparison](controlled_comparison.md) | 2026-10-06 (`c84cb77`) | Protocol implemented; completion of a matched study not established | Choose matched configuration, validate, then run study; unscheduled |
+| [External audit follow-up](audit_followup.md) | 2026-11-02 (local plan) | Proposed after independent verification; current offline suite passes 165 tests | Correction admission, calibration, provenance/accounting, then held-out reranker confirmation; unscheduled |
 | [Documentation review](documentation_review.md) | 2026-11-02 (`8035e9b`) | Complete inventory and post-commit recheck; affected docs reconciled, archives preserved | Keep in sync with future feature changes |
 
 No new feature implementation or benchmark execution is scheduled by this

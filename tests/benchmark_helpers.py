@@ -16,3 +16,12 @@ class FakeTokenizer:
 
     def decode(self, tokens, **kwargs):
         return ''.join(tokens)
+
+
+def offline_reranking():
+    """Keep existing vector-order fixtures offline; rerank behavior has separate tests."""
+    import unittest
+    from unittest.mock import patch
+    patcher = patch('Reranker.LocalReranker.score', side_effect=lambda query, texts: list(range(len(texts), 0, -1)))
+    patcher.start()
+    unittest.addModuleCleanup(patcher.stop)

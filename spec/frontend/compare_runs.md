@@ -154,23 +154,29 @@ snapshots.
 
 ## Charts and question-type comparison
 
-Four horizontal bar charts show judged accuracy, mean tokens per question,
-stored text in KiB (1,024 bytes), and mean runtime per question in seconds.
-All numeric axes start at zero. Accuracy has a fixed maximum of 100%; the other
-axes use the largest displayed value plus 10%, 20%, or 30% headroom, rounded up
-to a readable scale. An all-zero or unavailable series retains a positive axis.
-Bars have consistent run colors and exact value labels; missing values display
-**Unavailable**. A color legend maps run numbers to full filenames and modules;
-these also appear in the table. Short run labels and larger chart text on phones
-keep charts readable. Library and comparison empty states explain the next step.
+One full-width scatter plot compares two numeric metrics. Independent **X axis**
+and **Y axis** selectors each offer judged accuracy, mean answer + judge tokens
+per question, stored text in KiB (1,024 bytes), and mean runtime per question in
+seconds. Defaults are tokens on x and accuracy on y. Selecting the same metric
+for both axes is supported. There are no chart-order controls.
 
-Charts default to name order. **Sort charts by** selects one shared field: name,
-judged accuracy, mean tokens, stored memory text, or mean runtime. All four charts
-use that ordering. **Chart order** selects ascending/descending. Accuracy defaults
-to descending when chosen; name and resource metrics default to ascending.
-Sorting uses the active question-type metrics; storage remains run-level.
-Run numbers and colors are assigned from name order and stay consistent across
-sort fields, chart rows, the legend, tooltips, and the accuracy table.
+All numeric axes start at zero. Accuracy has a fixed maximum of 100%; other
+metrics use 10%, 20%, or 30% headroom rounded to a readable scale. Limits use runs
+with both measurements. An all-zero or unavailable series retains a positive
+axis. Each measured run has one colored point at its actual x/y coordinates.
+If either value is missing, omit that point and expose the run through an
+**Unavailable** button below the graph. Zero remains a measured coordinate.
+Coincident points retain their real coordinates; tooltips identify other runs
+at the same coordinates, and every point remains keyboard-focusable. Run numbers
+and colors use name order and remain stable across axes, filters, and table sorts.
+
+SVG coordinates use CSS pixels without viewBox scaling: tick text is 11px and
+axis labels 12px, inheriting the workspace body font. Chart headings use the same
+16px Space Grotesk style as surrounding panel headings. Container resizing,
+including desktop sidebar collapse, redraws coordinates without scaling fonts.
+Axis titles and units are English. Compact tick labels use explicit `en-US`
+formatting (K/M/B) regardless of browser locale; tooltips retain exact formatted
+measurements.
 
 The accuracy table independently defaults to name ascending. **Sort table by**
 chooses one field: name, any of the five question-type accuracy columns, or judge
@@ -181,16 +187,16 @@ an `aria-sort` direction and arrow. Missing values always remain last in either
 direction; equal values keep their original name order. Sort choices remain
 active through filtering and rerendering but reset on page reload.
 
-Hovering a bar or its row shows a tooltip with the full filename, module, graph
-value and units, and question-type scope. Accuracy includes judged/selected
+Hovering, focusing, or tapping a point shows a tooltip with the full filename,
+module, both axis values/units, and the scope/coverage for each axis. Accuracy includes judged/selected
 counts and judge completion; token and runtime tooltips include contributing
 case counts and totals (unavailable for incomplete measurements); storage shows
 bytes and measured/total snapshots and explicitly retains run-level scope.
 Notes describe each measurement's denominator and exclusions. Zero and
-unavailable results remain inspectable through their row without drawing a
-misleading bar. Keyboard focus and touch also open the details. Tooltips stay
+unavailable results remain inspectable through their buttons without drawing a
+fabricated zero measurement. Keyboard focus and touch also open the details. Tooltips stay
 within the viewport and dismiss on pointer leave, blur, Escape, outside press,
-scroll, resize, or a chart rerender; focused rows retain details on pointer leave.
+scroll, resize, or a chart rerender; focused points retain details on pointer leave.
 
 The question-type selector filters accuracy, tokens, runtime, and completion.
 Storage remains a run-level value. The accuracy table shows every question type
@@ -272,3 +278,25 @@ documentation reconciliation checked contracts and links without rerunning
 application tests; the later final double-check reran the full offline suite and
 key browser flows. No real-model/provider or comprehensive accessibility review
 is implied.
+
+
+### Local dot-plot verification (2026-11-02)
+
+The later approved single-plot change passed the 156-test offline suite,
+including comparison DOM and 16 frontend-state tests, plus JavaScript syntax
+checks. Headless Chrome at 1440px/390px verified one plot, all four metric choices,
+keyboard-focus tooltips, and no horizontal page overflow using temporary synthetic
+results. Desktop/phone screenshots were visually reviewed. The earlier 143-test
+and committed-update evidence above describes the prior version. These newer
+changes remain local and uncommitted.
+
+
+### Configurable scatter revision (2026-11-02)
+
+Supersedes the single-metric dot-plot design above. The affected 15-test result
+suite and expanded comparison DOM checks passed. Isolated headless Chrome at
+1440px/390px checked all 16 x/y combinations, confirmed stable 11px inherited
+tick text and matching panel headings, exercised missing/coincident-run tooltips,
+and verified bounded points without horizontal overflow. Screenshots were
+visually reviewed. This revision used temporary fixtures and no provider calls;
+the earlier 156-test full-suite evidence predates this chart-only revision.

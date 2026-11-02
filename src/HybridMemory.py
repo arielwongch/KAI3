@@ -31,8 +31,8 @@ def hybrid_settings(mode, shares=None, component_options=None):
     if not isinstance(options, dict) or set(options) - records:
         raise ValueError('component_options may configure only the hybrid record components')
     for name, values in options.items():
-        if not isinstance(values, dict) or set(values) - {'retrieval_k', 'max_stored_entries'}:
-            raise ValueError('Component options support retrieval_k and max_stored_entries only')
+        if not isinstance(values, dict) or set(values) - {'retrieval_k', 'max_stored_entries', 'candidate_k'}:
+            raise ValueError('Component options support retrieval_k, max_stored_entries, and candidate_k only')
         for key, value in values.items():
             positive_count(value, key, unlimited=True)
     return {name: float(shares[name]) for name in names}, deepcopy(options)
@@ -62,7 +62,7 @@ class HybridMemory(MemoryModule):
         if not entries:
             return
         # Copy logical state, never service objects, model weights, or locks.
-        excluded = {'embedder', 'extractor', 'tokenizer', '_lock'}
+        excluded = {'embedder', 'extractor', 'tokenizer', 'reranker', '_lock'}
         with self._lock:
             states = {name: deepcopy({k: v for k, v in vars(component).items() if k not in excluded})
                       for name, component in self.components.items()}
@@ -87,7 +87,10 @@ class HybridMemory(MemoryModule):
                             for target in (self.component_usage[name], parent):
                                 if target is not None:
                                     previous = target.get(key, 0)
-                                    target[key] = None if previous is None or value is None else previous + value
+                                    if key == 'provider_requests':
+                                        target.setdefault(key, []).extend(deepcopy(value))
+                                    else:
+                                        target[key] = None if previous is None or value is None else previous + value
             except BaseException:
                 for name, component in self.components.items():
                     for key in list(vars(component)):
@@ -117,7 +120,12 @@ class HybridMemory(MemoryModule):
         groups = {}
         for name, component in self.components.items():
             limit = None if name == 'summarization' else self.component_options.get(name, {}).get('retrieval_k', k)
-            candidates = list(component.iter_context_candidates(query, limit))
+            from Diagnostics import retrieval_component
+            token = retrieval_component.set(name)
+            try:
+                candidates = list(component.iter_context_candidates(query, limit))
+            finally:
+                retrieval_component.reset(token)
             for entry in candidates:
                 entry.metadata['component'] = name
                 entry.text = f'[{name}]\n{entry.text}'

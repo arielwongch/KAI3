@@ -1,6 +1,6 @@
 # LoCoMo ingestion and question lifecycle
 
-Status: implemented behavior. Last checked against repository source: 2026-10-08.
+Status: implemented behavior. Last checked against repository source: 2026-11-02.
 This check date is not an implementation or release date.
 
 ## Purpose
@@ -19,7 +19,7 @@ allowance controls supplied context size, not ingestion cost or stored informati
 | `summarization` | `Summarization` | One generated rolling summary | The same summary for every question |
 | `vector_store` | `VectorStore` | Original turns and embeddings of their chunks | Turns ranked by their best matching chunk |
 | `vector_store_reranker` | `VectorStoreReranker` | Original turns and chunk embeddings | Cosine shortlist, cross-encoder ranking, final k |
-| `fact_store` | `TemporalFactStore` | Atomic assertions, historical versions, provenance, and embeddings | All retained versions ranked by assertion similarity |
+| `fact_store` | `TemporalFactStore` | Atomic assertions, historical versions, provenance, and embeddings | Cosine shortlist, cross-encoder ranking, final k |
 
 | Control | Window | Summary | Vector | Temporal facts |
 | --- | --- | --- | --- | --- |
@@ -49,6 +49,18 @@ The [memory component specs](../README.md) own each storage/retrieval algorithm.
 The default question limit is 10 per selected conversation; zero selects all
 questions matching the selected categories. Selected conversations are fully
 ingested even when only one question is requested.
+
+The [periodic window modes](../memory/periodic_window.md) add
+`windowed_summarization` and `windowed_fact_store`: one window-size setting
+(default 100) also controls the update interval. They ingest original entries
+individually, update every k entries across sessions, and flush the remainder
+before memory review or QA. `summary_batch_size` does not control these modes.
+The fact variant requires versioned history and supports candidate/final-k limits;
+the summary variant supports the existing summary cap.
+
+All embedded retrieval except standalone Vector Store uses the shared reranker,
+including facts and embedded hybrid components. `candidate_k` defaults to 50 per
+store and accepts null for all; component overrides use `component_options`.
 
 ## Ingestion and answering
 

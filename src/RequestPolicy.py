@@ -25,6 +25,10 @@ def fatal_provider_error(error):
 
 def completion(api_client, diagnostics=None, phase='answer', **kwargs):
     metrics = diagnostics if diagnostics is not None else {}
+    from Diagnostics import collector
+    provenance = diagnostics if diagnostics is not None else collector.get()
+    settings = {k: kwargs[k] for k in ('model', 'max_tokens', 'stream', 'reasoning_effort',
+                'extra_body', 'response_format', 'temperature', 'top_p', 'seed') if k in kwargs}
     event = cancel_event.get()
     started = time.perf_counter()
     try:
@@ -32,9 +36,23 @@ def completion(api_client, diagnostics=None, phase='answer', **kwargs):
             if event is not None and event.is_set():
                 raise RequestCancelled('Run cancelled.')
             metrics[phase + '_llm_calls'] = metrics.get(phase + '_llm_calls', 0) + 1
+            request = dict(phase=phase, attempt=attempt+1, settings=settings,
+                           returned_model=None, system_fingerprint=None, tokens=None,
+                           immutable_provider_version_available=False, status='started')
+            if provenance is not None:
+                provenance.setdefault('provider_requests', []).append(request)
+            attempt_started = time.perf_counter()
             try:
-                return api_client.with_options(max_retries=0, timeout=180).chat.completions.create(**kwargs)
+                response = api_client.with_options(max_retries=0, timeout=180).chat.completions.create(**kwargs)
+                usage = getattr(response, 'usage', None)
+                request.update(status='completed', returned_model=getattr(response, 'model', None),
+                    system_fingerprint=getattr(response, 'system_fingerprint', None),
+                    response_id=getattr(response, 'id', None), tokens=getattr(usage, 'total_tokens', None),
+                    prompt_tokens=getattr(usage, 'prompt_tokens', None),
+                    completion_tokens=getattr(usage, 'completion_tokens', None))
+                return response
             except Exception as error:
+                request.update(status='error', status_code=status_code(error))
                 retryable = status_code(error) in (408, 429, 500, 502, 503, 504) or isinstance(error, (APIConnectionError, APITimeoutError))
                 if not retryable or attempt == 4:
                     raise
@@ -50,5 +68,7 @@ def completion(api_client, diagnostics=None, phase='answer', **kwargs):
                         raise RequestCancelled('Run cancelled during retry wait.')
                 else:
                     time.sleep(delay)
+            finally:
+                request['seconds'] = time.perf_counter() - attempt_started
     finally:
         metrics[phase + '_seconds'] = time.perf_counter() - started

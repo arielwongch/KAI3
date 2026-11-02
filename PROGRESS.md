@@ -235,3 +235,38 @@ collapse and a mobile drawer with backdrop/Escape dismissal and focus handling.
 verified the shell on all three pages and Compare's library, sorting, tooltip,
 rename, and desktop/phone layouts, with no horizontal overflow or JavaScript
 errors. Browser checks used temporary fixtures without changing user result data.
+
+
+## 2026-11-02 - Local periodic-memory, reranking, and dot-plot update
+
+Implemented the approved two periodic window modes, shared embedded-store
+reranking with standalone Vector Store preserved, and one selectable dot plot.
+The [updates log](UPDATES.md#local-approved-implementation---2026-11-02) records
+scope and verification. Full offline suite: 156 tests passed; frontend-state
+coverage includes 16 Node tests. Desktop/phone browser checks at 1440px/390px used
+temporary synthetic results and no provider calls. Changes remain local and
+uncommitted; real-provider validation and a matched study are not claimed.
+
+
+### 2026-11-02 - Configurable scatter and typography revision
+
+At the user's revised request, replaced the single-metric run-row plot with a
+numeric x/y scatter plot: tokens on x and accuracy on y by default, with all four
+existing metrics available on either axis. SVG text stays in CSS pixels using
+the surrounding workspace font sizes/styles. Coincident and missing measurements
+remain inspectable. The 15 affected result tests, expanded DOM checks, and
+1440px/390px headless browser checks passed with synthetic fixtures and no model
+calls; the earlier full 156-test run predates this chart-only revision.
+
+
+## 2026-11-02 - Saved benchmark run deletion
+
+Added confirmed per-run deletion from Saved runs and a DELETE API that removes
+only the chosen run's snapshot, saved dataset, logs, and controls. Runtime state,
+thread completion, and worker leases protect running/finishing work; exported
+copies remain separate. Deletion shares mutation locking and preserves a snapshot
+for retry after file errors. Full offline suite: 164 tests passed, including eight
+new backend deletion tests and 20 Node frontend-state tests. Chrome smoke checks
+at 1440px/390px used synthetic runs only and verified confirm/cancel, active-run
+guards, file removal, report/selection reset, and preserved exported data. Changes
+remain local and uncommitted.

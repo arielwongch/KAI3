@@ -63,3 +63,10 @@ transactional failures, locking, detached inspection, labels, and token packing.
 `test_hybrid_integration.py` checks chat settings, benchmark ingestion/accounting,
 CLI, cancellation, background exports, and resume. Node frontend regressions
 cover validation, persistence, request settings, locking, and both hybrid families.
+
+
+As of 2026-11-02, Beta/Gamma embedded long-term retrieval uses the shared
+[reranking policy](vector_store_reranker.md), with configurable `candidate_k`
+(default 50). Their write policies remain unchanged. The separate
+[periodic window modes](periodic_window.md) process the latest k incoming entries
+every k writes and flush the final partial batch before benchmark QA.

@@ -23,6 +23,12 @@ from MemoryEntry import MemoryEntry
 from test_semantic_memory import FakeEmbeddings, extraction
 
 
+
+def setUpModule():
+    from benchmark_helpers import offline_reranking
+    offline_reranking()
+
+
 class PublicAssetTests(unittest.TestCase):
     def test_private_files_are_not_served(self):
         # Sentinel files make this safe even before the exposure is fixed.

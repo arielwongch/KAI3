@@ -23,6 +23,12 @@ def entry(text, **metadata):
     return MemoryEntry(text, metadata)
 
 
+
+def setUpModule():
+    from benchmark_helpers import offline_reranking
+    offline_reranking()
+
+
 class HybridMemoryTests(unittest.TestCase):
     def test_budget_counts_section_labels_and_limits_only_long_term_candidates(self):
         from benchmark_helpers import FakeTokenizer
@@ -89,7 +95,7 @@ class HybridMemoryTests(unittest.TestCase):
         result = module.retrieve('feline', 1)
         self.assertEqual([e.text for e in result], ['cat one', 'dog three', 'dog four'])
         self.assertEqual(result[0].metadata['dialogue_id'], 'cat one')
-        self.assertEqual(result[0].metadata['retrieval_score_type'], 'cosine_similarity')
+        self.assertEqual(result[0].metadata['retrieval_score_type'], 'cross_encoder_logit')
         self.assertEqual(snapshot['entries'][0]['chunk_count'], 1)
         self.assertEqual([e.text for e in module.retrieve(' ', 1)], ['dog three', 'dog four'])
 

@@ -63,7 +63,7 @@ function rows(){
 }
 function sortRows(data,field,direction){
     const sign=direction==='desc'?-1:1;
-    const value=row=>({accuracy:row.metrics.accuracy_percent,tokens:row.metrics.mean_question_tokens,storage:row.overall.stored_text_bytes,runtime:row.metrics.mean_question_seconds,completion:row.metrics.completion_percent})[field]??(field.startsWith('category:')?row.categories[field.slice(9)]?.accuracy_percent:undefined);
+    const value=row=>field==='completion'?row.metrics.completion_percent:row.categories[field.slice(9)]?.accuracy_percent;
     return [...data].sort((a,b)=>{
         if(field==='name')return sign*(a.label.localeCompare(b.label,'en',{sensitivity:'base',numeric:true})||a.name.localeCompare(b.name));
         const av=value(a),bv=value(b);
@@ -90,66 +90,98 @@ function chartDetails(row,kind){
     if(kind==='tokens')details.push(['Cases with token usage',`${fmt(m.token_count)} / ${fmt(m.case_count)}`],['Total question tokens',fmt(m.total_question_tokens)]);
     if(kind==='runtime')details.push(['Cases with runtime',`${fmt(m.runtime_count)} / ${fmt(m.case_count)}`],['Total question runtime',finite(m.total_question_seconds)?fmt(m.total_question_seconds)+' s':'Unavailable']);
     if(kind==='storage')details.push(['Stored text bytes',fmt(overall.stored_text_bytes)],['Measured snapshots',`${fmt(overall.storage_count)} / ${fmt(overall.memory_count)}`]);
+    if((kind==='tokens'||kind==='runtime')&&overall.lifecycle){const l=overall.lifecycle;details.push(['Recorded lifecycle tokens (all types)',fmt(l.total_provider_tokens)],['Recorded lifecycle runtime (all types)',finite(l.total_seconds)?fmt(l.total_seconds)+' s':'Unavailable'],['Ingestion builds',fmt(l.ingestion_count)],['Request ledger',l.request_ledger_complete?'Complete for recorded attempts':'Partial / legacy']);}
     return details;
 }
-function showChartTooltip(point,row,title,value,unit,kind,event){
+const chartMetrics={
+    tokens:{label:'Tokens per question',unit:'tokens',value:r=>r.metrics.mean_question_tokens,note:'Mean answer + judge tokens per recorded question. Excludes ingestion.'},
+    accuracy:{label:'Judged accuracy',unit:'%',value:r=>r.metrics.accuracy_percent,note:'Correct / judged questions. Unjudged questions are excluded.'},
+    storage:{label:'Stored memory text',unit:'KiB',value:r=>finite(r.overall.stored_text_bytes)?r.overall.stored_text_bytes/1024:null,note:'Final UTF-8 memory text across the run. Excludes embeddings and runtime overhead.'},
+    runtime:{label:'Runtime per question',unit:'s',value:r=>r.metrics.mean_question_seconds,note:'Mean recorded question time, including judging. Excludes ingestion.'}
+};
+function metricValue(row,key){const metric=chartMetrics[key],value=metric.value(row);return finite(value)?fmt(value)+' '+metric.unit:'Unavailable';}
+function showChartTooltip(point,row,xKey,yKey,peers,event){
     const tooltip=el('chartTooltip');activeChartPoint=point;
-    const details=node('dl');for(const [label,text] of chartDetails(row,kind))details.append(node('dt',label),node('dd',text));
-    const notes={accuracy:'Correct / judged questions. Unjudged questions are excluded.',tokens:'Mean answer + judge tokens per recorded question. Excludes ingestion.',runtime:'Mean recorded question time, including judging. Excludes ingestion.',storage:'Final UTF-8 memory text across the run. Excludes embeddings and runtime overhead.'};
-    tooltip.replaceChildren(node('span',`Run ${row.runNumber} · ${title}`,'tooltip-kicker'),node('strong',displayName(row.name),'tooltip-name'),node('span',row.module,'tooltip-module'),node('strong',finite(value)?fmt(value)+' '+unit:'Unavailable','tooltip-value'),details,node('p',notes[kind],'tooltip-note'));
+    const details=node('dl');
+    for(const [axis,key] of [['X',xKey],['Y',yKey]]){
+        details.append(node('dt',axis+' · '+chartMetrics[key].label),node('dd',metricValue(row,key)));
+        for(const [label,value] of chartDetails(row,key))details.append(node('dt',axis+' · '+label),node('dd',value));
+    }
+    tooltip.replaceChildren(node('span',`Run ${row.runNumber}`,'tooltip-kicker'),node('strong',displayName(row.name),'tooltip-name'),node('span',row.module,'tooltip-module'),details);
+    for(const key of new Set([xKey,yKey]))tooltip.append(node('p',chartMetrics[key].note,'tooltip-note'));
+    if(peers.length>1)tooltip.append(node('p','Also at these coordinates: '+peers.filter(peer=>peer!==row).map(peer=>`Run ${peer.runNumber}: ${peer.label}`).join('; '),'tooltip-note'));
     tooltip.hidden=false;positionChartTooltip(point,event);
 }
 document.addEventListener('keydown',event=>{if(event.key==='Escape')hideChartTooltip();});
 document.addEventListener('pointerdown',event=>{if(activeChartPoint&&!activeChartPoint.contains(event.target)&&!el('chartTooltip').contains(event.target))hideChartTooltip();});
 window.addEventListener('scroll',hideChartTooltip,true);
 window.addEventListener('resize',hideChartTooltip);
-function chart(data,title,subtitle,getValue,unit,kind){
-    const accuracy=kind==='accuracy';
-    const card=node('article',null,'chart');card.append(node('h3',title+(unit==='KiB'?' (KiB)':unit==='s'?' (seconds)':'')),node('p',subtitle));
-    if(!data.length){card.append(node('p','Select one or more runs to see this chart.'));return card;}
-    const values=data.map(getValue);const max=Math.max(0,...values.filter(finite));
-    const target=max*(1+Number(el('headroom').value)/100);
-    const step=target?10**Math.floor(Math.log10(target))/2:0.25;
-    const upper=accuracy?100:Math.max(step,Math.ceil(target/step)*step);
-    const height=48+data.length*65;const svg=svgNode('svg',{viewBox:`0 0 620 ${height}`,role:'group','aria-label':title+'; axis from 0 to '+fmt(upper)+' '+unit});
-    for(let i=0;i<=4;i++){const x=90+i*87.5;svg.append(svgNode('line',{x1:x,y1:24,x2:x,y2:height-12,class:'grid'}),svgNode('text',{x,y:14,'text-anchor':'middle'},fmt(upper*i/4)));}
-    data.forEach((row,i)=>{
-        const y=43+i*65,value=values[i];
-        const point=svgNode('g',{class:'chart-point',tabindex:0,role:'img','data-path':row.name,'data-module':row.module,'aria-label':`Run ${row.runNumber}: ${row.label}; ${title}: ${finite(value)?fmt(value)+' '+unit:'Unavailable'}`,'aria-describedby':'chartTooltip'});
-        // Keep zero and unavailable results inspectable without drawing a
-        // misleading nonzero bar. The target also makes narrow bars easy to hit.
-        point.append(svgNode('rect',{x:0,y:y-18,width:620,height:48,rx:5,fill:'transparent',class:'chart-hit-target'}));
-        const show=event=>showChartTooltip(point,row,title,value,unit,kind,event);
+function chart(data,xKey,yKey){
+    const xMetric=chartMetrics[xKey],yMetric=chartMetrics[yKey];
+    const card=node('article',null,'chart');
+    card.append(node('h3',xMetric.label+' vs '+yMetric.label),node('p','Each point is a run. Hover, focus, or tap for both values and coverage.'));
+    el('charts').replaceChildren(card);
+    if(!data.length)return;
+    const plotted=data.filter(row=>finite(xMetric.value(row))&&finite(yMetric.value(row)));
+    const upper=(key,metric)=>{
+        if(key==='accuracy')return 100;
+        const target=Math.max(0,...plotted.map(metric.value))*(1+Number(el('headroom').value)/100);
+        const step=target?10**Math.floor(Math.log10(target))/2:0.25;
+        return Math.max(step,Math.ceil(target/step)*step);
+    };
+    const xMax=upper(xKey,xMetric),yMax=upper(yKey,yMetric),height=380;
+    const svg=svgNode('svg',{height,role:'group','aria-label':`Scatter plot; X: ${xMetric.label}, axis from 0 to ${fmt(xMax)} ${xMetric.unit}; Y: ${yMetric.label}, axis from 0 to ${fmt(yMax)} ${yMetric.unit}`});
+    card.append(svg);
+    // No viewBox: SVG coordinates and font sizes stay in CSS pixels at every width.
+    const width=svg.getBoundingClientRect().width,left=60,right=24,top=24,bottom=60;
+    const plotWidth=width-left-right,plotHeight=height-top-bottom;
+    const tick=value=>value.toLocaleString('en-US',{notation:'compact',maximumFractionDigits:1});
+    for(let i=0;i<=4;i++){
+        const x=left+plotWidth*i/4,y=top+plotHeight-plotHeight*i/4;
+        svg.append(svgNode('line',{x1:x,y1:top,x2:x,y2:height-bottom,class:'grid'}),svgNode('text',{x,y:height-bottom+20,'text-anchor':'middle'},tick(xMax*i/4)),
+                   svgNode('line',{x1:left,y1:y,x2:width-right,y2:y,class:'grid'}),svgNode('text',{x:left-10,y:y+4,'text-anchor':'end'},tick(yMax*i/4)));
+    }
+    const label=metric=>metric.label+(metric.unit==='tokens'?'':' ('+metric.unit+')');
+    svg.append(svgNode('text',{x:left+plotWidth/2,y:height-12,'text-anchor':'middle',class:'axis-label'},label(xMetric)),
+               svgNode('text',{x:14,y:top+plotHeight/2,transform:`rotate(-90 14 ${top+plotHeight/2})`,'text-anchor':'middle',class:'axis-label'},label(yMetric)));
+    const coordinates=new Map();
+    for(const row of plotted){const key=JSON.stringify([xMetric.value(row),yMetric.value(row)]);if(!coordinates.has(key))coordinates.set(key,[]);coordinates.get(key).push(row);}
+    const unavailable=node('div',null,'chart-unavailable');
+    for(const row of data){
+        const x=xMetric.value(row),y=yMetric.value(row),measured=finite(x)&&finite(y);
+        const point=measured?svgNode('g',{tabindex:0,role:'img'}):node('button',`Run ${row.runNumber}: ${row.label} · Unavailable`,'chart-missing');
+        point.setAttribute('class',measured?'chart-point':'chart-point chart-missing');
+        point.setAttribute('data-path',row.name);point.setAttribute('data-module',row.module);
+        point.setAttribute('aria-label',`Run ${row.runNumber}: ${row.label}; X: ${xMetric.label}: ${metricValue(row,xKey)}; Y: ${yMetric.label}: ${metricValue(row,yKey)}`);
+        point.setAttribute('aria-describedby','chartTooltip');
+        const peers=measured?coordinates.get(JSON.stringify([x,y])):[];
+        const show=event=>showChartTooltip(point,row,xKey,yKey,peers,event);
         point.onpointerenter=show;point.onpointermove=event=>{if(activeChartPoint===point)positionChartTooltip(point,event);};
         point.onpointerleave=()=>{if(document.activeElement===point){positionChartTooltip(point);return;}if(activeChartPoint===point)hideChartTooltip();};
         point.onfocus=()=>show();point.onblur=()=>{if(activeChartPoint===point)hideChartTooltip();};point.onclick=show;
-        point.append(svgNode('text',{x:0,y:y+7,class:'label'},'Run '+row.runNumber));
-        if(finite(value))point.append(svgNode('rect',{x:90,y:y-8,width:Math.max(0,350*value/upper),height:23,rx:3,fill:row.color,class:'chart-bar'}));
-        point.append(svgNode('text',{x:460,y:y+8,class:'value'},finite(value)?fmt(value)+(accuracy?'%':''):'Unavailable'));svg.append(point);
-    });card.append(svg);return card;
+        if(measured){
+            const cx=left+plotWidth*x/xMax,cy=height-bottom-plotHeight*y/yMax;
+            point.append(svgNode('circle',{cx,cy,r:12,fill:'transparent',class:'chart-hit-target'}),svgNode('circle',{cx,cy,r:5,fill:row.color,class:'chart-dot'}));svg.append(point);
+        }else{point.type='button';unavailable.append(point);}
+    }
+    if(unavailable.childElementCount){card.append(node('p','Not plotted: a selected measurement is unavailable.'),unavailable);}
 }
 function tableCell(row,text,small){const td=node('td',text);if(small)td.append(node('small',small));row.append(td);}
 function render(){
     hideChartTooltip();
     const data=rows(),category=el('category').value;
-    const chartData=sortRows(data,el('chartSort').value||'name',el('chartOrder').value||'asc');
     const tableSort=el('tableSort').value||'name',tableOrder=el('tableOrder').value||'asc';
     const tableData=sortRows(data,tableSort,tableOrder);
     updateActions();
     el('selectionCount').textContent=`${selected.size} files selected · ${data.length} conditions · ${categoryNames[category]||'All question types'}`;
     el('comparisonEmpty').hidden=!!data.length;
     el('comparisonEmpty').children[1].textContent=selected.size?'No comparison conditions found':'Your comparison starts here';
-    el('comparisonEmpty').children[2].textContent=selected.size?'The selected files contain no recorded conditions. Choose results with benchmark cases.':'Select results from your library above. Each condition gets a consistent color across all four charts.';
+    el('comparisonEmpty').children[2].textContent=selected.size?'The selected files contain no recorded conditions. Choose results with benchmark cases.':'Select results from your library above. Each condition gets a consistent color across axis choices.';
     el('charts').hidden=!data.length;
     el('chartHint').hidden=!data.length;
     const legend=el('runLegend');legend.replaceChildren();
     data.forEach(row=>{const item=node('span',null,'legend-item'),swatch=node('span',null,'swatch');swatch.style.backgroundColor=row.color;item.append(swatch,node('strong',`Run ${row.runNumber}`),node('span',row.label));legend.append(item);});
-    const charts=el('charts');charts.replaceChildren(
-        chart(chartData,'Judged accuracy','Higher is better · correct / judged questions',r=>r.metrics.accuracy_percent,'%', 'accuracy'),
-        chart(chartData,'Tokens per question','Lower uses fewer tokens · mean answer + judge provider tokens',r=>r.metrics.mean_question_tokens,'tokens','tokens'),
-        chart(chartData,'Stored memory text','Lower uses less storage · run-level total across memory snapshots',r=>finite(r.overall.stored_text_bytes)?r.overall.stored_text_bytes/1024:null,'KiB','storage'),
-        chart(chartData,'Runtime per question','Lower is faster · mean recorded question time, including judging',r=>r.metrics.mean_question_seconds,'s','runtime')
-    );
+    chart(data,el('chartX').value||'tokens',el('chartY').value||'accuracy');
     const types=el('types');types.replaceChildren();const head=node('thead'),hr=node('tr');
     const headings=[['name','Run'],...Object.entries(categoryNames).map(([key,title])=>['category:'+key,title]),['completion','Judge completion (filter)']];
     for(const [key,title] of headings){const th=node('th',title);th.setAttribute('scope','col');if(key===tableSort)th.setAttribute('aria-sort',tableOrder==='desc'?'descending':'ascending');hr.append(th);}head.append(hr);types.append(head);const body=node('tbody');
@@ -159,7 +191,10 @@ function render(){
         tableCell(tr,finite(row.metrics.completion_percent)?fmt(row.metrics.completion_percent)+'%':'Unavailable',`${row.metrics.judged_count??0} judged / ${row.metrics.selected_count??0} selected`);body.append(tr);
     });if(!data.length){const tr=node('tr'),td=node('td','Select results to compare accuracy by question type.','empty-cell');td.colSpan=7;tr.append(td);body.append(tr);}types.append(body);
     const coverage=node('table'),ch=node('tr');for(const title of ['Run','Token coverage','Runtime coverage','Storage coverage'])ch.append(node('th',title));coverage.append(ch);
-    data.forEach(row=>{const tr=node('tr');tableCell(tr,`Run ${row.runNumber}: ${row.label}`);tableCell(tr,`${row.metrics.token_count??0} / ${row.metrics.case_count??0} cases`);tableCell(tr,`${row.metrics.runtime_count??0} / ${row.metrics.case_count??0} cases`);tableCell(tr,`${row.overall.storage_count} / ${row.overall.memory_count} snapshots`);coverage.append(tr);});el('coverage').replaceChildren(coverage);
+    data.forEach(row=>{const tr=node('tr');tableCell(tr,`Run ${row.runNumber}: ${row.label}`);tableCell(tr,`${row.metrics.token_count??0} / ${row.metrics.case_count??0} cases`);tableCell(tr,`${row.metrics.runtime_count??0} / ${row.metrics.case_count??0} cases`);tableCell(tr,`${row.overall.storage_count} / ${row.overall.memory_count} snapshots`);coverage.append(tr);});
+    const lifecycle=node('table'),lh=node('tr');for(const title of ['Run (all question types)','Ingestion tokens','Answer tokens','Judge tokens','Lifecycle tokens','Lifecycle seconds','Request ledger'])lh.append(node('th',title));lifecycle.append(lh);
+    data.forEach(row=>{const tr=node('tr'),l=row.overall.lifecycle;tableCell(tr,`Run ${row.runNumber}`);for(const phase of ['ingestion','answer','judge'])tableCell(tr,fmt(l?.[phase]?.tokens),l?`${l[phase].known_count} / ${l[phase].record_count} records with usage`:null);tableCell(tr,fmt(l?.total_provider_tokens));tableCell(tr,fmt(l?.total_seconds));tableCell(tr,l?.request_ledger_complete?'Complete for recorded attempts':'Partial / legacy');lifecycle.append(tr);});
+    el('coverage').replaceChildren(coverage,lifecycle);
 }
 function chooseDuplicate(file,conflict,index,total){
     const dialog=el('duplicateDialog'),target=el('replaceTarget');
@@ -245,7 +280,13 @@ el('deleteDialog').onclose=async()=>{
 };
 el('refresh').onclick=async()=>{if(busy)return;setBusy(true);try{await refresh();status('Library refreshed.');}catch(error){status(error.message,true);}finally{setBusy(false);}};
 el('search').oninput=renderLibrary;el('category').onchange=render;el('headroom').onchange=render;
-el('chartSort').onchange=()=>{el('chartOrder').value=el('chartSort').value==='accuracy'?'desc':'asc';render();};
+el('chartX').onchange=render;el('chartY').onchange=render;
 el('tableSort').onchange=()=>{el('tableOrder').value=el('tableSort').value==='name'?'asc':'desc';render();};
-el('chartOrder').onchange=render;el('tableOrder').onchange=render;
+el('tableOrder').onchange=render;
 setBusy(true);refresh().then(()=>status('Select saved results or upload JSON files.')).catch(error=>status(error.message,true)).finally(()=>setBusy(false));
+
+let chartContainerWidth=0;
+new ResizeObserver(([entry])=>{
+    const width=Math.round(entry.contentRect.width);
+    if(width!==chartContainerWidth){chartContainerWidth=width;render();}
+}).observe(el('charts'));

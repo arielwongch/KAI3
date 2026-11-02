@@ -144,10 +144,12 @@ Charts compare judged accuracy (fixed 0–100%), mean answer + judge tokens per
 question, mean question runtime in seconds, and total stored text in KiB.
 Non-percentage axes start at zero with configurable headroom. Filter by question
 type, or use the question-type accuracy table to compare all types at once.
-Sort the charts by name, accuracy, tokens, storage, or runtime. The accuracy
-table defaults to name order and has its own single-field sort selector for
-question-type accuracy or judge completion. Both support ascending/descending
-order; unavailable values stay last and run colors remain consistent.
+A single full-width scatter plot has independent **X axis** and **Y axis**
+selectors for accuracy, tokens, storage, or runtime. Defaults are **x = mean
+answer + judge tokens per question** and **y = judged accuracy**. Each run is a
+point, with consistent colors and tooltips across axis changes. Chart typography
+matches the surrounding UI at desktop and phone widths. The accuracy table keeps
+its independent single-field sorting; unavailable table values stay last.
 Coverage counts expose partial data. Storage remains run-level under filters;
 token and runtime means exclude ingestion. Match questions, models, and protocols
 before interpreting differences between runs.
@@ -190,7 +192,7 @@ memory = MemoryFactory.create_memory_module("vector_store")
 memory = MemoryFactory.create_memory_module("fact_store")
 ```
 
-All twelve modes are available in the chat UI, including **No memory** for a
+All fourteen modes are available in the chat UI, including **No memory** for a
 baseline that stores and retrieves nothing. Each chat keeps its selected mode
 and isolated memory for the lifetime of the server process. Restarting the server
 clears memory; browser history does not restore it.
@@ -203,6 +205,20 @@ interactions. Fact memory uses the existing DeepSeek credentials to extract and
 update current user-stated facts, then searches them using the same embeddings.
 No database is required. Both stores default to unlimited capacity; callers can
 configure finite capacity with oldest-record eviction.
+
+### Periodic window modes
+
+Select **Windowed Summary** or **Windowed Fact Store** to retain the latest k
+entries and update long-term memory every k entries, using one shared window
+setting. Defaults are 10 user/assistant exchanges in chat and 100 speaker messages
+in benchmarks. Benchmarks flush a final partial batch before answering; session
+boundaries do not reset the counter. Fact updates can add, replace, or remove
+multiple facts per extraction. See the [periodic window contract](spec/memory/periodic_window.md).
+
+All embedding-based retrieval except standalone **Vector Store** now uses the
+existing pinned reranker, including current/historical facts and vector/fact
+hybrid components. The candidate pool defaults to 50 per store and is independent
+of final retrieval k. Paired hybrids accept per-component candidate overrides.
 
 ### Vector Store + Reranker
 
@@ -478,6 +494,7 @@ Benchmark endpoints:
   "sample_ids": [...], "categories": [...], "question_limit": 10 } }`; returns
   `run_id` with HTTP 202.
 - `GET /api/benchmarks/<run_id>`: progress and partial results.
+- `DELETE /api/benchmarks/<run_id>`: permanently remove a stopped run and its saved files.
 - `POST /api/benchmarks/<run_id>/cancel`: requests cooperative cancellation.
 - `GET /api/benchmarks/<run_id>/export`: downloads results JSON.
 - `GET /api/benchmarks/<run_id>/review`: downloads cases for manual 0–2 rubric ratings.
@@ -528,7 +545,7 @@ py src/Benchmark.py --dataset data/locomo/locomo10.json --output retrieval_resul
 
 Every conversation creates an empty, isolated memory instance. Ingestion preserves labelled, timestamped turns in numeric session order. Summarization updates its rolling summary in batches of up to 20 turns and 12,000 characters, without crossing session boundaries; a single oversized turn is kept intact. Other memory architectures write one turn at a time. This reduces the bundled dataset's summary requests from 5,882 to 399 before answering and judging. The question limit only limits QA, so the selected conversations must still be ingested in full. Questions retrieve whole entries within the configured k and token allowance, use the same answer prompt/settings as the full-context baseline, and never write questions or predictions back. `vector_store` is the original-turn retrieval baseline; `fact_store` and `summarization` transform dialogue into memory representations. Summary/fact extraction model settings and summary batch limits are recorded separately. Batching changes the summary construction protocol and can affect scores. Resuming an older saved run preserves its per-turn ingestion; start a new run to use batching.
 
-Exports include retrieved items with ranks and cosine scores for vector/fact search, ingestion/write latency, session-by-session logical storage growth, final storage size, retrieval/answer latency, API usage, and evidence recall where original dialogue IDs are available. Summary/fact provenance is not treated as proof that an annotated fact survives transformation; evidence recall remains unavailable for those representations. New memory-context counts use the pinned benchmark tokenizer; legacy retrieved budgets are UTF-8 byte proxies. Storage sizes describe text and JSON snapshots, excluding embedding arrays and Python overhead. Monetary costs remain `null` when pricing is unavailable. The `efficiency` report aggregates retrieval budgets, latency, and evidence recall.
+Exports include retrieved items with vector ranks/scores and, where applicable, reranker ranks/scores for vector/fact search, ingestion/write latency, session-by-session logical storage growth, final storage size, retrieval/answer latency, API usage, and evidence recall where original dialogue IDs are available. Summary/fact provenance is not treated as proof that an annotated fact survives transformation; evidence recall remains unavailable for those representations. New memory-context counts use the pinned benchmark tokenizer; legacy retrieved budgets are UTF-8 byte proxies. Storage sizes describe text and JSON snapshots, excluding embedding arrays and Python overhead. Monetary costs remain `null` when pricing is unavailable. The `efficiency` report aggregates retrieval budgets, latency, and evidence recall.
 
 ### Long benchmark runs and recovery
 
@@ -558,6 +575,11 @@ unchanged by saving a comparison copy.
 The benchmark sidebar shows **New benchmark** and **Saved runs**. Open a saved run to follow its current progress or export it; interrupted, cancelled, and failed runs can be resumed. Imported exports keep the results layout and display a **Read-only ? Imported report** badge.
 
 Progress counts ingestion turns and question stages separately, reports answered/judged counts, and shows the current conversation and operation. **Review memory before answering** pauses after each conversation is ingested, before its question calls. **Inspect memory** opens the actual store snapshot; for full-context runs it opens the supplied conversation. **Continue evaluation** releases that review pause. Memory extraction may already have used the API. Cancelling also works while reviewing.
+
+To free disk space, choose **Delete** beside a stopped run under **Saved runs**,
+then confirm **Delete run**. This permanently removes its saved results, original
+dataset copy, worker log, and control files. Cancel active runs and wait until
+they stop before deleting. Separately exported/downloaded JSON copies are kept.
 
 **Run in background** is enabled by default in the benchmark form. It launches an independent hidden Python process using the current interpreter and credentials. The run continues if you close the browser or stop the web server terminal. Start the server again and return to **Test Benchmark ? Saved runs** to reconnect. The computer must remain awake; shutdown/reboot terminates workers. Lost workers are marked interrupted and require explicit resume. A global worker lease prevents concurrent background evaluations. Waiting for memory review also keeps the worker alive until continued or cancelled.
 

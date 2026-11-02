@@ -12,7 +12,7 @@
     <button class="new-chat-button" id="newChat" type="button"><span>+</span> New chat</button>
     <div id="chatHistoryHeading" class="history-heading"><span>Recent chats</span><span class="history-count" id="historyCount">0</span></div>
     <nav class="chat-history" id="chatHistory" aria-label="Chat history"></nav>
-    <div id="benchmarkSidebar" hidden><button class="new-chat-button" id="sidebarNewBenchmark" type="button"><span>+</span> New benchmark</button><div class="history-heading"><span>Saved runs</span><button class="icon-button" id="refreshRuns" type="button" aria-label="Refresh saved runs">&#8635;</button></div><nav id="savedRuns" class="chat-history" aria-label="Saved benchmark runs"></nav></div>
+    <div id="benchmarkSidebar" hidden><button class="new-chat-button" id="sidebarNewBenchmark" type="button"><span>+</span> New benchmark</button><div class="history-heading"><span>Saved runs</span><button class="icon-button" id="refreshRuns" type="button" aria-label="Refresh saved runs">&#8635;</button></div><p id="savedRunStatus" role="status" aria-live="polite"></p><nav id="savedRuns" class="chat-history" aria-label="Saved benchmark runs"></nav></div>
     {% endif %}
     <div class="sidebar-footer"><div class="profile-avatar">K</div><div><strong>Local workspace</strong><small>{{ 'Local results' if page == 'compare' else 'Memory connected' }}</small></div><span class="online-dot"></span></div>
 </aside>

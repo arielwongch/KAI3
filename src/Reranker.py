@@ -99,3 +99,38 @@ class LocalReranker:
             if batch:
                 flush()
             return scores_checked(result, len(texts))
+
+
+class RerankedMemory:
+    """Shared shortlist/rerank policy for embedded turns and facts."""
+    def _configure_reranker(self, candidate_k, reranker):
+        from MemoryContext import positive_count
+        positive_count(candidate_k, 'candidate_k', unlimited=True)
+        self.candidate_k = candidate_k
+        self.reranker = reranker if reranker is not None else LocalReranker()
+
+    def reranker_config(self):
+        from copy import deepcopy
+        return dict(candidate_k=self.candidate_k,
+                    reranker=deepcopy(getattr(self.reranker, 'identity', {'model': 'injected'})))
+
+    def iter_context_candidates(self, query, k=None):
+        from Embeddings import validate_k
+        if k is not None:
+            validate_k(k)
+        candidates = self._vector_candidates(query, self.candidate_k)
+        from Diagnostics import record_retrieval
+        record_retrieval('reranker_pool', candidates, candidate_k=self.candidate_k)
+        if not candidates:
+            return []
+        scores = scores_checked(self.reranker.score(query, [e.text for e in candidates]), len(candidates))
+        ranked = sorted(zip(candidates, scores), key=lambda item: item[1], reverse=True)
+        result = []
+        for rank, (entry, score) in enumerate(ranked[:k], 1):
+            entry.metadata.update(vector_rank=entry.metadata['retrieval_rank'],
+                                  vector_score=entry.metadata['retrieval_score'],
+                                  reranker_score=score, retrieval_rank=rank,
+                                  retrieval_score=score, retrieval_score_type='cross_encoder_logit')
+            result.append(entry)
+        record_retrieval('reranked_final', result, retrieval_k=k)
+        return result

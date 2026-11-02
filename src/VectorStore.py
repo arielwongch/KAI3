@@ -54,13 +54,19 @@ class VectorStore(MemoryModule):
                 reverse=True,
             )
             results = []
-            for rank, (_, record) in enumerate(ranked[:k], 1):
+            from Diagnostics import retrieval_collector, record_retrieval
+            # Also retain the top50 diagnostic pool for standalone top10 controls.
+            # Delivery still uses exactly the caller's original k.
+            trace_limit = None if k is None else max(k, 50) if retrieval_collector.get() is not None else k
+            for rank, (_, record) in enumerate(ranked[:trace_limit], 1):
                 entry = deepcopy(record[0])
                 entry.metadata['retrieval_rank'] = rank
                 entry.metadata['retrieval_score'] = max(similarity(query_vector, vector) for vector in record[1])
                 entry.metadata['retrieval_score_type'] = 'cosine_similarity'
                 results.append(entry)
-            return results
+            record_retrieval('cosine_pool', results, requested_k=k,
+                             diagnostic_only_extra=k is not None and len(results) > k)
+            return results[:k]
 
 
     def inspect(self):

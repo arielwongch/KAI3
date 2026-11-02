@@ -1,6 +1,6 @@
 # Current fact memory
 
-Status: implemented behavior. Last checked against repository source: 2026-10-08.
+Status: implemented behavior. Last checked against repository source: 2026-11-02.
 This check date is not an implementation or release date.
 
 ## Purpose
@@ -62,8 +62,10 @@ capacity removes the earliest-inserted surviving facts and increments
 ## Retrieval
 
 Embed the question once. Rank all current facts by descending cosine similarity,
-then most recent changed revision, then later dictionary position. Return
-detached entries with rank, cosine score, and score type. There is no similarity
+then most recent changed revision, then later dictionary position. Shortlist
+`candidate_k` facts (default 50; null means all), then use the shared pinned
+[cross-encoder](vector_store_reranker.md) and apply final retrieval k. Return
+detached entries with vector/reranker scores and ranks. There is no similarity
 cutoff, historical search, or automatic neighbor expansion. Blank queries and
 empty stores return no candidates. Asserted fact text is embedded directly,
 without vector-store chunking.
@@ -80,6 +82,6 @@ from this module. Direct callers without user metadata must pass user-only text.
 ## Source and verification
 
 [FactStore.py](../../src/FactStore.py) and [Embeddings.py](../../src/Embeddings.py)
-implement storage and similarity. [Semantic memory tests](../../tests/test_semantic_memory.py)
+implement storage and similarity; [Reranker.py](../../src/Reranker.py) supplies reranking. [Semantic memory tests](../../tests/test_semantic_memory.py)
 cover additions, corrections, retractions, deduplication, ordering, returned
 copies, and atomic failures.

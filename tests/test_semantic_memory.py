@@ -17,6 +17,12 @@ import ReAct
 from test_memory_integration import FakeOpenAIClient
 
 
+
+def setUpModule():
+    from benchmark_helpers import offline_reranking
+    offline_reranking()
+
+
 class FakeEmbeddings:
     def chunks(self, text):
         return text.split("|")

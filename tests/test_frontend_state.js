@@ -17,23 +17,25 @@ class Node {
     focus(){}
     click(){if(this.onclick)return this.onclick();}
     remove(){}
+    showModal(){this.open=true;}
+    close(){this.open=false;this.onclose?.();}
 }
 const nodes={};
-const document={getElementById:id=>nodes[id]??=new Node(),createElement:tag=>new Node(tag),querySelectorAll:()=>[],body:new Node()};
+const document={getElementById:id=>nodes[id]??=new Node(),createElement:tag=>new Node(tag),querySelector:()=>null,querySelectorAll:()=>[],body:new Node()};
 const marked={parse:text=>text};
 const DOMPurify={sanitize:text=>'SANITIZED:'+text};
 const navigator={clipboard:{writeText:async()=>{}}};
 const setTimeout=()=>1,clearTimeout=()=>{};
 let requests=[];
 let responseHandler=()=>({status:404,data:{error:'Server memory is unavailable.'}});
-const fetch=async(url,options)=>{requests.push({url,options});const r=responseHandler(url,options);return {ok:r.status<400,status:r.status,json:async()=>r.data};};
+let fetch=async(url,options)=>{requests.push({url,options});const r=responseHandler(url,options);return {ok:r.status<400,status:r.status,json:async()=>r.data};};
 function descendants(node){return [node,...node.children.flatMap(descendants)];}
 function text(node){return [node.textContent??'',...node.children.map(text)].join(' ');}
 function byClass(root,name){return descendants(root).filter(n=>(n.className||'').split(' ').includes(name));}
 `;
 
-async function harness(seed={}){
-    const context=vm.createContext({});
+async function harness(seed={},pathname='/chat'){
+    const context=vm.createContext({location:{pathname}});
     const run=code=>vm.runInContext(code,context);
     run(stub.replace('SEED',JSON.stringify(seed)));
     run(source);
@@ -222,4 +224,95 @@ test('window hybrid benchmark settings coexist with the existing hybrid controls
     assert.equal(run("$('benchmarkWindowControl').hidden"),true);
     assert.equal(run("'window_size' in benchmarkMemoryOptions('delta')"),false);
     assert.equal(run("$('hybridSettings').hidden"),false);
+});
+
+
+test('periodic modes share one window and interval setting and expose only applicable controls',async()=>{
+    const {run}=await harness();
+    for(const mode of ['windowed_summarization','windowed_fact_store']){
+        run(`updateMemorySettings('${mode}');$('benchmarkWindowSize').value='13'`);
+        assert.equal(run("$('benchmarkWindowControl').hidden"),false);
+        assert.equal(run(`benchmarkMemoryOptions('${mode}').window_size`),13);
+        assert.equal(run("$('summaryTokensField').hidden"),mode!=='windowed_summarization');
+        assert.equal(run("$('candidateKField').hidden"),mode!=='windowed_fact_store');
+        assert.equal(run("$('retrievalKField').hidden"),mode!=='windowed_fact_store');
+        run(`active().module='${mode}';render()`);
+        assert.equal(run("$('chatWindowControl').hidden"),false);
+        assert.match(run("$('chatWindowDescription').textContent"),/every k completed entries/);
+    }
+});
+
+test('all embedded retrieval modes expose candidate limits; standalone vector remains cosine only',async()=>{
+    const {run}=await harness();
+    run("$('benchmarkWindowSize').value='100'");
+    for(const mode of ['fact_store','beta','gamma','delta','epsilon','zeta','windowed_fact_store']){
+        run(`updateMemorySettings('${mode}')`);
+        assert.equal(run("$('candidateKField').hidden"),false);
+        assert.equal(run(`benchmarkMemoryOptions('${mode}').candidate_k`),50);
+    }
+    run("updateMemorySettings('zeta');$('componentOptions').value=JSON.stringify({fact_store:{candidate_k:9}})");
+    assert.equal(run("benchmarkMemoryOptions('zeta').component_options.fact_store.candidate_k"),9);
+    run("updateMemorySettings('vector_store')");
+    assert.equal(run("$('candidateKField').hidden"),true);
+});
+
+
+test('saved-run delete requires confirmation and protects active runs',async()=>{
+    const {run,act}=await harness({},'/benchmark');
+    run("requests=[];responseHandler=()=>({status:200,data:{runs:[{run_id:'done',module:'fact_store',status:'completed',deletable:true},{run_id:'active',module:'vector_store',status:'running',deletable:false}]}})");
+    await act('refreshSavedRuns()');
+    assert.equal(run("byClass($('savedRuns'),'delete-run').length"),2);
+    assert.equal(run("byClass($('savedRuns'),'delete-run')[1].disabled"),true);
+    run("byClass($('savedRuns'),'delete-run')[0].onclick()");
+    assert.equal(run("$('benchmarkDeleteDialog').open"),true);
+    assert.match(run("$('benchmarkDeleteName').textContent"),/done/);
+    assert.equal(run("requests.filter(r=>r.options?.method==='DELETE').length"),0);
+    run("$('benchmarkDeleteCancel').onclick()");
+    await act("$('benchmarkDeleteForm').onsubmit({preventDefault(){}})");
+    assert.equal(run("requests.filter(r=>r.options?.method==='DELETE').length"),0);
+});
+
+test('deleting the open saved run resets report, storage, inspector and list',async()=>{
+    const {run,act}=await harness({},'/benchmark');
+    run("runId='done';storage['kai3-benchmark-run']='done';benchmark={status:'completed'};inspectionSource='benchmark';inspection={memory:{entries:[]}};responseHandler=(url,options)=>({status:200,data:options?.method==='DELETE'?{deleted:'done'}:{runs:[]}});benchmarkDeleteTarget='done';$('benchmarkDeleteDialog').showModal();requests=[]");
+    await act("$('benchmarkDeleteForm').onsubmit({preventDefault(){}})");
+    assert.equal(run('requests[0].url'),'/api/benchmarks/done');
+    assert.equal(run('requests[0].options.method'),'DELETE');
+    assert.equal(run('runId'),null);
+    assert.equal(run('benchmark'),null);
+    assert.equal(run("storage['kai3-benchmark-run']"),undefined);
+    assert.equal(run("$('benchmarkSetup').hidden"),false);
+    assert.equal(run("$('resultsFile').disabled"),false);
+    assert.equal(run("$('inspector').hidden"),true);
+    assert.equal(run("$('benchmarkDeleteDialog').open"),false);
+    assert.match(run("$('savedRunStatus').textContent"),/deleted/);
+});
+
+test('deleting another run preserves the current report; failed deletion is retryable',async()=>{
+    const {run,act}=await harness({},'/benchmark');
+    run("runId='current';benchmark={status:'completed',marker:'keep'};benchmarkDeleteTarget='other';$('benchmarkDeleteDialog').showModal();responseHandler=()=>({status:409,data:{error:'Worker is still finishing'}})");
+    await act("$('benchmarkDeleteForm').onsubmit({preventDefault(){}})");
+    assert.equal(run('runId'),'current');
+    assert.equal(run('benchmark.marker'),'keep');
+    assert.equal(run("$('benchmarkDeleteDialog').open"),true);
+    assert.match(run("$('benchmarkDeleteError').textContent"),/still finishing/);
+    assert.equal(run("$('benchmarkDeleteConfirm').disabled"),false);
+    run("responseHandler=()=>({status:200,data:{runs:[]}})");
+    await act("$('benchmarkDeleteForm').onsubmit({preventDefault(){}})");
+    assert.equal(run('runId'),'current');
+    assert.equal(run('benchmark.marker'),'keep');
+});
+
+test('pending deletion blocks duplicate submission and dialog dismissal',async()=>{
+    const {run,act}=await harness({},'/benchmark');
+    run("benchmarkDeleteTarget='done';$('benchmarkDeleteDialog').showModal();let releaseDelete,deleteCalls=0;const normalFetch=fetch;fetch=(url,options)=>{if(options?.method==='DELETE'){deleteCalls++;return new Promise(resolve=>releaseDelete=()=>resolve({ok:true,status:200,json:async()=>({deleted:'done'})}));}return normalFetch(url,options);};responseHandler=()=>({status:200,data:{runs:[]}});let deleting=$('benchmarkDeleteForm').onsubmit({preventDefault(){}})");
+    assert.equal(run('benchmarkDeleteBusy'),true);
+    run("let prevented=false;$('benchmarkDeleteDialog').oncancel({preventDefault(){prevented=true}})");
+    assert.equal(run('prevented'),true);
+    run("$('benchmarkDeleteCancel').onclick()");
+    assert.equal(run("$('benchmarkDeleteDialog').open"),true);
+    await act("$('benchmarkDeleteForm').onsubmit({preventDefault(){}})");
+    assert.equal(run('deleteCalls'),1);
+    run('releaseDelete()');await act('deleting');
+    assert.equal(run('benchmarkDeleteBusy'),false);
 });

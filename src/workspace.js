@@ -1,8 +1,10 @@
 ﻿/* Versioned browser sessions; server memory remains process-local. */
 const $ = id => document.getElementById(id);
 const HYBRID_COMPONENTS={delta:['summarization','vector_store'],epsilon:['summarization','fact_store'],zeta:['vector_store','fact_store']};
-const hasWindow=mode=>['sliding_window','alpha','beta','gamma'].includes(mode);
-const isWindowHybrid=mode=>['alpha','beta','gamma'].includes(mode);
+const periodicWindow=mode=>['windowed_summarization','windowed_fact_store'].includes(mode);
+const hasWindow=mode=>['sliding_window','alpha','beta','gamma'].includes(mode)||periodicWindow(mode);
+const usesReranker=mode=>['vector_store_reranker','fact_store','beta','gamma','delta','epsilon','zeta','windowed_fact_store'].includes(mode);
+const isWindowHybrid=mode=>['alpha','beta','gamma'].includes(mode)||periodicWindow(mode);
 const validWindow=value=>Number.isSafeInteger(value)&&value>0;
 const key = 'kai3-workspace-v1';
 function readJSON(name, fallback) { try { return JSON.parse(localStorage.getItem(name)) ?? fallback; } catch { return fallback; } }
@@ -22,6 +24,7 @@ let inspection = null, inspectionTab = 'contents', inspectionSource = 'chat', se
 let importedBenchmark = false, importedOriginal = null, importedFilename = '';
 let compareExportSource = null, compareExportBusy = false;
 let benchmark = null, runId = null, pollTimer = null, inspectionRequest = 0, previewDataset = null;
+let savedRunsRequest=0, benchmarkDeleteTarget=null, benchmarkDeleteBusy=false;
 const page = typeof location !== 'undefined' && location.pathname === '/benchmark' ? 'benchmark' : 'chat';
 $('chatWorkspace').hidden = page !== 'chat';
 $('testing').hidden = page !== 'benchmark';
@@ -30,7 +33,7 @@ document.querySelectorAll('.workspace-nav-item').forEach(link => link.classList.
 function active() { return workspace.sessions.find(s => s.id === workspace.active) || workspace.sessions[0]; }
 function save() { localStorage.setItem(key, JSON.stringify(workspace)); }
 function markdown(text) { return DOMPurify.sanitize(marked.parse(String(text))); }
-function labelMode(mode) { return mode==='vector_store_reranker'?'Vector Store + Reranker':(mode || 'No architecture selected').replaceAll('_', ' '); }
+function labelMode(mode) { return mode==='windowed_summarization'?'Windowed Summary':mode==='vector_store_reranker'?'Vector Store + Reranker':(mode || 'No architecture selected').replaceAll('_', ' '); }
 function controlState() {
     const session = active();
     $('userInput').disabled = busy || checking || unavailable || !session.module;
@@ -38,12 +41,12 @@ function controlState() {
     $('chatWindowControl').hidden=!hasWindow(session.module);
     $('chatWindowSize').value=String(session.window_size??10);
     $('chatWindowSize').disabled=session.started||busy||checking;
-    $('chatWindowDescription').textContent=isWindowHybrid(session.module)?'Keep recent turns alongside long-term memory. Configure before the first message.':'Use the full recent window in chat.';
+    $('chatWindowDescription').textContent=periodicWindow(session.module)?'Keep k recent entries and update long-term memory every k completed entries.':isWindowHybrid(session.module)?'Keep recent turns alongside long-term memory. Configure before the first message.':'Use the full recent window in chat.';
     $('moduleStatus').textContent = unavailable ? 'Memory unavailable · start a new chat' : checking ? 'Checking memory…' : labelMode(session.module);
     document.querySelectorAll('.memory-choice').forEach(b => { b.disabled = !!session.module || busy || checking; b.classList.toggle('selected', b.dataset.module === session.module); });
     $('userInput').placeholder = session.module ? 'Message KAI3…' : 'Select a memory architecture to start';
-    $('chatRerankerSettings').hidden=session.module!=='vector_store_reranker'||session.messages.length>0;
-    if(session.module==='vector_store_reranker'){
+    $('chatRerankerSettings').hidden=!usesReranker(session.module)||session.messages.length>0;
+    if(usesReranker(session.module)){
         const options=session.memory_options||{};
         $('chatCandidateK').value=options.candidate_k===null?'all':String(options.candidate_k??50);
         $('chatRerankerCapacity').value=String(options.max_stored_entries??'unlimited');
@@ -179,8 +182,8 @@ $('chatForm').onsubmit = async event => {
         try{session.memory_options=hybridFormOptions(session.module,$('chatHybridShare').value,$('chatComponentOptions').value);session.memory_options.memory_context_tokens=parseMemoryCount($('chatHybridBudget').value,null);$('chatHybridError').textContent='';}
         catch(error){$('chatHybridError').textContent=error.message;return;}
     }
-    if(session.module==='vector_store_reranker'&&!session.started){
-        try{session.memory_options={candidate_k:parseMemoryCount($('chatCandidateK').value,'all'),max_stored_entries:parseMemoryCount($('chatRerankerCapacity').value,'unlimited')};$('chatRerankerError').textContent='';}
+    if(usesReranker(session.module)&&!session.started){
+        try{session.memory_options={...(session.memory_options||{}),candidate_k:parseMemoryCount($('chatCandidateK').value,'all'),max_stored_entries:parseMemoryCount($('chatRerankerCapacity').value,'unlimited')};$('chatRerankerError').textContent='';}
         catch(error){$('chatRerankerError').textContent=error.message;return;}
     }
     const requiresExisting=session.started; session.messages.push({role:'user',content:message});
@@ -339,14 +342,14 @@ $('resumeDatasetFile').onchange=async()=>{
     }catch(error){if(!importedBenchmark&&requestedRun===runId)$('reportStatus').textContent=`Could not read the original dataset: ${error.message}`;}
     finally{$('resumeDatasetFile').value='';}
 };
-$('newBenchmarkRun').onclick=()=>{$('resumeDatasetControl').hidden=true;$('reportMode').hidden=true;$('reviewLabelsControl').hidden=false;$('reportMoreActions').hidden=false;$('reportMoreActions').open=false;importedBenchmark=false;importedOriginal=null;$('exportReview').hidden=false;$('reviewFile').disabled=false;clearTimeout(pollTimer);benchmark=null;runId=null;localStorage.removeItem('kai3-benchmark-run');$('benchmarkReport').hidden=true;$('benchmarkRunning').hidden=true;$('benchmarkSetup').hidden=false;$('reportStatus').textContent='';};
+$('newBenchmarkRun').onclick=()=>{$('resumeDatasetControl').hidden=true;$('reportMode').hidden=true;$('reviewLabelsControl').hidden=false;$('reportMoreActions').hidden=false;$('reportMoreActions').open=false;importedBenchmark=false;importedOriginal=null;$('exportReview').hidden=false;$('reviewFile').disabled=false;clearTimeout(pollTimer);benchmark=null;runId=null;localStorage.removeItem('kai3-benchmark-run');$('benchmarkReport').hidden=true;$('benchmarkRunning').hidden=true;$('benchmarkSetup').hidden=false;$('resultsFile').disabled=false;$('resultLibrary').disabled=false;$('reportStatus').textContent='';};
 $('toggleAdvanced').onclick=()=>{const details=$('advancedDetails'),open=details.hidden;details.hidden=!open;$('toggleAdvanced').setAttribute('aria-expanded',String(open));$('toggleAdvanced').lastElementChild.textContent=open?'−':'＋';};
 function selectedCategories(){return [...document.querySelectorAll('[name=category]:checked')].map(input=>Number(input.value));}
 function selectedSamples(){return [...$('sampleIds').selectedOptions].map(option=>option.value);}
 function selectedQuestionCount(data){const ids=$('allConversations').checked?data.map(s=>String(s.sample_id)):selectedSamples();const categories=selectedCategories(),limit=Number($('questionLimit').value);const samples=data.filter(s=>ids.includes(String(s.sample_id)));return samples.reduce((n,s)=>{const count=s.qa.filter(q=>categories.includes(q.category)).length;return n+(limit?Math.min(count,limit):count);},0);}
 const memorySettingDrafts={};
 let memorySettingMode=null;
-function memoryCapabilities(mode){return globalThis.KAI3_MEMORY_CAPABILITIES?.[mode]||{reranker:mode==='vector_store_reranker',records:['sliding_window','vector_store','vector_store_reranker','fact_store','beta','gamma'].includes(mode)||!!HYBRID_COMPONENTS[mode],summary:['summarization','delta','epsilon','alpha'].includes(mode),hybrid:!!HYBRID_COMPONENTS[mode],memory:['sliding_window','vector_store','vector_store_reranker','fact_store','summarization','alpha','beta','gamma'].includes(mode)||!!HYBRID_COMPONENTS[mode]};}
+function memoryCapabilities(mode){return globalThis.KAI3_MEMORY_CAPABILITIES?.[mode]||{reranker:usesReranker(mode),records:['sliding_window','vector_store','vector_store_reranker','fact_store','beta','gamma','windowed_fact_store'].includes(mode)||!!HYBRID_COMPONENTS[mode],summary:['summarization','delta','epsilon','alpha','windowed_summarization'].includes(mode),hybrid:!!HYBRID_COMPONENTS[mode],memory:['sliding_window','vector_store','vector_store_reranker','fact_store','summarization','alpha','beta','gamma','windowed_summarization','windowed_fact_store'].includes(mode)||!!HYBRID_COMPONENTS[mode]};}
 function updateMemorySettings(mode){
     const caps=memoryCapabilities(mode);
     if(memorySettingMode!==mode){
@@ -361,7 +364,7 @@ function updateMemorySettings(mode){
     $('benchmarkWindowControl').hidden=!isWindowHybrid(mode);$('benchmarkWindowSize').disabled=!isWindowHybrid(mode);
     $('hybridSettings').hidden=!caps.hybrid;
     if(caps.hybrid)$('hybridShareLabel').textContent=`${labelMode(HYBRID_COMPONENTS[mode][0])} share (%)`;
-    $('memorySettingsHint').textContent=caps.reranker?'Rerank the cosine shortlist, then apply retrieval k and the context allowance. Retrieval k = all includes the entire shortlist; set both counts to all to consider every stored turn.':caps.hybrid?'Both components ingest original turns independently. Retrieval k and capacity apply to each record store unless overridden. Summary context may be shortened to its share.':caps.summary?'Summaries use a size limit, with no retrieval k or record capacity.':mode==='fact_store'?'Finite capacity evicts old fact versions and limits historical coverage.':'';
+    $('memorySettingsHint').textContent=periodicWindow(mode)?'The same k controls the recent window and update interval. Updates process new entries in order; the final partial batch is flushed before QA.':caps.reranker?'Rerank the cosine shortlist, then apply retrieval k and the context allowance. Retrieval k = all includes the entire shortlist; set both counts to all to consider every stored record.':caps.hybrid?'Both components ingest original turns independently. Retrieval k and capacity apply to each record store unless overridden. Summary context may be shortened to its share.':caps.summary?'Summaries use a size limit, with no retrieval k or record capacity.':mode==='fact_store'?'Finite capacity evicts old fact versions and limits historical coverage.':'';
 }
 function hybridFormOptions(mode,shareValue,componentText){
     const names=HYBRID_COMPONENTS[mode],share=Number(shareValue)/100;
@@ -370,7 +373,7 @@ function hybridFormOptions(mode,shareValue,componentText){
     if(!options||typeof options!=='object'||Array.isArray(options))throw new Error('Component settings must be a JSON object.');
     for(const [name,values] of Object.entries(options)){
         if(!names.includes(name)||name==='summarization'||!values||typeof values!=='object'||Array.isArray(values))throw new Error('Configure only record components belonging to this hybrid.');
-        for(const [key,value] of Object.entries(values))if(!['retrieval_k','max_stored_entries'].includes(key)||(value!==null&&(!Number.isSafeInteger(value)||value<1)))throw new Error('Component limits must be positive integers or null.');
+        for(const [key,value] of Object.entries(values))if(!['retrieval_k','max_stored_entries','candidate_k'].includes(key)||(value!==null&&(!Number.isSafeInteger(value)||value<1)))throw new Error('Component limits must be positive integers or null.');
     }
     return {hybrid_shares:{[names[0]]:share,[names[1]]:1-share},component_options:options};
 }
@@ -449,11 +452,50 @@ function renderRunProgress(report){
 }
 async function refreshSavedRuns(){
     if(page!=='benchmark')return;
-    try{const {runs}=await jsonRequest('/api/benchmarks');const list=$('savedRuns');list.replaceChildren();
-        for(const saved of runs){const row=document.createElement('div');row.className='saved-run';const open=document.createElement('button');open.className='saved-run-open';const name=document.createElement('strong');name.textContent=benchmarkConditionLabel({config:{modules:[saved.module],no_memory_context:saved.no_memory_context},condition:saved.condition,protocol:saved.protocol});const detail=document.createElement('small');detail.textContent=`${saved.status} ? ${(saved.progress?.percent??(saved.status==='completed'?100:0)).toFixed(1)}% ? ${saved.run_id.slice(0,8)}`;open.append(name,detail);open.onclick=()=>openSavedRun(saved.run_id);row.append(open);const actions=document.createElement('div');actions.className='saved-run-actions';const exportButton=document.createElement('button');exportButton.textContent='Export';exportButton.onclick=()=>download(`/api/benchmarks/${encodeURIComponent(saved.run_id)}/export`);actions.append(exportButton);if(saved.resumable&&['failed','cancelled','interrupted','completed'].includes(saved.status)){const resume=document.createElement('button');resume.textContent='Resume';resume.onclick=async()=>{await openSavedRun(saved.run_id);$('resumeBenchmark').onclick();};actions.append(resume);}row.append(actions);list.append(row);}
+    const requested=++savedRunsRequest;
+    try{
+        const {runs}=await jsonRequest('/api/benchmarks');if(requested!==savedRunsRequest)return;
+        const list=$('savedRuns');list.replaceChildren();
+        for(const saved of runs){
+            const row=document.createElement('div');row.className='saved-run';
+            const open=document.createElement('button');open.className='saved-run-open';
+            const name=document.createElement('strong');name.textContent=benchmarkConditionLabel({config:{modules:[saved.module],no_memory_context:saved.no_memory_context},condition:saved.condition,protocol:saved.protocol});
+            const detail=document.createElement('small');detail.textContent=`${saved.status} · ${(saved.progress?.percent??(saved.status==='completed'?100:0)).toFixed(1)}% · ${saved.run_id.slice(0,8)}`;
+            open.append(name,detail);open.onclick=()=>openSavedRun(saved.run_id);row.append(open);
+            const actions=document.createElement('div');actions.className='saved-run-actions';
+            const exportButton=document.createElement('button');exportButton.textContent='Export';exportButton.onclick=()=>download(`/api/benchmarks/${encodeURIComponent(saved.run_id)}/export`);actions.append(exportButton);
+            if(saved.resumable&&['failed','cancelled','interrupted','completed'].includes(saved.status)){
+                const resume=document.createElement('button');resume.textContent='Resume';resume.onclick=async()=>{await openSavedRun(saved.run_id);$('resumeBenchmark').onclick();};actions.append(resume);
+            }
+            const remove=document.createElement('button');remove.type='button';remove.className='delete-run';remove.textContent='Delete';remove.disabled=!saved.deletable;
+            remove.title=saved.deletable?'Delete this saved run and its stored files':'Wait until the run has stopped before deleting';
+            remove.onclick=()=>{
+                if(remove.disabled)return;
+                benchmarkDeleteTarget=saved.run_id;$('benchmarkDeleteName').textContent=`${name.textContent} · ${saved.run_id}`;
+                $('benchmarkDeleteError').textContent='';$('benchmarkDeleteDialog').showModal();$('benchmarkDeleteCancel').focus();
+            };
+            actions.append(remove);row.append(actions);list.append(row);
+        }
         if(!runs.length){const empty=document.createElement('p');empty.textContent='Your benchmark runs will appear here.';list.append(empty);}
-    }catch(error){$('savedRuns').textContent=error.message;}
+    }catch(error){if(requested===savedRunsRequest)$('savedRuns').textContent=error.message;}
 }
+$('benchmarkDeleteCancel').onclick=()=>{if(!benchmarkDeleteBusy){benchmarkDeleteTarget=null;$('benchmarkDeleteDialog').close();}};
+$('benchmarkDeleteDialog').oncancel=event=>{if(benchmarkDeleteBusy)event.preventDefault();};
+$('benchmarkDeleteDialog').onclose=()=>{if(!$('benchmarkDeleteDialog').open)benchmarkDeleteTarget=null;};
+$('benchmarkDeleteForm').onsubmit=async event=>{
+    event.preventDefault();if(!benchmarkDeleteTarget||benchmarkDeleteBusy)return;
+    const deletedRun=benchmarkDeleteTarget;benchmarkDeleteBusy=true;
+    $('benchmarkDeleteConfirm').disabled=true;$('benchmarkDeleteCancel').disabled=true;$('benchmarkDeleteError').textContent='';
+    try{
+        await jsonRequest(`/api/benchmarks/${encodeURIComponent(deletedRun)}`,{method:'DELETE'});
+        if(runId===deletedRun){
+            $('newBenchmarkRun').onclick();
+            if(inspectionSource==='benchmark'){inspection=null;$('inspector').hidden=true;document.body.classList.remove('memory-open');}
+        }
+        $('benchmarkDeleteDialog').close();await refreshSavedRuns();$('savedRunStatus').textContent='Saved run and its stored files deleted.';
+    }catch(error){$('benchmarkDeleteError').textContent=error.message;}
+    finally{benchmarkDeleteBusy=false;$('benchmarkDeleteConfirm').disabled=false;$('benchmarkDeleteCancel').disabled=false;}
+};
 async function openSavedRun(id){$('resumeDatasetControl').hidden=true;importedBenchmark=false;importedOriginal=null;runId=id;localStorage.setItem('kai3-benchmark-run',id);$('exportReview').hidden=false;$('reviewFile').disabled=false;$('reportMode').hidden=true;$('reviewLabelsControl').hidden=false;$('reportMoreActions').hidden=false;$('reportMoreActions').open=false;await pollBenchmark();}
 $('refreshRuns').onclick=refreshSavedRuns;$('sidebarNewBenchmark').onclick=()=>$('newBenchmarkRun').onclick();
 $('continueBenchmark').onclick=async()=>{try{await jsonRequest(`/api/benchmarks/${runId}/continue`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:benchmark.review.token})});pollBenchmark();}catch(error){$('progressActivity').textContent=error.message;}};
@@ -546,7 +588,7 @@ function drawBenchmark(){
     body.append(retrievalMetrics);
     const memoryDetails=drawUsageSummary(body);
     const config=reportDetails('Run configuration');config.classList.add('report-config');const configGrid=document.createElement('div');configGrid.className='config-grid';
-    [['Condition',benchmarkConditionLabel(benchmark)],['Conversations',benchmark.config.sample_ids?.join(', ')],['Categories',(benchmark.config.categories||[]).map(categoryName).join(', ')],['Question limit',benchmark.config.question_limit===0?'All matching questions':benchmark.config.question_limit],...(benchmark.config.modules?.[0]==='vector_store_reranker'?[['Candidate pool',benchmark.config.candidate_k===null?'All stored turns':benchmark.config.candidate_k],['Reranker model',benchmark.reranker?.model],['Reranker revision',benchmark.reranker?.revision]]:[]),['Retrieval k',benchmark.config.retrieval_k===null?'All available':benchmark.config.retrieval_k],['Recent window size',benchmark.config.window_size],['Stored-record capacity',benchmark.config.max_stored_entries===null?'Unlimited':benchmark.config.max_stored_entries],['Context-token allowance',benchmark.config.memory_context_tokens],['Maximum summary tokens',benchmark.config.max_summary_tokens],['Answer model',benchmark.answer_model],['Judge model',benchmark.judge_model]].forEach(([k,v])=>addField(configGrid,k,v??'—'));config.append(configGrid);body.append(config);
+    [['Condition',benchmarkConditionLabel(benchmark)],['Conversations',benchmark.config.sample_ids?.join(', ')],['Categories',(benchmark.config.categories||[]).map(categoryName).join(', ')],['Question limit',benchmark.config.question_limit===0?'All matching questions':benchmark.config.question_limit],...(usesReranker(benchmark.config.modules?.[0])?[['Candidate pool',benchmark.config.candidate_k===null?'All stored records':benchmark.config.candidate_k],['Reranker model',benchmark.reranker?.model],['Reranker revision',benchmark.reranker?.revision]]:[]),['Retrieval k',benchmark.config.retrieval_k===null?'All available':benchmark.config.retrieval_k],['Recent window size',benchmark.config.window_size],['Stored-record capacity',benchmark.config.max_stored_entries===null?'Unlimited':benchmark.config.max_stored_entries],['Context-token allowance',benchmark.config.memory_context_tokens],['Maximum summary tokens',benchmark.config.max_summary_tokens],['Answer model',benchmark.answer_model],['Judge model',benchmark.judge_model]].forEach(([k,v])=>addField(configGrid,k,v??'—'));config.append(configGrid);body.append(config);
     const calibration=reportDetails('Human review');calibration.classList.add('calibration-panel');const calibrationText=document.createElement('p');calibrationText.textContent=benchmark.calibration?`${benchmark.calibration.status} · ${benchmark.calibration.reviewed_count} cases reviewed · agreement by rubric dimension`:'Uncalibrated · export a sample, add 0–2 rubric ratings, then import it.';calibration.append(calibrationText);if(benchmark.calibration)for(const [dimension,rating] of Object.entries(benchmark.calibration.agreement||{}))addField(calibration,`${dimension} agreement`,rating.exact_agreement==null?'Unavailable':`${(rating.exact_agreement*100).toFixed(1)}% (${rating.count} reviewed)`);body.append(calibration);
     const cases=document.createElement('section');cases.className='report-section';const casesTitle=document.createElement('h3');casesTitle.textContent='Question results';cases.append(casesTitle);
     const filterBar=document.createElement('div');filterBar.className='case-filters';const categoryFilter=document.createElement('select');categoryFilter.id='caseCategoryFilter';categoryFilter.innerHTML='<option value="all">All categories</option>'+[1,2,3,4,5].map(c=>`<option value="${c}">${categoryName(c)}</option>`).join('');

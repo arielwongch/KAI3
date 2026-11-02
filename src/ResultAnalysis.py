@@ -12,11 +12,74 @@ def complete_sum(values):
     return sum(values) if values and all(number(v) for v in values) else None
 
 
+def percentile(values, fraction):
+    values = sorted(v for v in values if number(v))
+    if not values:
+        return None
+    position = (len(values)-1)*fraction
+    lo = int(position)
+    hi = min(lo+1, len(values)-1)
+    return values[lo] + (values[hi]-values[lo])*(position-lo)
+
+
+def phase_tokens(diagnostics, phase):
+    requests = diagnostics.get('provider_requests')
+    if isinstance(requests, list):
+        records = [r for r in requests if r.get('phase') == phase]
+        if records:
+            return complete_sum(r.get('tokens') for r in records)
+        return 0 if diagnostics.get(phase + '_llm_calls') == 0 else None
+    return diagnostics.get(phase + '_tokens')
+
+
+def lifecycle_metrics(report, module, cases):
+    """Recorded run cost, including previous ingestion attempts exactly once."""
+    builds, seen, conflicting = [], {}, False
+    for memory in [*report.get('previous_ingestions', []), *report.get('memories', [])]:
+        if str(memory.get('module', 'unknown')) != module:
+            continue
+        ingestion = memory.get('ingestion', {})
+        identity = ingestion.get('ingestion_id')
+        if identity is not None and identity in seen:
+            conflicting |= seen[identity] != ingestion
+            continue
+        if identity is not None:
+            seen[identity] = ingestion
+        builds.append(ingestion)
+    ds = [c.get('diagnostics', {}) for c in cases]
+    phases = {}
+    for phase, diagnostics in (('memory', builds), ('answer', ds), ('judge', ds)):
+        values = [phase_tokens(d, phase) for d in diagnostics]
+        phases[phase] = dict(tokens=complete_sum(values), known_count=sum(number(v) for v in values),
+                             record_count=len(values))
+    ingestion_time = complete_sum(d.get('total_seconds') for d in builds)
+    query_times = [d.get('execution_total_seconds', d.get('total_seconds')) for d in ds]
+    query_time = complete_sum(query_times)
+    if conflicting:
+        phases['memory']['tokens'] = None
+        ingestion_time = None
+    retrieval = [d.get('retrieval_seconds') for d in ds]
+    return dict(scope='all recorded ingestion builds and retained question attempts; no amortization',
+        ingestion=phases['memory'], answer=phases['answer'], judge=phases['judge'],
+        total_provider_tokens=complete_sum(phases[p]['tokens'] for p in ('memory', 'answer', 'judge')),
+        ingestion_seconds=ingestion_time, query_seconds=query_time,
+        total_seconds=complete_sum([ingestion_time, query_time]),
+        ingestion_runtime_count=sum(number(d.get('total_seconds')) for d in builds),
+        query_runtime_count=sum(number(v) for v in query_times),
+        ingestion_count=len(builds), conflicting_ingestion_ids=conflicting,
+        request_ledger_complete=bool(ds) and bool(builds) and all(
+            isinstance(d.get('provider_requests'), list) or d.get('memory_llm_calls') == 0
+            for d in builds) and all(isinstance(d.get('provider_requests'), list) for d in ds),
+        retrieval=dict(count=sum(number(v) for v in retrieval),
+                       p50_seconds=percentile(retrieval, .5), p95_seconds=percentile(retrieval, .95),
+                       scope='recorded retrieval and packing; consult per-case cache state'))
+
+
 def enrich_report(value):
     if not isinstance(value, dict) or not isinstance(value.get('cases'), list):
         raise ValueError('Upload a benchmark results object containing a cases array.')
     report = deepcopy(value)
-    for field in ('memories', 'question_manifest'):
+    for field in ('memories', 'question_manifest', 'previous_ingestions'):
         if field in report and not isinstance(report[field], list):
             raise ValueError(f'{field} must be an array.')
     previous = report.get('comparison')
@@ -93,10 +156,12 @@ def enrich_report(value):
         metrics['stored_text_bytes'] = complete_sum(sizes)
         metrics['storage_count'] = sum(number(v) for v in sizes)
         metrics['memory_count'] = len(memories)
+        metrics['lifecycle'] = lifecycle_metrics(report, module, cases)
         rows.append(dict(module=module, overall=metrics, categories=categories))
     report['comparison'] = dict(version=1, added_fields=added, rows=rows,
         definitions=dict(accuracy='Correct / judged questions × 100; unavailable labels are excluded.',
                          tokens='Answer + judge provider tokens per recorded question; excludes ingestion.',
                          runtime='Recorded total seconds per question, including retrieval, answer and judge; excludes ingestion.',
+                         lifecycle='All recorded ingestion builds (including resumed builds) + retained question attempts. Unknown usage stays unavailable; legacy data may omit failed attempts. No amortization.',
                          storage='Sum of final UTF-8 stored text bytes across memory snapshots; excludes embeddings and runtime overhead.'))
     return report

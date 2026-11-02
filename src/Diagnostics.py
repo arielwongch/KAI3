@@ -4,6 +4,24 @@ from dataclasses import asdict
 from copy import deepcopy
 
 collector = ContextVar("memory_llm_metrics", default=None)
+retrieval_collector = ContextVar('retrieval_metrics', default=None)
+retrieval_component = ContextVar('retrieval_component', default=None)
+
+
+def record_retrieval(stage, entries, **details):
+    """Request-local diagnostic records; annotations never affect ranking."""
+    metrics = retrieval_collector.get()
+    if metrics is None:
+        return
+    records = []
+    for entry in entries:
+        m = entry.metadata
+        records.append(dict(dialogue_id=m.get('dialogue_id'),
+                            source_ids=deepcopy(m.get('source_ids', [])),
+                            fact_id=m.get('version_id', m.get('fact_id')),
+                            rank=m.get('retrieval_rank'), score=m.get('retrieval_score')))
+    metrics.setdefault('retrieval_traces', []).append(dict(
+        stage=stage, component=retrieval_component.get(), records=records, **details))
 
 def record_memory_call(tokens):
     metrics = collector.get()

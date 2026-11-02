@@ -181,5 +181,36 @@ class LifecycleTests(unittest.TestCase):
             if worker.poll() is None:
                 worker.terminate();worker.wait(timeout=5)
 
+    @unittest.skipUnless(os.name == 'nt', 'Windows console regression')
+    def test_venv_worker_has_no_visible_console(self):
+        # Probe inside the actual interpreter after the venv redirector runs.
+        # Mocking creationflags alone misses the redirector allocating a console.
+        dataset = data(); dataset[0]['qa'] = []
+        job = Benchmark.BenchmarkJob(dataset, dict(module='no_memory', background=True))
+        probe = Path(self.temp.name) / 'console-probe.json'
+        popen = subprocess.Popen
+        code = (
+            "import ctypes,json,runpy,sys;from pathlib import Path;"
+            "k=ctypes.WinDLL('kernel32');u=ctypes.WinDLL('user32');"
+            "k.GetConsoleWindow.restype=ctypes.c_void_p;"
+            "u.IsWindowVisible.argtypes=[ctypes.c_void_p];"
+            "h=k.GetConsoleWindow();"
+            "Path(sys.argv.pop(1)).write_text(json.dumps({'visible':bool(u.IsWindowVisible(h))}));"
+            "sys.path.insert(0,str(Path(sys.argv[1]).parent));"
+            "sys.argv=sys.argv[1:];runpy.run_path(sys.argv[0],run_name='__main__')"
+        )
+        def instrument(args, **kwargs):
+            return popen([args[0], '-c', code, str(probe), *args[1:]], **kwargs)
+        with patch('BenchmarkStore.subprocess.Popen', side_effect=instrument):
+            worker = launch(self.temp.name, job)
+        try:
+            worker.wait(timeout=30)
+            self.assertEqual(worker.returncode, 0,
+                             path_for(self.temp.name, job.result['run_id'], '.log').read_text())
+            self.assertFalse(read_json(probe)['visible'], 'Worker allocated a visible console')
+        finally:
+            if worker.poll() is None:
+                worker.terminate(); worker.wait(timeout=5)
+
 if __name__=='__main__':
     unittest.main()

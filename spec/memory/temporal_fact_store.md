@@ -1,6 +1,6 @@
 # Temporal fact memory
 
-Status: implemented behavior. Last checked against repository source: 2026-10-08.
+Status: implemented behavior. Last checked against repository source: 2026-11-02.
 This check date is not an implementation or release date.
 
 Implementation: [TemporalFactStore.py](../../src/TemporalFactStore.py), selected by
@@ -81,11 +81,12 @@ provenance, and links to missing versions are marked unavailable.
 
 Embed the question and rank every retained version, including non-current ones,
 by descending cosine similarity of its assertion text. Ties favor higher
-`observed_revision`, then the larger numeric version ID. There is no similarity
-threshold or preference for current status. Confirming a version does not update
+`observed_revision`, then the larger numeric version ID. Shortlist `candidate_k` versions (default 50; null means all), then apply the
+shared pinned [cross-encoder](vector_store_reranker.md) and final retrieval k.
+There is no similarity threshold or preference for current status. Confirming a version does not update
 its `observed_revision`. Empty stores and blank queries return no candidates.
 
-Return detached entries with retrieval scores/ranks and render labels as:
+Return detached entries with vector and reranker scores/ranks and render labels as:
 
 ```text
 [Bob | session_1 | <timestamp> | superseded] Bob works at Google.
@@ -93,7 +94,7 @@ Return detached entries with retrieval scores/ranks and render labels as:
 
 If the version has an end observation, append an assertion-status transition
 label containing that observation's session and timestamp. Labels consume context
-tokens. Apply k before whole-record packing and retain similarity order.
+tokens. Apply k before whole-record packing and retain reranker order, with vector order breaking ties.
 
 For example, after "I work at Google" followed by "I now work at Microsoft",
 an extracted `supersede` keeps the Google assertion searchable for a question
@@ -113,7 +114,8 @@ can block QA for that conversation.
 
 Use the [shared interface](interface.md) with factory type `fact_store` and
 `fact_history_mode="versioned"`. The factory accepts an injectable embedder and
-extractor, plus `max_stored_entries=None` (unlimited) or a positive capacity.
+extractor, plus `max_stored_entries=None` (unlimited) or a positive capacity,
+`candidate_k=50`, and an injectable reranker.
 Live-style `retrieve` defaults to k=5; benchmark candidate k accepts null for all.
 The extractor takes `(system_prompt, payload)` and returns `(text, latency, tokens)`.
 The benchmark injects `benchmark_extractor`, which adds speaker-preservation
@@ -132,3 +134,8 @@ for that conversation; it does not silently use the partial store for QA.
 [Controlled comparison tests](../../tests/test_controlled_comparison.py) cover
 history, confirmation, retraction, speaker isolation, validated provenance,
 atomic failures, capacity, version links, and evidence coverage.
+
+
+The [periodic fact variant](periodic_window.md) uses `write_batch` for one
+extraction call and an atomic, chronological application of per-turn operations.
+Existing per-turn temporal writes retain their extraction contract.

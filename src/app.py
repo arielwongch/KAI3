@@ -9,12 +9,12 @@ from flask import Flask, abort, jsonify, render_template, request, send_file, se
 from MemoryFactory import MemoryFactory
 from HybridMemory import HYBRIDS
 from NoMemory import NoMemory
-from MemoryConfig import window_size_for, retrieval_policy
+from MemoryConfig import window_size_for, retrieval_policy, RERANKED_MODULES
 from MemoryContext import retrieval_k
 from ReAct import run_ReAct
 from Diagnostics import totals
 from Benchmark import BenchmarkJob, MODULES, BENCHMARK_MODULES, MODULE_CAPABILITIES, PROTOCOL_VERSION
-from BenchmarkStore import ACTIVE, atomic_json, path_for, read_json, launch, worker_active
+from BenchmarkStore import ACTIVE, atomic_json, path_for, read_json, launch, worker_active, delete_run_files
 from ResultAnalysis import enrich_report
 
 app = Flask(__name__, template_folder='.', static_folder=None)
@@ -105,6 +105,10 @@ def run_benchmark_thread(job):
     except Exception as error:
         fail_benchmark(job, error)
 
+def benchmark_stopped(job):
+    thread = getattr(job, '_thread', None)
+    return job.result['status'] not in ACTIVE and not (thread is not None and thread.is_alive())
+
 
 def start_benchmark(job):
     try:
@@ -114,7 +118,8 @@ def start_benchmark(job):
         if job.options.get('background'):
             launch(RUN_STORE, job)
         else:
-            Thread(target=lambda: run_benchmark_thread(job), daemon=True).start()
+            job._thread = Thread(target=lambda: run_benchmark_thread(job), daemon=True)
+            job._thread.start()
     except Exception as error:
         fail_benchmark(job, error)
         raise
@@ -411,12 +416,16 @@ def get_reply():
     except ValueError as error:
         return jsonify(error=str(error)), 400
     memory_options = payload.get('memory_options', {})
-    allowed = {'hybrid_shares', 'component_options', 'memory_context_tokens', 'retrieval_k',
-               'max_stored_entries', 'max_summary_tokens', 'summary_limit'}
-    if mode == 'vector_store_reranker':
+    if mode in HYBRIDS:
+        allowed = {'hybrid_shares', 'component_options', 'memory_context_tokens', 'retrieval_k',
+                   'max_stored_entries', 'max_summary_tokens', 'summary_limit', 'candidate_k'}
+    elif mode in RERANKED_MODULES:
         allowed = {'candidate_k', 'max_stored_entries'}
-    if (not isinstance(memory_options, dict) or memory_options.keys() - allowed
-            or (memory_options and mode not in (*HYBRIDS, 'vector_store_reranker'))):
+    elif mode == 'windowed_summarization':
+        allowed = {'summary_limit', 'max_summary_tokens'}
+    else:
+        allowed = set()
+    if not isinstance(memory_options, dict) or memory_options.keys() - allowed:
         return jsonify(error='memory_options must contain supported settings for the selected module.'), 400
     chat_id = chat_id.strip()
     with registry_lock:
@@ -487,10 +496,33 @@ def create_benchmark():
 def list_benchmarks():
     with registry_lock:
         refresh_jobs()
-        runs = [dict(run_id=j.result['run_id'], status=j.result['status'], progress=j.result.get('progress', {}),
+        runs = [dict(run_id=j.result['run_id'], status=j.result['status'], progress=j.result.get('progress', {}), deletable=benchmark_stopped(j),
                      module=j.result.get('config', {}).get('modules', [None])[0], condition=j.result.get('condition'), no_memory_context=j.result.get('config', {}).get('no_memory_context'), protocol=j.result.get('protocol'), updated_at=j.result.get('updated_at'),
                      background=bool(j.result.get('worker')), resumable=j.result.get('protocol_version') == PROTOCOL_VERSION and (len(j.result.get('cases', [])) < len(j.result.get('question_manifest', [])) or any(c.get('correct') is None and c.get('diagnostics', {}).get('status') != 'context_limit_exceeded' for c in j.result.get('cases', [])))) for j in jobs.values()]
     return jsonify(runs=sorted(runs, key=lambda r: r.get('updated_at') or 0, reverse=True))
+
+@app.delete('/api/benchmarks/<run_id>')
+def delete_benchmark(run_id):
+    try:
+        path_for(RUN_STORE, run_id)
+    except ValueError as error:
+        return jsonify(error=str(error)), 400
+    with registry_lock:
+        refresh_jobs()
+        job = jobs.get(run_id)
+        if job is None:
+            return jsonify(error='Benchmark run is unavailable.'), 404
+        with job.lock:
+            if not benchmark_stopped(job):
+                return jsonify(error='Cancel the run and wait until it stops before deleting it.'), 409
+            try:
+                if not delete_run_files(RUN_STORE, run_id):
+                    return jsonify(error='The worker is still finishing. Wait a moment and retry deletion.'), 409
+            except OSError:
+                return jsonify(error='Could not remove all run files. The run remains listed; retry deletion.'), 503
+            job.set_persistence_callback(None)
+            del jobs[run_id]
+    return jsonify(deleted=run_id)
 
 @app.post('/api/benchmarks/<run_id>/continue')
 def continue_benchmark(run_id):
@@ -561,13 +593,13 @@ def cancel_benchmark(run_id):
     with registry_lock:
         refresh_jobs()
         job = jobs.get(run_id)
-    if job is None:
-        return jsonify(error='Benchmark run is unavailable.'), 404
-    if job.result.get('worker'):
-        path_for(RUN_STORE, run_id, '.cancel').touch()
-    else:
-        job.cancel.set()
-    return jsonify(status='cancellation_requested')
+        if job is None:
+            return jsonify(error='Benchmark run is unavailable.'), 404
+        if job.result.get('worker'):
+            path_for(RUN_STORE, run_id, '.cancel').touch()
+        else:
+            job.cancel.set()
+        return jsonify(status='cancellation_requested')
 
 @app.get('/api/benchmarks/<run_id>/review')
 def benchmark_review_export(run_id):
@@ -590,32 +622,32 @@ def benchmark_review_import(run_id):
     with registry_lock:
         refresh_jobs()
         job = jobs.get(run_id)
-    if job is None:
-        return jsonify(error='Benchmark run is unavailable.'), 404
-    payload = request.get_json(silent=True)
-    reviews = payload.get('reviews') if isinstance(payload, dict) else None
-    if not isinstance(reviews, list):
-        return jsonify(error='Expected a reviews array.'), 400
-    if job.result['status'] in ACTIVE:
-        return jsonify(error='Wait until the run stops before importing review labels.'), 409
-    with job.lock:
-        cases = job.result['cases']
-        for review in reviews:
-            if not isinstance(review, dict) or isinstance(review.get('case_index'), bool) or not isinstance(review.get('case_index'), int) or not 0 <= review['case_index'] < len(cases):
-                return jsonify(error='Each review requires a valid case_index.'), 400
-            ratings = review.get('ratings')
-            if not isinstance(ratings, dict) or any(isinstance(ratings.get(k), bool) or ratings.get(k) not in (0,1,2) for k in ('correctness','completeness','support','abstention')):
-                return jsonify(error='Each review requires 0–2 ratings for all four rubric dimensions.'), 400
-        for review in reviews:
-            cases[review['case_index']]['human_review'] = {'ratings': review['ratings'], 'notes': str(review.get('notes', ''))}
-        agreement = {}
-        dimensions = ('correctness','completeness','support','abstention')
-        for dim in dimensions:
-            pairs = [(c['judge'][dim], c['human_review']['ratings'][dim]) for c in cases if c.get('judge') and c.get('human_review')]
-            agreement[dim] = {'exact_agreement': sum(a == b for a,b in pairs) / len(pairs) if pairs else None, 'count': len(pairs)}
-        job.result['calibration'] = {'reviewed_count': sum(bool(c.get('human_review')) for c in cases), 'agreement': agreement, 'status': 'reviewed sample; agreement shown' if any(v['count'] for v in agreement.values()) else 'uncalibrated'}
-    persist_benchmark(job.snapshot())
-    return jsonify(calibration=job.snapshot().get('calibration'))
+        if job is None:
+            return jsonify(error='Benchmark run is unavailable.'), 404
+        payload = request.get_json(silent=True)
+        reviews = payload.get('reviews') if isinstance(payload, dict) else None
+        if not isinstance(reviews, list):
+            return jsonify(error='Expected a reviews array.'), 400
+        if job.result['status'] in ACTIVE:
+            return jsonify(error='Wait until the run stops before importing review labels.'), 409
+        with job.lock:
+            cases = job.result['cases']
+            for review in reviews:
+                if not isinstance(review, dict) or isinstance(review.get('case_index'), bool) or not isinstance(review.get('case_index'), int) or not 0 <= review['case_index'] < len(cases):
+                    return jsonify(error='Each review requires a valid case_index.'), 400
+                ratings = review.get('ratings')
+                if not isinstance(ratings, dict) or any(isinstance(ratings.get(k), bool) or ratings.get(k) not in (0,1,2) for k in ('correctness','completeness','support','abstention')):
+                    return jsonify(error='Each review requires 0–2 ratings for all four rubric dimensions.'), 400
+            for review in reviews:
+                cases[review['case_index']]['human_review'] = {'ratings': review['ratings'], 'notes': str(review.get('notes', ''))}
+            agreement = {}
+            dimensions = ('correctness','completeness','support','abstention')
+            for dim in dimensions:
+                pairs = [(c['judge'][dim], c['human_review']['ratings'][dim]) for c in cases if c.get('judge') and c.get('human_review')]
+                agreement[dim] = {'exact_agreement': sum(a == b for a,b in pairs) / len(pairs) if pairs else None, 'count': len(pairs)}
+            job.result['calibration'] = {'reviewed_count': sum(bool(c.get('human_review')) for c in cases), 'agreement': agreement, 'status': 'reviewed sample; agreement shown' if any(v['count'] for v in agreement.values()) else 'uncalibrated'}
+        persist_benchmark(job.snapshot())
+        return jsonify(calibration=job.snapshot().get('calibration'))
 
 def main():
     # The watchdog reloader restarts the process when OneDrive or an editor

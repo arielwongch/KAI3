@@ -74,6 +74,31 @@ def worker_active(root, snapshot):
     # Allow a newly spawned process time to import dependencies and acquire its lease.
     return snapshot['status'] == 'queued' and time.time() - snapshot.get('updated_at', 0) < 30
 
+def delete_run_files(root, run_id):
+    """Remove only this run's files; return False while its worker owns a lease."""
+    paths = [path_for(root, run_id, suffix) for suffix in
+             ('.input.json', '.log', '.cancel', '.continue.json', '.lease', '.json')]
+    for path in paths:
+        if path.is_symlink() or (path.exists() and not path.is_file()):
+            raise OSError('Run files must be regular files inside the run store.')
+    lease_path = paths[-2]
+    lease = None
+    if lease_path.exists():
+        try:
+            lease = Lease(lease_path)
+        except OSError:
+            return False
+    try:
+        for path in paths[:-2]:
+            path.unlink(missing_ok=True)
+    finally:
+        if lease is not None:
+            lease.close()
+    # Windows cannot unlink the lease while our own handle remains open.
+    lease_path.unlink(missing_ok=True)
+    paths[-1].unlink(missing_ok=True)
+    return True
+
 def launch(root, job):
     run_id = job.result['run_id']
     path_for(root, run_id, '.cancel').unlink(missing_ok=True)
@@ -85,7 +110,11 @@ def launch(root, job):
     args = [sys.executable, str(Path(__file__).with_name('BenchmarkWorker.py')), '--store', str(Path(root).resolve()), '--run-id', run_id]
     options = dict(stdin=subprocess.DEVNULL, close_fds=True, cwd=str(Path(__file__).resolve().parents[1]))
     if os.name == 'nt':
-        options['creationflags'] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+        # A Windows venv executable redirects to the base Python interpreter.
+        # DETACHED_PROCESS leaves that child free to allocate a visible console;
+        # CREATE_NO_WINDOW gives both processes a windowless console instead.
+        # Do not combine these flags: Windows ignores CREATE_NO_WINDOW then.
+        options['creationflags'] = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
         startup = subprocess.STARTUPINFO(); startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW; startup.wShowWindow = subprocess.SW_HIDE
         options['startupinfo'] = startup
     else:

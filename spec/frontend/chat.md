@@ -33,10 +33,12 @@ continuation for lost memory, prompting a new chat.
 ## Write and interaction flow
 
 Select `no_memory`, `sliding_window`, `summarization`, `vector_store`,
-`vector_store_reranker`, `fact_store`, `delta`, `epsilon`, or `zeta` before sending.
-Vector Store + Reranker exposes candidate pool and storage capacity controls
+`vector_store_reranker`, `fact_store`, `delta`, `epsilon`, `zeta`, Alpha/Beta/Gamma,
+or the two [periodic window modes](../memory/periodic_window.md) before sending.
+All embedded retrieval modes except standalone Vector Store expose candidate
+pool and storage capacity controls
 before the first message; they are saved under `memory_options` and remain fixed.
-Its live final retrieval k is five. Selection locks for that chat; another architecture
+Their live final retrieval k is five per record component. Selection locks for that chat; another architecture
 requires a new chat. The composer is disabled until selection or while sending,
 checking memory, or unable to reconnect. Enter sends; Shift+Enter inserts a newline.
 
@@ -88,3 +90,9 @@ The implementation committed in `8035e9b` passed the full 143-test offline suite
 including the 14 frontend state tests, and browser navigation checks at desktop
 and phone widths. This does not establish a full
 chat or screen-reader acceptance review; see [verification scope](../../UPDATES.md#verification-and-outstanding-work).
+
+
+Windowed Summary and Windowed Fact Store use one recent-window setting for both
+window size and update interval (default 10 exchanges). These controls and the
+reranker settings remain fixed after the first message. Paired hybrids can
+also override `candidate_k` per record component through component settings.

@@ -6,6 +6,7 @@ from Embeddings import MODEL_NAME, validate_k
 
 TOKENIZER_REVISION = '1110a243fdf4706b3f48f1d95db1a4f5529b4d41'
 PACKING_POLICY = 'whole-record-first-k-greedy-v1'
+WINDOW_PACKING_POLICY = 'recent-newest-first-whole-record-v2'
 
 
 class BenchmarkTokenizer:
@@ -64,8 +65,15 @@ def build_memory_context(module, query, token_budget, tokenizer, retrieval_k=Non
     candidates = list(module.iter_context_candidates(query, retrieval_k))
     selected = []
     is_window = getattr(module, 'context_order', None) == 'chronological'
+    recent_first = getattr(module, 'packing_policy', None) == WINDOW_PACKING_POLICY
+    if recent_first:
+        recent = [e for e in candidates if e.metadata.get('memory_tier') == 'recent']
+        candidates = list(reversed(recent)) + [e for e in candidates if e.metadata.get('memory_tier') != 'recent']
 
     def ordered(records):
+        if recent_first:
+            return ([e for e in records if e.metadata.get('memory_tier') != 'recent']
+                    + list(reversed([e for e in records if e.metadata.get('memory_tier') == 'recent'])))
         return list(reversed(records)) if is_window else records
 
     def render(records):
@@ -76,7 +84,7 @@ def build_memory_context(module, query, token_budget, tokenizer, retrieval_k=Non
             selected.append(deepcopy(entry))
     text = render(selected)
     entries = ordered(selected)
-    return dict(text=text, entries=entries, memory_context_tokens=tokenizer.count(text),
+    result = dict(text=text, entries=entries, memory_context_tokens=tokenizer.count(text),
                 memory_context_token_budget=token_budget,
                 memory_context_bytes=len(text.encode('utf-8')),
                 candidate_count=len(candidates), included_count=len(entries),
@@ -84,7 +92,16 @@ def build_memory_context(module, query, token_budget, tokenizer, retrieval_k=Non
                 all_candidates_over_budget=bool(candidates) and not entries,
                 context_truncated=getattr(module, 'truncated', False) or any(e.metadata.get('truncated', False) for e in entries),
                 retrieval_k=retrieval_k, tokenizer=deepcopy(tokenizer.identity),
-                packing_policy=PACKING_POLICY)
+                packing_policy=WINDOW_PACKING_POLICY if recent_first else PACKING_POLICY)
+    if recent_first:
+        result['tiers'] = {}
+        for tier in ('recent', 'long_term'):
+            available = [e for e in candidates if e.metadata.get('memory_tier') == tier]
+            included = sum(e.metadata.get('memory_tier') == tier for e in entries)
+            result['tiers'][tier] = dict(candidate_count=len(available), included_count=included,
+                omitted_count=len(available)-included,
+                oversized_count=sum(tokenizer.count(format_context([e])) > token_budget for e in available))
+    return result
 
 
 def retrieval_k(module):
@@ -104,5 +121,7 @@ def format_context(entries, separator='\n\n'):
         texts = [e.text for e in entries if e.metadata.get('memory_component') == component]
         if texts:
             sections.append(label + ':\n' + separator.join(texts))
-    return ('Explicit recent corrections supersede older statements.\n\n'
+    return ('Explicit recent corrections supersede older statements for current-state questions. '
+            'For historical questions, use statements applicable to the requested time; '
+            'distinguish corrections of errors from changes over time.\n\n'
             + '\n\n'.join(sections))

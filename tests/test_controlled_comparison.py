@@ -35,6 +35,12 @@ def add(text, source, **extra):
     return dict(op='add', text=text, source_ids=[source], supporting_version_ids=[], **extra)
 
 
+
+def setUpModule():
+    from benchmark_helpers import offline_reranking
+    offline_reranking()
+
+
 class ContextTests(unittest.TestCase):
     def test_window_all_k_and_capacity_are_independent(self):
         store = SlidingWindow(10)
@@ -160,8 +166,8 @@ class ControlledBenchmarkTests(unittest.TestCase):
     def test_module_capabilities_and_validation(self):
         for mode in Benchmark.BENCHMARK_MODULES:
             options = Benchmark.options_for(dataset(), dict(module=mode))
-            self.assertEqual('retrieval_k' in options, mode in ('sliding_window','vector_store','vector_store_reranker','fact_store','delta','epsilon','zeta','beta','gamma'))
-            self.assertEqual('max_summary_tokens' in options, mode in ('summarization','delta','epsilon','alpha'))
+            self.assertEqual('retrieval_k' in options, mode in ('sliding_window','vector_store','vector_store_reranker','fact_store','delta','epsilon','zeta','beta','gamma','windowed_fact_store'))
+            self.assertEqual('max_summary_tokens' in options, mode in ('summarization','delta','epsilon','alpha','windowed_summarization'))
         for options in (dict(module='summarization', retrieval_k=None),
                         dict(module='summarization', max_stored_entries=1),
                         dict(module='full_context', memory_context_tokens=2000),

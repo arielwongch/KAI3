@@ -5,9 +5,10 @@ source review: 2026-10-08. Check dates are not implementation/release dates.
 The shared shell, Compare Runs, benchmark export/result-library integration, local
 setup, and recovery documentation were reconciled on 2026-11-02. This focused
 update does not change the review date of unaffected memory/protocol components.
-The implementation is committed and pushed on `main` as `8035e9b`; current
+The earlier workspace/result-library update is committed and pushed on `main` as `8035e9b`; current
 verification includes the 143-test offline suite and scoped desktop/phone browser
-checks. The post-commit Markdown review changes documentation only.
+checks. The post-commit Markdown review changed documentation only. Subsequent local
+periodic-memory, reranking, and scatter-plot changes are recorded in [updates](../UPDATES.md).
 [Development plans](../plans/README.md) separately track sequences, historical
 dates, remaining acceptance work, and unscheduled proposals.
 See [updates](../UPDATES.md), [progress](../PROGRESS.md), and the
@@ -31,6 +32,7 @@ See [updates](../UPDATES.md), [progress](../PROGRESS.md), and the
 | [Current facts](memory/fact_store.md) | Live-chat assertions, replacement, removal, current-fact retrieval |
 | [Temporal facts](memory/temporal_fact_store.md) | Benchmark versions, provenance, updates, historical retrieval |
 | [Recent-window hybrids](memory/window_hybrid.md) | Alpha/Beta/Gamma recent windows, long-term writes, and context packing |
+| [Periodic window modes](memory/periodic_window.md) | Recent k entries with summary/fact updates every k writes and a pre-QA flush |
 | [No memory](memory/no_memory.md) | No-op storage/retrieval component |
 
 ## Benchmark features
@@ -41,7 +43,7 @@ See [updates](../UPDATES.md), [progress](../PROGRESS.md), and the
 | [Reference baselines](benchmark/baselines.md) | Question-only, full context, exemptions and aliases |
 | [Context budget](benchmark/context_budget.md) | Tokenizer, candidate k, whole-record packing, request guard |
 | [Evaluation](benchmark/evaluation.md) | Lexical/judge scores, failures/denominators, evidence, human review |
-| [Results and resume](benchmark/results_and_resume.md) | Exports, comparison copies, diagnostics, persistence, imports, recovery, compatibility |
+| [Results and resume](benchmark/results_and_resume.md) | Exports, comparison copies, diagnostics, persistence, imports, recovery, compatibility, confirmed run deletion |
 
 The [hybrid memory specification](memory/hybrid.md) covers delta (summary + vector),
 epsilon (summary + facts), and zeta (vector + facts), including independent
@@ -53,8 +55,8 @@ ingestion, configurable context shares, atomic writes, and component diagnostics
 | --- | --- |
 | [Shared workspace shell](frontend/workspace_shell.md) | Common sidebar, typography, headers, collapse/mobile drawer, focus and asset ownership |
 | [Chat](frontend/chat.md) | Home/navigation, sessions, composer, messages, chat API |
-| [Benchmark workspace](frontend/benchmark.md) | Setup, progress/review, reports, saved/imported results, named export to Compare, API |
-| [Compare Runs](frontend/compare_runs.md) | JSON library/enrichment, duplicates, rename/delete, separate downloads, sorted charts/table, tooltips, coverage and folder boundary |
+| [Benchmark workspace](frontend/benchmark.md) | Setup, progress/review, reports, saved/imported results, confirmed run deletion, named export to Compare, API |
+| [Compare Runs](frontend/compare_runs.md) | JSON library/enrichment, duplicates, rename/delete, separate downloads, configurable scatter plot, sorted table, tooltips, coverage and folder boundary |
 | [Memory inspector](frontend/memory_inspector.md) | Stored records, turn context, metrics, snapshot export |
 
 ## Documentation ownership

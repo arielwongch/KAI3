@@ -1,5 +1,73 @@
 # Updates
 
+## Saved benchmark deletion - 2026-11-02
+
+Added **Delete** to Test Benchmark's Saved runs entries, with a run-specific
+confirmation. Deletion removes the saved result, original dataset copy, worker
+log, and control/lease files to free local space. Exported Compare Runs and
+downloaded JSON copies are kept. Active runs must be cancelled and stopped first;
+finishing threads and held worker leases also block deletion.
+
+Successful deletion refreshes the sidebar and clears the deleted run's open
+report/selection. Failed file cleanup keeps the snapshot and listed run for
+retry. The new DELETE endpoint shares the registry lock with resume/cancel/review
+mutations and uses an exact file list without recursive folder deletion.
+
+Verification: **164 offline tests passed**, including eight deletion API/storage
+tests and 20 frontend-state tests. JavaScript syntax and whitespace checks passed.
+Isolated desktop/phone Chrome checks at 1440px/390px exercised confirm/cancel,
+active guards, actual fixture cleanup, and report reset; dialog screenshots were
+visually reviewed. Only temporary synthetic runs were deleted. Changes are local
+and uncommitted.
+
+
+## Local approved implementation - 2026-11-02
+
+These changes are local and uncommitted; the earlier main-branch update below
+remains historical.
+
+- Added **Windowed Summary** (`windowed_summarization`) and **Windowed Fact Store**
+  (`windowed_fact_store`), preserving the existing architectures. One k controls
+  both the recent window and updates from each k incoming entries. Defaults are
+  10 chat exchanges / 100 benchmark speaker messages. Batches span sessions;
+  benchmarks flush the remainder before memory review and QA.
+- Fact batches use one extraction call with multiple changes. Current facts keep
+  paired user/assistant context and batch provenance. Benchmark facts apply
+  per-turn operations chronologically, retaining historical versions and validated
+  speaker/source attribution. Failed extraction/embedding rolls back the batch.
+- Reused the pinned reranker for all embedding-based retrieval except standalone
+  Vector Store: current/historical facts, Beta/Gamma long-term stores, paired
+  hybrid components, and Windowed Fact Store. Candidate pool defaults to 50 per
+  store, separately configurable from final retrieval k; paired hybrids support
+  component overrides. Snapshots/traces expose model identity and both score types.
+- Replaced the four simultaneous bar charts with **one full-width scatter plot**.
+  Independent x/y selectors offer accuracy, tokens, storage, or runtime, defaulting
+  to x = tokens per question and y = accuracy. Graph text matches the surrounding
+  workspace without SVG font scaling. Axis ticks use English K/M/B abbreviations
+  regardless of browser locale. Colors, filters, coverage, focus/touch
+  tooltips, zero/missing handling, and independent table sorting remain available.
+- Updated chat/API/CLI/benchmark settings and resume compatibility. Incompatible
+  earlier cosine-only runs require a new run; matching standalone reranker runs
+  remain eligible. Existing result exports were not rewritten.
+
+Verification: the full **156-test offline suite** passed on Python 3.12.10,
+including 13 new memory/integration tests, comparison DOM checks, and 16 frontend
+state tests. JavaScript syntax and diff whitespace checks passed. Isolated
+headless Chrome at **1440px and 390px** verified the plot choices, focus tooltips,
+new-mode settings, and absence of page overflow; screenshots were visually
+reviewed. Browser fixtures were temporary, and model/provider calls were mocked.
+Real-provider extraction and matched benchmark experiments remain unverified.
+
+The subsequent configurable-axis/typography revision passed the affected
+**15-test result suite** and expanded comparison DOM checks. Headless Chrome
+at 1440px/390px checked all 16 axis combinations, matching heading/body fonts,
+missing/coincident-point tooltips, and no overflow. The full 156-test result
+above predates this chart-only revision.
+
+Contracts: [periodic memory](spec/memory/periodic_window.md),
+[shared reranking](spec/memory/vector_store_reranker.md), and
+[Compare Runs](spec/frontend/compare_runs.md).
+
 ## Main branch update — 2026-11-02
 
 Implemented changes were committed and pushed to `origin/main` as

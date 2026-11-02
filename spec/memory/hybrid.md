@@ -21,7 +21,7 @@ but their stored records are separate.
 defaults are 0.5/0.5. `memory_context_tokens` defaults to 2,000. The benchmark
 uses its existing pinned tokenizer; live hybrid chat now uses that tokenizer too
 (including its first-use download). `component_options` may map either record
-component to `retrieval_k` and/or `max_stored_entries`. Each accepts a positive
+component to `retrieval_k`, `candidate_k`, and/or `max_stored_entries`. Each accepts a positive
 integer or null for all/unlimited. Unknown components/options are rejected.
 
 Common `retrieval_k` and `max_stored_entries` are defaults for each record
@@ -116,3 +116,10 @@ conversations; no embeddings or live objects are restored from exports.
 [Hybrid tests](../../tests/test_hybrid_memory.py) exercise independent ingestion,
 atomic failures, budget packing, settings, benchmark/chat/CLI behavior, and resume.
 Tests use fake embeddings, tokenizers, and model responses, with no paid calls.
+
+
+As of 2026-11-02, every embedded vector/fact component uses the shared
+[reranking policy](vector_store_reranker.md). Component names remain
+`vector_store` and `fact_store` for configuration/provenance compatibility;
+standalone Vector Store remains cosine-only. `candidate_k` defaults to 50 per
+record component and can be overridden through `component_options`.

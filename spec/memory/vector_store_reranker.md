@@ -94,3 +94,14 @@ models and API calls. [Frontend tests](../../tests/test_frontend_state.js) cover
 controls and request settings. The optional
 [real-model smoke test](../../tests/smoke_reranker_memory.py) checks paraphrases
 and evidence near the end of a long turn, without paid API calls.
+
+
+## Shared embedded retrieval (2026-11-02)
+
+The same shortlist/rerank/final-k policy now applies to current and temporal
+facts, Beta/Gamma long-term memory, vector/fact components of Delta/Epsilon/Zeta,
+and Windowed Fact Store. Standalone `vector_store` remains cosine-only.
+Recent windows and summaries are not reranked. `candidate_k=50` is configurable
+per embedded store, including `component_options` overrides in paired hybrids.
+Snapshots expose the candidate limit and reranker identity for each store;
+question traces retain vector and reranker scores. Model errors propagate.
