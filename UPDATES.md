@@ -15,6 +15,12 @@ New runs record preparation including module setup; old reports use their record
 ingestion totals without estimating missing setup time. Comparison schema version
 3 recomputes derived metrics without changing source predictions or judge labels.
 
+Verification: all 208 offline tests passed, including seven new cost-accounting
+regressions; 30 frontend checks also passed. Isolated Chrome at desktop/phone
+sizes confirmed identical 110 tokens/question and 26/3 seconds/question in the
+Benchmark report and Compare Runs despite exaggerated judging costs. No provider
+calls or saved-result modifications were used for browser verification.
+
 ## Loading indicators and selected saved run - 2026-11-03
 
 Startup follow-up: bundle the loading helper into the existing workspace scripts

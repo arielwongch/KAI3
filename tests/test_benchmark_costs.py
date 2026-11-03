@@ -1,7 +1,12 @@
 """Run totals per question exclude judging; no provider calls are made."""
 from copy import deepcopy
+import json
+import os
+from pathlib import Path
 import sys
+import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, 'src')
 from ResultAnalysis import enrich_report
@@ -88,6 +93,38 @@ class BenchmarkCostTests(unittest.TestCase):
         metrics = self.row(source)['overall']
         self.assertIsNone(metrics['mean_question_tokens'])
         self.assertIsNone(metrics['runtime']['mean_total_seconds'])
+
+    def test_save_replaces_stale_metrics_and_disk_reload_matches_new_formula(self):
+        os.environ.setdefault('DEEPSEEK_API_KEY', 'test-only')
+        import app
+        source = self.fixture()
+        source['comparison'] = dict(version=1, rows=[dict(module='vector_store', overall=dict(
+            mean_question_tokens=99999, runtime=dict(mean_total_seconds=99999)))])
+        with tempfile.TemporaryDirectory() as directory, patch.object(app, 'RESULT_LIBRARY', Path(directory)):
+            path = Path(directory) / 'stale.json'
+            path.write_text(json.dumps(source), encoding='utf-8')
+            before = path.read_bytes()
+            client = app.app.test_client()
+            preview = client.get('/api/results/file', query_string={'path': 'stale.json', 'analysis': '1'})
+            self.assertEqual(preview.status_code, 200)
+            self.assertEqual(preview.json['report']['comparison']['version'], 3)
+            self.assertEqual(path.read_bytes(), before, 'Viewing analysis does not silently save')
+            response = client.post('/api/results/enrich', json={'path': 'stale.json'})
+            self.assertEqual(response.status_code, 200)
+            saved = json.loads(path.read_text(encoding='utf-8'))
+            self.assertEqual(saved, response.json['report'])
+            self.assertEqual(saved['comparison']['version'], 3)
+            metrics = saved['comparison']['rows'][0]['overall']
+            self.assertEqual(metrics['total_question_tokens'], 330)
+            self.assertEqual(metrics['mean_question_tokens'], 110)
+            self.assertEqual(metrics['runtime']['total_seconds'], 26)
+            self.assertAlmostEqual(metrics['runtime']['mean_total_seconds'], 26 / 3)
+            self.assertEqual(saved['cases'], source['cases'])
+            self.assertEqual(saved['memories'], source['memories'])
+            reloaded = client.get('/api/results/file', query_string={'path': 'stale.json'})
+            self.assertEqual(reloaded.json['report'], saved)
+            self.assertEqual(client.post('/api/results/enrich', json={'path': 'stale.json'}).json['report'], saved,
+                             'Saving twice must not add memory cost again')
 
 
 if __name__ == '__main__':
