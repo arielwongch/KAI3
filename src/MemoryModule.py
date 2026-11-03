@@ -2,8 +2,7 @@ from abc import ABC, abstractmethod
 from MemoryEntry import MemoryEntry
 
 class MemoryModule(ABC):
-    def __init__(self):
-        pass
+    """Memory read/write contract, with optional inspection and budgeted retrieval."""
 
     @abstractmethod
     def retrieve(self, query: str, k: int) -> list[MemoryEntry]:

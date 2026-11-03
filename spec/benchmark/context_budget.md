@@ -1,6 +1,6 @@
 # Memory context budget and packing
 
-Status: implemented behavior. Last checked against repository source: 2026-10-08.
+Status: implemented behavior. Last checked against repository source: 2026-11-03.
 This check date is not an implementation or release date.
 
 ## Purpose and interfaces
@@ -15,7 +15,22 @@ it is not an additional storage layer.
 The three [hybrid conditions](../memory/hybrid.md) use a separate versioned
 packing policy: configurable reservations, followed by reuse of spare space.
 Their component labels and separators count toward the same total allowance.
-The single-component policy below remains unchanged.
+Their summaries are shortened against the full rendered context; record
+spillover is packed before expanding summaries into unused space.
+
+Window hybrids use `window-reserved-recall-summary-fit-v3`. They reserve up to
+half the total allowance for long-term candidates, pack newest recent turns
+into the remainder, then pack recalled records and reuse spare space for more
+recent turns. A small or empty archive releases its reservation. With very
+small budgets, at least one complete recent turn takes precedence when both
+tiers cannot fit. Summaries may be shortened with `[Summary truncated]` to fit
+the full rendered context, including headings, guidance, and separators;
+stored summaries remain unchanged. Turns and facts are always whole records.
+Tier diagnostics report reservations, included/omitted/oversized counts, and
+shortened summaries. `long_term_context_omitted` explicitly flags a wholly
+excluded archive. Changing packing identities requires a fresh benchmark run.
+
+The single-component policy follows below.
 
 The controlled benchmark uses `iter_context_candidates`, followed by
 `build_memory_context`; it does not impose live chat's top-five retrieval limit.
@@ -69,7 +84,8 @@ method, and `exact_provider_tokens=False`. Packing policy is
 Invalid counts fail validation. Tokenizer loading/counting and module retrieval
 errors propagate. The builder does not truncate turns/facts or invoke a second
 LLM to compress them. Summary truncation occurs on write, as specified in
-[summary memory](../memory/summarization.md).
+[summary memory](../memory/summarization.md), and detached summaries can be
+shortened further to fit the rendered answer context.
 
 The independent request guard uses UTF-8 bytes for message content plus 1,024
 framing allowance, then adds reserved output tokens. Defaults are a 1,000,000

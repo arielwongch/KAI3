@@ -36,7 +36,10 @@ benchmark ingestion failure blocks QA rather than using incomplete memory.
 Retrieval returns long-term context followed by chronological recent entries.
 Summary retrieval ignores the query. Fact retrieval uses the shared vector
 shortlist/reranker policy. The benchmark applies its whole-record context token
-allowance, including section labels; fitting all recent entries is not guaranteed.
+allowance, including section labels. The shared window packing policy reserves
+room for recall and shortens detached summaries to the actual remaining allowance,
+including all formatting. Turns and facts remain whole records; fitting all
+recent entries is not guaranteed. See [context packing](../benchmark/context_budget.md).
 Questions and predictions are never written back.
 
 Inspection includes architecture, window size, update interval, pending entry

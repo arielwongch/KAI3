@@ -10,10 +10,14 @@ const localStorage = {getItem:k=>storage[k]??null,setItem:(k,v)=>storage[k]=v,re
 let serial=0;
 const crypto={randomUUID:()=> 'uuid-'+(++serial)};
 class Node {
-    constructor(tag='div'){this.tag=tag;this.children=[];this.value='';this.disabled=false;this.hidden=false;this.style={};this.dataset={};this.classList={toggle(){},add(){},remove(){}};}
+    constructor(tag='div'){this.tag=tag;this.children=[];this.attrs={};this.value='';this.disabled=false;this.hidden=false;this.style={};this.dataset={};this.classList={toggle:(name,on)=>{const names=new Set((this.className||'').split(' ').filter(Boolean));if(on??!names.has(name))names.add(name);else names.delete(name);this.className=[...names].join(' ');},add:name=>this.classList.toggle(name,true),remove:name=>this.classList.toggle(name,false)};}
+    setAttribute(key,value){this.attrs[key]=value;}
+    getAttribute(key){return this.attrs[key]??null;}
+    removeAttribute(key){delete this.attrs[key];}
     append(...nodes){this.children.push(...nodes);}
     replaceChildren(...nodes){this.children=nodes;}
     querySelectorAll(){return [];}
+    querySelector(selector){return descendants(this).find(n=>(n.className||'').split(' ').includes(selector.slice(1)))||null;}
     focus(){}
     click(){if(this.onclick)return this.onclick();}
     remove(){}
@@ -28,7 +32,7 @@ const navigator={clipboard:{writeText:async()=>{}}};
 const setTimeout=()=>1,clearTimeout=()=>{};
 let requests=[];
 let responseHandler=()=>({status:404,data:{error:'Server memory is unavailable.'}});
-let fetch=async(url,options)=>{requests.push({url,options});const r=responseHandler(url,options);return {ok:r.status<400,status:r.status,json:async()=>r.data};};
+let fetch=async(url,options)=>{requests.push({url,options});const r=await responseHandler(url,options);return {ok:r.status<400,status:r.status,json:async()=>r.data};};
 function descendants(node){return [node,...node.children.flatMap(descendants)];}
 function text(node){return [node.textContent??'',...node.children.map(text)].join(' ');}
 function byClass(root,name){return descendants(root).filter(n=>(n.className||'').split(' ').includes(name));}
@@ -42,6 +46,18 @@ async function harness(seed={},pathname='/chat'){
     await new Promise(setImmediate);
     return {run,async act(code){await run(code);await new Promise(setImmediate);}};
 }
+
+test('each workspace bundles the shared helper without relying on a template script tag',()=>{
+    const helper=fs.readFileSync('src/loading.js','utf8').replace(/\r\n/g,'\n').trim();
+    for(const name of ['workspace.js','compare.js']){
+        assert(fs.readFileSync('src/'+name,'utf8').replace(/\r\n/g,'\n').includes(helper),name+' must include the current shared helper');
+    }
+    const context=vm.createContext({});
+    vm.runInContext(helper,context);
+    const original=vm.runInContext('KAI3Loading',context);
+    vm.runInContext(helper,context);
+    assert.equal(vm.runInContext('KAI3Loading',context),original,'Cached pages may also load the standalone helper');
+});
 
 test('reranker benchmark settings keep shortlist separate and preserve drafts',async()=>{
     const {run}=await harness();
@@ -315,4 +331,107 @@ test('pending deletion blocks duplicate submission and dialog dismissal',async()
     assert.equal(run('deleteCalls'),1);
     run('releaseDelete()');await act('deleting');
     assert.equal(run('benchmarkDeleteBusy'),false);
+});
+
+test('overlapping requests retain their spinner until the last request finishes, including errors',async()=>{
+    const {run,act}=await harness();
+    run("let replies=[];responseHandler=()=>new Promise(resolve=>replies.push(resolve));let first=jsonRequest('/api/results'),second=jsonRequest('/api/results').catch(e=>e.message)");
+    assert.equal(run("$('refreshResultLibrary').getAttribute('data-loading')"),'true');
+    run("replies[0]({status:200,data:{files:[]}})");await act('first');
+    assert.equal(run("$('refreshResultLibrary').getAttribute('data-loading')"),'true');
+    run("replies[1]({status:503,data:{error:'Unavailable'}})");await act('second');
+    assert.equal(run("$('refreshResultLibrary').getAttribute('data-loading')"),null);
+    assert.equal(run("$('refreshResultLibrary').getAttribute('aria-busy')"),null);
+});
+
+const savedRunSetup = `
+const savedList=[{run_id:'run-a',module:'vector_store',status:'running',deletable:false},{run_id:'run-b',module:'fact_store',status:'completed',deletable:true,resumable:true}];
+let replies=[];
+const snapshot=(id,phase='answer')=>({run_id:id,status:'running',config:{modules:['vector_store']},progress:{phase,completed:0,total:10},cases:[]});
+responseHandler=url=>url==='/api/benchmarks'?{status:200,data:{runs:savedList}}:new Promise(resolve=>replies.push(resolve));
+`;
+
+test('saved run shows immediate loading then a persistent sidebar selection without poll flicker',async()=>{
+    const {run,act}=await harness({},'/benchmark');
+    run(savedRunSetup);await act('refreshSavedRuns()');
+    run("let opening=openSavedRun('run-a')");
+    assert.equal(run("byClass($('savedRuns'),'saved-run-state')[0].textContent"),'Loading…');
+    assert.equal(run("byClass($('savedRuns'),'saved-run-state')[0].getAttribute('data-loading')"),'true');
+    assert.equal(run("$('benchmarkLoadStatus').hidden"),false);
+    assert.equal(run("$('benchmarkReport').hidden"),true);
+    run("replies.shift()({status:200,data:snapshot('run-a')})");await act('opening');
+    assert.equal(run("byClass($('savedRuns'),'selected')[0].dataset.runId"),'run-a');
+    assert.equal(run("byClass($('savedRuns'),'saved-run-open')[0].getAttribute('aria-current')"),'true');
+    assert.equal(run("byClass($('savedRuns'),'saved-run-state')[0].hidden"),true);
+    assert.equal(run("$('benchmarkLoadStatus').hidden"),true);
+    assert.equal(run("$('refreshRuns').getAttribute('data-loading')"),null);
+    run('let poll=pollBenchmark()');
+    assert.equal(run("byClass($('savedRuns'),'saved-run-state')[0].hidden"),true);
+    assert.equal(run("$('benchmarkLoadStatus').getAttribute('data-loading')"),null);
+    run("replies.shift()({status:200,data:snapshot('run-a','judge')})");await act('poll');
+    await act('refreshSavedRuns()');
+    assert.equal(run("byClass($('savedRuns'),'selected')[0].dataset.runId"),'run-a');
+    run("$('newBenchmarkRun').onclick()");
+    assert.equal(run("byClass($('savedRuns'),'selected').length"),0);
+});
+
+test('rapid A/B/A switching ignores stale responses even when the run ID matches again',async()=>{
+    const {run,act}=await harness({},'/benchmark');
+    run(savedRunSetup);await act('refreshSavedRuns()');
+    run("let oldA=openSavedRun('run-a'),oldB=openSavedRun('run-b'),newA=openSavedRun('run-a')");
+    run("replies[0]({status:200,data:snapshot('run-a','ingestion')})");await act('oldA');
+    assert.equal(run('benchmark'),null);
+    assert.equal(run("$('benchmarkLoadStatus').getAttribute('data-loading')"),'true');
+    run("replies[2]({status:200,data:snapshot('run-a','judge')})");await act('newA');
+    run("replies[1]({status:404,data:{error:'Old error'}})");await act('oldB');
+    assert.equal(run('benchmark.progress.phase'),'judge');
+    assert.equal(run('selectedRunId'),'run-a');
+    assert.equal(run("$('benchmarkLoadStatus').getAttribute('data-loading')"),null);
+    assert.equal(run("$('benchmarkSetup').hidden"),true);
+});
+
+test('reset during a saved-run load prevents the late response restoring the report',async()=>{
+    const {run,act}=await harness({},'/benchmark');
+    run(savedRunSetup);await act('refreshSavedRuns()');
+    run("let opening=openSavedRun('run-a');$('newBenchmarkRun').onclick();replies.shift()({status:200,data:snapshot('run-a')})");
+    await act('opening');
+    assert.equal(run('runId'),null);
+    assert.equal(run('benchmark'),null);
+    assert.equal(run("$('benchmarkLoadStatus').hidden"),true);
+    assert.equal(run("$('benchmarkSetup').hidden"),false);
+    assert.equal(run("byClass($('savedRuns'),'selected').length"),0);
+});
+
+test('failed saved-run loading clears indicators and never resumes another run',async()=>{
+    const {run,act}=await harness({},'/benchmark');
+    run(savedRunSetup);await act('refreshSavedRuns()');
+    run("let resumes=0;$('resumeBenchmark').onclick=()=>resumes++;let opening=byClass($('savedRuns'),'saved-run-actions')[1].children[1].onclick();replies.shift()({status:503,data:{error:'Temporarily unavailable'}})");
+    await act('opening');
+    assert.equal(run('resumes'),0);
+    assert.equal(run('selectedRunId'),null);
+    assert.equal(run("$('benchmarkLoadStatus').getAttribute('data-loading')"),null);
+    assert.equal(run("byClass($('savedRuns'),'saved-run-state')[1].hidden"),true);
+    assert.equal(run("$('benchmarkStatus').textContent"),'Temporarily unavailable');
+    assert.equal(run("$('benchmarkSetup').hidden"),false);
+});
+
+test('local file reads show an indicator and cannot reopen an import after reset',async()=>{
+    const {run,act}=await harness({},'/benchmark');
+    run("let finishRead;$('resultsFile').files=[{name:'report.json',text:()=>new Promise(resolve=>finishRead=resolve)}];let reading=$('resultsFile').onchange()");
+    assert.equal(run("$('benchmarkLoadStatus').getAttribute('data-loading')"),'true');
+    assert.equal(run("$('benchmarkLoadStatus').hidden"),false);
+    run("$('newBenchmarkRun').onclick();finishRead(JSON.stringify({schema_version:1,cases:[]}))");await act('reading');
+    assert.equal(run('importedBenchmark'),false);
+    assert.equal(run("$('benchmarkSetup').hidden"),false);
+    assert.equal(run("$('benchmarkLoadStatus').getAttribute('data-loading')"),null);
+});
+
+test('memory availability checks show a spinner and clean up after failure',async()=>{
+    const {run,act}=await harness();
+    run("let finishMemory;responseHandler=()=>new Promise(resolve=>finishMemory=resolve);let inspecting=refreshInspection()");
+    assert.equal(run("$('moduleStatus').getAttribute('data-loading')"),'true');
+    assert.equal(run("$('inspectionStatus').getAttribute('data-loading')"),'true');
+    run("finishMemory({status:503,data:{error:'Memory unavailable'}})");await act('inspecting');
+    assert.equal(run("$('moduleStatus').getAttribute('data-loading')"),null);
+    assert.equal(run("$('inspectionStatus').getAttribute('data-loading')"),null);
 });

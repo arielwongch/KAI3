@@ -14,7 +14,6 @@ import Benchmark
 import ReAct
 import Summarization
 from Diagnostics import collector
-from FactStore import FactStore
 from MemoryConfig import RERANKED_MODULES
 from MemoryEntry import MemoryEntry
 from MemoryFactory import MemoryFactory

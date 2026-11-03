@@ -28,6 +28,19 @@ answering, judging, review, and finalization activity, plus progress and cancell
 Optional memory review shows the ingested snapshot and requires explicit Continue
 with its current token. A cancelled or failed run opens a partial report.
 
+Opening a saved run immediately shows a small spinner and Loading label in its
+sidebar row and a compact loading status in the main view. On success the row
+stays highlighted with `aria-current`. Starting a new benchmark,
+importing a report, or a failed open clears that selection. Restoring the saved
+selection on page load uses the same loading flow. Late responses, including
+switching A to B and back to A, cannot replace the latest view. An unsuccessful
+open does not continue into a sidebar Resume action.
+
+Active benchmarks retain one spinning progress icon; automatic progress/sidebar
+refreshes do not flash additional spinners. Manual refreshes, dataset/report reads,
+imports, exports, and pending actions use the shared
+[loading indicators](workspace_shell.md#assets-and-verification).
+
 ## Delete saved runs
 
 Each Saved runs entry has a Delete action. It is disabled while the run is active
@@ -44,6 +57,15 @@ Out-of-order list responses cannot restore older sidebar contents. Errors stay
 in the dialog for retry; the API rechecks execution state before any deletion.
 
 ## Reports and inspection
+
+Average tokens per question is total recorded memory-preparation plus answering
+provider tokens divided by recorded question count. Average question runtime is
+total recorded memory preparation, retrieval, and answering time divided by that
+same count. Both exclude judging and include recorded rebuilds/retries. Unknown
+required measurements stay unavailable. Shared preparation is not charged once per
+question; it enters the numerator once. The breakdown shows both numerators.
+See [cost definitions](compare_runs.md#metric-meaning-and-coverage) for category
+allocation and legacy timing limits.
 
 Reports show configuration/status, accuracy and completion metrics with denominators,
 category summaries, efficiency/storage, failures, human-review status, and an

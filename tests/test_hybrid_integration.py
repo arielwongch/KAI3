@@ -123,7 +123,7 @@ class HybridBenchmarkTests(unittest.TestCase):
                 self.assertEqual(report['status'], 'completed')
                 self.assertEqual(report['config']['window_size'], 2)
                 self.assertEqual(report['retrieval_policy']['window_size'], 2)
-                self.assertEqual(report['hybrid_context_version'], 2)
+                self.assertEqual(report['hybrid_context_version'], 3)
                 memory = report['memories'][0]
                 case = report['cases'][0]
                 self.assertEqual(case['correct'], 1)

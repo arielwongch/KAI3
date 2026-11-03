@@ -44,9 +44,16 @@ its full window. Low-level retrieve still accepts its own k.
 Benchmarks use the existing pinned tokenizer and context allowance. Retrieval k
 applies only to long-term candidates (null means all); the retained recent turns
 are also eligible. Candidate order is long-term retrieval order followed by the
-chronological recent window. Packing greedily includes whole records in that
-order, counting section headings and separators. Oversized candidates are omitted
-and reported in packing diagnostics; fitting all recent turns is not guaranteed.
+chronological recent window. Packing reserves up to half the context allowance
+for long-term recall, admits newest recent turns into the remainder, then packs
+recall and reuses spare space for more recent turns. A small/empty archive releases
+its reservation. Under tiny budgets, one complete recent turn takes precedence
+when both tiers cannot fit. Summaries are shortened on detached copies to fit
+the full rendered context, including section headings and separators. Turns and
+facts remain whole records. Diagnostics report tier reservations, omissions,
+oversized records, summary shortening, and wholly omitted long-term context;
+fitting all recent turns is not guaranteed. The versioned packing policy is
+`window-reserved-recall-summary-fit-v3`; previous policies cannot resume into it.
 Questions and predictions are never written back. Beta evidence recall covers
 original dialogue IDs across both tiers; Alpha/Gamma combined recall is unavailable.
 

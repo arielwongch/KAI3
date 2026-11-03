@@ -15,7 +15,6 @@ class Summarization(MemoryModule):
         if summary_limit < 1:
             raise ValueError("summary_limit must be greater than zero")
 
-        super().__init__()
         self.summary_limit = summary_limit
         self.summary = ""
         self.max_summary_tokens = max_summary_tokens

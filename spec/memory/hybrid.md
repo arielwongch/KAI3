@@ -60,7 +60,7 @@ chat to benchmark fact history. Existing fact extraction rules still apply.
 
 ## Retrieval and context packing
 
-The packing identity is `hybrid-reserved-shares-spillover-v1`.
+The packing identity is `hybrid-record-spillover-summary-fit-v2`.
 
 1. Retrieve independently, applying k to each record store before packing.
    Tag entries with `metadata.component` and a textual component label.
@@ -69,11 +69,13 @@ The packing identity is `hybrid-reserved-shares-spillover-v1`.
    its reservation and the total rendered budget. Labels and separators count.
 3. A summary may be shortened with the existing explicit truncation marker to
    fit its reservation. This does not change the stored summary or its size cap.
-   After reservations, expand the supplied summary into spare space, restoring
-   the complete stored summary if it fits.
 4. Reconsider omitted candidates in stable rank order, alternating components
    on equal ranks, using remaining total space. Never fetch records beyond k.
    Never split original turns or facts. Render components in architecture order.
+5. After record spillover, fit the summary against the full rendered context,
+   expanding it into spare space or admitting a shortened summary even when
+   its original reservation could not hold the label and truncation marker.
+   Preserve labels and existing storage-truncation flags. Stored memory is unchanged.
 
 Shares are reservations, not hard final caps. Unused space is reusable; whole
 records and separators can leave some allowance unfilled. Scores from different

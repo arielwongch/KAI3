@@ -6,6 +6,8 @@ class Element {
     append(...items) { this.children.push(...items); }
     replaceChildren(...items) { this.children=items; }
     setAttribute(k,v) { this.attrs[k]=v; }
+    getAttribute(k) { return this.attrs[k]??null; }
+    removeAttribute(k) { delete this.attrs[k]; }
     getBoundingClientRect() { return {left:0,top:40,right:330,bottom:320,width:330,height:280}; }
     contains(target) { return this===target||this.children.some(c=>typeof c!=='string'&&c.contains(target)); }
     querySelectorAll(selector) { return this.children.filter(c=>typeof c!=='string').flatMap(c=>[...(selector.split(',').includes(c.tag)?[c]:[]),...c.querySelectorAll(selector)]); }
@@ -24,7 +26,8 @@ get('comparisonEmpty').append(new Element('span'),new Element('h3'),new Element(
 get('category').value='overall';get('headroom').value='10';
 get('chartX').value='tokens';get('chartY').value='accuracy';get('tableSort').value='name';get('tableOrder').value='asc';
 const overall = {accuracy_percent:80,mean_question_tokens:200,total_question_tokens:null,mean_question_seconds:2,total_question_seconds:null,stored_text_bytes:2048,judged_count:4,selected_count:5,token_count:4,runtime_count:3,case_count:5,storage_count:1,memory_count:1,completion_percent:80};
-const temporal = {...overall,accuracy_percent:100,mean_question_tokens:100,mean_question_seconds:null,judged_count:1,selected_count:2,completion_percent:50};
+overall.runtime={mean_total_seconds:8,mean_formation_seconds:6,mean_retrieval_seconds:.5,mean_answer_seconds:1.5,total_seconds:null,total_formation_seconds:30,recorded_total_seconds:null,formation_build_count:1,formation_runtime_count:1,unallocated_formation_seconds:0,count:3,record_count:5};
+const temporal = {...overall,accuracy_percent:100,mean_question_tokens:100,mean_question_seconds:null,runtime:{...overall.runtime,mean_total_seconds:null,mean_formation_seconds:null,mean_retrieval_seconds:null,mean_answer_seconds:null,count:0},judged_count:1,selected_count:2,completion_percent:50};
 const report = {comparison:{rows:[{module:'vector_store',overall,categories:{2:temporal}}]}};
 const upload='uploads/0123456789abcdef0123456789abcdef/Trial (vector_k=10) 測試.json';
 let library=['run.json',upload],failDelete=false,failDownload=false,failLoad=false,failRename=false;
@@ -48,7 +51,12 @@ const evaluate = code => vm.runInContext(code,context);
     assert.equal(evaluate(`displayName(${JSON.stringify(upload)})`),'Trial (vector_k=10) 測試.json');
     assert.equal(evaluate("displayName('uploads/0123456789abcdef0123456789abcdef-old.json')"),'old.json');
     const checkbox=get('library').children[0].children[0].children[0];
-    checkbox.checked=true;await checkbox.onchange();
+    checkbox.checked=true;const selecting=checkbox.onchange();
+    assert.equal(get('status').attrs['data-loading'],'true');
+    assert.equal(get('library').children[0].children[0].children[1].attrs['data-loading'],'true');
+    await selecting;
+    assert.equal(get('status').attrs['data-loading'],undefined);
+    assert.equal(get('library').children[0].children[0].children[1].attrs['data-loading'],undefined);
     assert.equal(get('downloadSelected').disabled,false);
     assert.equal(get('comparisonEmpty').hidden,true);
     await get('downloadSelected').onclick();
@@ -67,7 +75,7 @@ const evaluate = code => vm.runInContext(code,context);
     point(current).onpointerenter({clientX:1000,clientY:750});
     assert.equal(get('chartTooltip').hidden,false);
     assert.match(textContent(get('chartTooltip')),/Run 1.*run.json.*vector_store.*X · Tokens per question.*200 tokens.*Y · Judged accuracy.*80 %/);
-    assert.match(textContent(get('chartTooltip')),/Cases with token usage.*4 \/ 5.*Total question tokens.*Unavailable.*Judged \/ selected.*4 \/ 5/);
+    assert.match(textContent(get('chartTooltip')),/Cases with token usage.*4 \/ 5.*Total memory \+ answering tokens.*Unavailable.*Judged \/ selected.*4 \/ 5/);
     assert(Number.parseFloat(get('chartTooltip').style.left)+330<=1012);
     assert(Number.parseFloat(get('chartTooltip').style.top)+280<=756);
     point(current).onpointerleave();assert.equal(get('chartTooltip').hidden,true);
@@ -86,6 +94,15 @@ const evaluate = code => vm.runInContext(code,context);
         current=chooseAxes(x,y);assert.equal(dots(current).length,1);
         point(current).onfocus();assert.equal(get('chartTooltip').hidden,false);
     }
+    current=chooseAxes('runtime','accuracy');point(current).onfocus();
+    assert.match(textContent(get('chartTooltip')),/Runtime per question.*8 s/,'Runtime uses the formation-inclusive value, not legacy mean_question_seconds');
+    assert.match(textContent(get('chartTooltip')),/Formation per question.*6 s.*Retrieval per question.*0.5 s.*Answering per question.*1.5 s/);
+    assert.match(textContent(get('chartTooltip')),/Total formation \(all types\).*30 s.*Measured formation builds.*1 \/ 1/);
+    assert.match(textContent(get('chartTooltip')),/Excludes judging/);
+    assert.match(textContent(get('runtimeBreakdown')),/Formation total.*Combined total.*Formation \/ question.*Retrieval \/ question.*Answering \/ question.*Combined \/ question/);
+    const savedRuntime=overall.runtime;delete overall.runtime;
+    current=chooseAxes('runtime','accuracy');assert.equal(dots(current).length,0,'Legacy question time is never silently used as formation-inclusive runtime');
+    overall.runtime=savedRuntime;
     current=chooseAxes('tokens','accuracy');
     get('headroom').value='30';get('headroom').onchange();
     assert.equal(get('chartTooltip').hidden,true);
@@ -99,6 +116,8 @@ const evaluate = code => vm.runInContext(code,context);
     assert.equal(dots(current).length,0,'Either missing axis value omits the dot');
     const missing=current.querySelectorAll('button')[0];assert(missing);
     missing.onfocus();assert.match(textContent(get('chartTooltip')),/Runtime per question.*Unavailable.*Judged accuracy.*100 %/);
+    assert.match(textContent(get('chartTooltip')),/Total formation \(all types\).*30 s/,'Category filtering retains run-level formation total');
+    assert.match(textContent(get('runtimeBreakdown')),/30.*1 \/ 1 builds measured.*Unavailable/);
     current=chooseAxes('storage','accuracy');point(current).onfocus();
     assert.match(textContent(get('chartTooltip')),/2 KiB.*All question types \(run total\).*Stored text bytes.*2,048.*Measured snapshots.*1 \/ 1/);
     assert.match(textContent(get('chartTooltip')),/Y · Question type.*Temporal/);
@@ -128,6 +147,8 @@ const evaluate = code => vm.runInContext(code,context);
     assert.match(get('status').textContent,/Requested 0 separate JSON.*Test failure/);
     assert.equal(get('downloadSelected').disabled,false);
     failDownload=false;
+    assert.equal(get('status').attrs['data-loading'],undefined,'Failed downloads clear their indicator');
+    assert.equal(get('downloadSelected').attrs['data-loading'],undefined);
     const cardFor=path=>get('library').children.find(c=>c.attrs['data-path']===path);
     const remove=()=>cardFor(upload).children[1].children[1];
     remove().onclick();
@@ -163,6 +184,7 @@ const evaluate = code => vm.runInContext(code,context);
     get('uploads').files=[{name:'Trial (vector_k=10) 測試.json'},{name:'Trial (vector_k=10) 測試.json'},{name:'fresh.json'}];
     let uploading=get('uploads').onchange();await tick();
     assert.equal(get('duplicateDialog').open,true);
+    assert.equal(get('status').attrs['data-loading'],undefined,'Waiting for a duplicate choice is not loading');
     assert.equal(get('duplicateDialog').returnValue,'');
     assert.equal(get('skipDuplicate').focused,true);
     assert.match(get('duplicateProgress').textContent,/UPLOAD 1 OF 3/);
@@ -223,7 +245,7 @@ const evaluate = code => vm.runInContext(code,context);
         ['Missing.json',{accuracy_percent:null,mean_question_tokens:null,mean_question_seconds:null,stored_text_bytes:null,completion_percent:null},null,null],
         ['Tied.json',{accuracy_percent:90,mean_question_tokens:100,mean_question_seconds:1,stored_text_bytes:1024,completion_percent:90},90,50]
     ];
-    evaluate(`selected.clear();loaded.clear();for(const [name,overall,a,b] of sortFixtures){loaded.set(name,{comparison:{rows:[{module:'vector_store',overall,categories:{1:{...overall,accuracy_percent:a},2:{...overall,accuracy_percent:b}}}]}});selected.add(name);}el('category').value='overall';render();`);
+    evaluate(`selected.clear();loaded.clear();for(const [name,overall,a,b] of sortFixtures){overall.runtime={mean_total_seconds:overall.mean_question_seconds};loaded.set(name,{comparison:{rows:[{module:'vector_store',overall,categories:{1:{...overall,accuracy_percent:a},2:{...overall,accuracy_percent:b}}}]}});selected.add(name);}el('category').value='overall';render();`);
     const chartNames=()=>svg(get('charts').children[0]).children.filter(c=>c.tag==='g').map(c=>c.attrs['data-path']);
     const tableNames=()=>get('types').children[1].children.map(row=>row.children[0].textContent.split(': ')[1].split(' ·')[0]+'.json');
     const identity=name=>svg(get('charts').children[0]).children.find(c=>c.attrs?.['data-path']===name).attrs['aria-label'].split(';')[0];

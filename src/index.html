@@ -44,6 +44,7 @@
     <main id="testing" class="benchmark-workspace" hidden>
         <header class="benchmark-topbar"><button class="icon-button mobile-menu" id="openSidebarBenchmark" data-open-sidebar type="button" aria-label="Open sidebar">☰</button><div><p class="eyebrow">EVALUATION WORKSPACE</p><h1>LoCoMo benchmark</h1></div><div class="result-library-picker"><label for="resultLibrary">View saved results</label><select id="resultLibrary"><option value="">Select a report from data/result</option></select><button id="refreshResultLibrary" class="icon-button" type="button" aria-label="Refresh result files">&#8635;</button></div><label class="secondary-action import-review">Import results JSON<input id="resultsFile" type="file" accept="application/json,.json"></label><a class="subtle-button" href="/">← <span>Home</span></a></header>
         <div class="benchmark-scroll">
+            <p id="benchmarkLoadStatus" class="benchmark-load-status" role="status" aria-live="polite" hidden>Loading saved run…</p>
             <section id="benchmarkSetup" class="benchmark-view">
                 <div class="view-intro"><h2>Configure a run</h2><p>Choose one memory architecture, set the LoCoMo question range, then review the expected evaluation workload.</p></div>
                 <form id="benchmarkForm" class="benchmark-form">

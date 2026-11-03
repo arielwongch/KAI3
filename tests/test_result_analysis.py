@@ -33,8 +33,8 @@ class AnalysisTests(unittest.TestCase):
         metrics = report['comparison']['rows'][0]['overall']
         self.assertEqual(metrics['accuracy_percent'], 100)
         self.assertAlmostEqual(metrics['completion_percent'], 100/3)
-        self.assertEqual(metrics['mean_question_tokens'], 35)
-        self.assertEqual(metrics['token_count'], 1)
+        self.assertIsNone(metrics['mean_question_tokens'])
+        self.assertEqual(metrics['token_count'], 0)
         self.assertIsNone(metrics['total_question_tokens'])
         self.assertEqual(metrics['stored_text_bytes'], 6)
         self.assertEqual(enrich_report(report), report)

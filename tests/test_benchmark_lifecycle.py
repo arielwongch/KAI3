@@ -14,7 +14,7 @@ os.environ.setdefault('DEEPSEEK_API_KEY', 'test-only')
 import app
 import Benchmark
 from benchmark_helpers import FakeTokenizer
-from BenchmarkStore import ACTIVE, atomic_json, launch, path_for, read_json, worker_active, Lease
+from BenchmarkStore import atomic_json, launch, path_for, read_json, worker_active, Lease
 from test_binary_benchmark import judgment
 from test_memory_integration import FakeOpenAIClient
 

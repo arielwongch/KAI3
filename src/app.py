@@ -8,7 +8,6 @@ from uuid import uuid4
 from flask import Flask, abort, jsonify, render_template, request, send_file, send_from_directory
 from MemoryFactory import MemoryFactory
 from HybridMemory import HYBRIDS
-from NoMemory import NoMemory
 from MemoryConfig import window_size_for, retrieval_policy, RERANKED_MODULES
 from MemoryContext import retrieval_k
 from ReAct import run_ReAct
@@ -19,7 +18,7 @@ from ResultAnalysis import enrich_report
 
 app = Flask(__name__, template_folder='.', static_folder=None)
 # Keep the existing asset URLs without exposing the source/configuration directory.
-PUBLIC_ASSETS = frozenset(('style.css', 'workspace.js', 'workspace-shell.js', 'compare.js', 'compare.css', 'assets/favicon.png'))
+PUBLIC_ASSETS = frozenset(('style.css', 'workspace.js', 'workspace-shell.js', 'loading.js', 'compare.js', 'compare.css', 'assets/favicon.png'))
 
 @app.get('/<path:filename>', endpoint='static')
 def public_asset(filename):
@@ -138,7 +137,7 @@ class ChatSession:
         if 'max_summary_tokens' in options:
             from MemoryContext import get_benchmark_tokenizer
             options['tokenizer'] = get_benchmark_tokenizer()
-        self.module = NoMemory() if mode == 'no_memory' else MemoryFactory.create_memory_module(mode, **options)
+        self.module = MemoryFactory.create_memory_module(mode, **options)
         self.lock = RLock()
         self.turns = []
     def snapshot(self, chat_id):

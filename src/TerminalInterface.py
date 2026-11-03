@@ -1,14 +1,9 @@
-# Please install OpenAI SDK first: `pip3 install openai`
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from dotenv import load_dotenv
 from openai import OpenAI
 from datetime import datetime, timezone, timedelta
-
-# ==============================================
-# ENV CONFIG
-# ==============================================
 
 load_dotenv()
 
@@ -17,18 +12,10 @@ client = OpenAI(
     base_url="https://api.deepseek.com"
 )
 
-# ==============================================
-# DEFINITIONS
-# ==============================================
-
 @dataclass
 class PerformanceMetric:
     token_usage: int = 0
     latency: float = 0.0
-
-# ==============================================
-# FUNCTIONS
-# ==============================================
 
 def print_header(): 
     print() 
@@ -81,10 +68,6 @@ def print_performance_metrics_summary(metrics: list[PerformanceMetric]):
     print(f"  Number of Requests: {len(metrics)}")
     print("===============================================")
 
-# ==============================================
-# CONVO
-# ==============================================
-
 print_header()
 
 init_message = [
@@ -93,7 +76,6 @@ init_message = [
 
 memory = []
 
-# Create a timezone object for UTC+8
 utc_8 = timezone(timedelta(hours=8))
 
 PerformanceMetrics: list[PerformanceMetric] = []
@@ -120,7 +102,6 @@ while True:
     print(f"{user_input_time.strftime('%Y-%m-%d %H:%M:%S')} (UTC+8)")
     print()
 
-    # sliding window implementation
     memory.append({"role": "user", "content": user_input})
 
     messages = init_message + memory

@@ -46,6 +46,23 @@ Cases retain exact `supplied_context`, retrieved records, token/byte counts,
 candidate/included/omitted counts, truncation state, provider usage, timings, and
 errors. [Evaluation](evaluation.md) owns aggregate formulas and their denominators.
 
+Formation-inclusive comparison runtime was added on 2026-11-03. New cases retain
+`execution_retrieval_seconds` and `execution_answer_seconds` across resumes,
+including failed query attempts and provider retry waits. These cumulative
+components are checkpointed with saved predictions before judging; judge-only
+resume reuses them without adding the original query time again. Retrieval and
+answer timers are recorded on errors as well as success. An ingestion-blocked
+case records zero query work when none has occurred and preserves prior query
+timing when a rebuild fails. Unknown legacy timing remains unknown. Existing
+total-time fields retain their original definitions. The derived comparison
+schema is now version 3; the source schema and protocol version are unchanged.
+The cost update records `ingestion.preparation_seconds`, including module setup,
+alongside the existing ingestion and write timers. Historical reports use their
+recorded ingestion time without estimating missing setup time. Token and runtime
+averages divide full recorded memory-plus-query totals by recorded question count
+and exclude judging.
+See [Compare runtime definitions](../frontend/compare_runs.md#metric-meaning-and-coverage).
+
 ## Write and recovery flow
 
 Web runs are stored under `instance/benchmark_runs/`. A run's `.json` snapshot

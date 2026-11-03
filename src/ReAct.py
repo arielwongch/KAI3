@@ -1,4 +1,3 @@
-# Please install OpenAI SDK first: `pip3 install openai`
 import os
 import time
 import re
@@ -8,10 +7,6 @@ from MemoryEntry import MemoryEntry
 from MemoryModule import MemoryModule
 from MemoryContext import retrieval_k, format_context
 from Diagnostics import collector, entries_json
-
-# ==============================================
-# ENV CONFIG
-# ==============================================
 
 load_dotenv()
 
@@ -29,10 +24,6 @@ FINAL_RESPONSE = re.compile(
     re.DOTALL,
 )
 
-# ==============================================
-# ReAct FUNCTION
-# ==============================================
-
 def _run_ReAct(
     user_input: str,
     max_iterations: int = 10,
@@ -42,29 +33,26 @@ def _run_ReAct(
     if memory_module is None:
         raise ValueError("Please provide a valid memory_module instance.")
 
-    if memory_module is not None and not isinstance(memory_module, MemoryModule):
+    if not isinstance(memory_module, MemoryModule):
         raise TypeError("memory_module must be of type - MemoryModule")
 
-    if memory_module is not None:
-        retrieval_start = time.perf_counter()
-        try:
-            from HybridMemory import HybridMemory
-            if isinstance(memory_module, HybridMemory):
-                from MemoryContext import build_memory_context, get_benchmark_tokenizer
-                packed = build_memory_context(memory_module, user_input, memory_module.memory_context_tokens,
-                                              memory_module.tokenizer or get_benchmark_tokenizer(), 5)
-                memory_entries = packed.pop('entries')
-                memory_text = packed.pop('text')
-                diagnostics.update(packed)
-            else:
-                memory_entries = memory_module.retrieve(query=user_input, k=retrieval_k(memory_module))
-                memory_text = format_context(memory_entries, separator="\n")
-        finally:
-            diagnostics["retrieval_seconds"] = time.perf_counter() - retrieval_start
-        diagnostics["retrieved"] = entries_json(memory_entries)
-        diagnostics["retrieved_count"] = len(memory_entries)
-    else:
-        memory_text = ""
+    retrieval_start = time.perf_counter()
+    try:
+        from HybridMemory import HybridMemory
+        if isinstance(memory_module, HybridMemory):
+            from MemoryContext import build_memory_context, get_benchmark_tokenizer
+            packed = build_memory_context(memory_module, user_input, memory_module.memory_context_tokens,
+                                          memory_module.tokenizer or get_benchmark_tokenizer(), 5)
+            memory_entries = packed.pop('entries')
+            memory_text = packed.pop('text')
+            diagnostics.update(packed)
+        else:
+            memory_entries = memory_module.retrieve(query=user_input, k=retrieval_k(memory_module))
+            memory_text = format_context(memory_entries, separator="\n")
+    finally:
+        diagnostics["retrieval_seconds"] = time.perf_counter() - retrieval_start
+    diagnostics["retrieved"] = entries_json(memory_entries)
+    diagnostics["retrieved_count"] = len(memory_entries)
 
     system_prompt = f"""
     You are a helpful assistant. You must solve the user's request by looping through three stages: Thought, Action, and Observation.
@@ -123,15 +111,16 @@ def _run_ReAct(
         
         result.append(f"Response: {response_text}")
 
-        if FINAL_RESPONSE.fullmatch(response_text):
+        final_response = FINAL_RESPONSE.fullmatch(response_text)
+        if final_response:
             result.append("Task completed successfully.")
             diagnostics["status"] = "completed"
-            diagnostics["final_answer"] = FINAL_RESPONSE.fullmatch(response_text).group(1)
+            diagnostics["final_answer"] = final_response.group(1)
             if write_back:
                 _write(memory_module, diagnostics, MemoryEntry(
                     text=f"User: {user_input}\nAssistant: {response_text}",
                     metadata={"type": "conversation", "user_text": user_input,
-                              "assistant_text": FINAL_RESPONSE.fullmatch(response_text).group(1)},
+                              "assistant_text": final_response.group(1)},
                 ))
             return "\n\n".join(result), latency, total_tokens
 

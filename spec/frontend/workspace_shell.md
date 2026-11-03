@@ -45,6 +45,24 @@ state such as chat history and result selection retains its own documented rules
 
 ## Assets and verification
 
+Shared `loading.js` and `style.css` provide small inline spinners for asynchronous
+actions across Chat, Test Benchmark, and Compare Runs. Indicators sit beside the
+relevant action, file, or status; concurrent operations on the same target retain
+the indicator until all finish. Success and failure both clear it. Targets expose
+`aria-busy`; reduced-motion preferences keep the indicator visible without rotation.
+User-choice dialogs pause loading indicators while waiting for a decision.
+
+The helper source is bundled into both workspace entry scripts so cached templates
+and servers started before the update do not need a new static asset route.
+Run `python tools/bundle_loading.py` after changing `src/loading.js`. Workspace
+startup also creates the loading-status element if an older template lacks it.
+
+The 2026-11-03 loading update passed 29 frontend regression checks and the related
+result-library/frontend Python checks. Isolated headless Chrome at 1440px and
+390px checked saved-run loading/selection, active-run polling, failures, Compare
+loading, and Chat thinking/availability states with fixture responses and no
+JavaScript exceptions. Screenshots were inspected; provider calls were not used.
+
 [Template](../../src/workspace_sidebar.html), [navigation script](../../src/workspace-shell.js),
 [styles](../../src/style.css), [Chat/Benchmark template](../../src/index.html), and
 [Compare template](../../src/compare.html) implement the shell. `app.py` allows

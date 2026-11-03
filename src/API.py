@@ -1,4 +1,3 @@
-# Please install OpenAI SDK first: `pip3 install openai`
 import os
 import time
 from pathlib import Path
@@ -7,10 +6,6 @@ from Diagnostics import collector
 from dotenv import load_dotenv
 from openai import OpenAI
 
-# ==============================================
-# ENV CONFIG
-# ==============================================
-
 load_dotenv(Path(__file__).with_name('.env'))
 
 client = OpenAI(
@@ -18,11 +13,7 @@ client = OpenAI(
     base_url="https://api.deepseek.com"
 )
 
-# ==============================================
-# Call API FUNCTION
-# ==============================================
-
-def call_api(system_prompt:str,user_input:str):
+def call_api(system_prompt: str, user_input: str):
 
     messages = [
         {"role": "system", "content": system_prompt},

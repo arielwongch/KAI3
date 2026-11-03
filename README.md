@@ -150,9 +150,14 @@ answer + judge tokens per question** and **y = judged accuracy**. Each run is a
 point, with consistent colors and tooltips across axis changes. Chart typography
 matches the surrounding UI at desktop and phone widths. The accuracy table keeps
 its independent single-field sorting; unavailable table values stay last.
-Coverage counts expose partial data. Storage remains run-level under filters;
-token and runtime means exclude ingestion. Match questions, models, and protocols
-before interpreting differences between runs.
+Coverage counts expose partial data. Storage remains run-level under filters.
+Runtime includes each question's share of its conversation's memory formation
+time plus retrieval and answering, excluding judging. The runtime breakdown
+shows total formation time and each per-question component; allocation stays
+fixed when filtering question types. Recorded rebuilds count once by ingestion
+ID. Token means still exclude ingestion. Missing timings stay unavailable;
+legacy exports may omit earlier query attempts. Match questions, models, and
+protocols before interpreting differences between runs.
 
 See the [Compare Runs specification](spec/frontend/compare_runs.md) for the JSON
 contract, formulas, API endpoints, and coverage limitations. The benchmark's

@@ -1,5 +1,5 @@
-from MemoryEntry import MemoryEntry
 from MemoryModule import MemoryModule
+from NoMemory import NoMemory
 from SlidingWindow import SlidingWindow
 from Summarization import Summarization
 from VectorStore import VectorStore
@@ -7,7 +7,10 @@ from FactStore import FactStore
 
 class MemoryFactory:
     @staticmethod
-    def create_memory_module(module_type:str, **kwargs) -> MemoryModule:
+    def create_memory_module(module_type: str, **kwargs) -> MemoryModule:
+        if module_type == 'no_memory':
+            return NoMemory()
+
         from HybridMemory import HYBRIDS, HybridMemory, hybrid_settings, Alpha, Beta, Gamma
         from WindowHybridMemory import WindowedSummarization, WindowedFactStore
         if module_type in ('alpha', 'beta', 'gamma', 'windowed_summarization', 'windowed_fact_store'):
@@ -15,8 +18,9 @@ class MemoryFactory:
             allowed |= {'summary_limit', 'max_summary_tokens'} if module_type in ('alpha', 'windowed_summarization') else {'max_stored_entries', 'candidate_k', 'reranker'}
             if module_type in ('gamma', 'windowed_fact_store'):
                 allowed.add('fact_history_mode')
-            if kwargs.keys() - allowed:
-                raise ValueError(f'{sorted(kwargs.keys() - allowed)[0]} does not apply to {module_type}')
+            unsupported = kwargs.keys() - allowed
+            if unsupported:
+                raise ValueError(f'{sorted(unsupported)[0]} does not apply to {module_type}')
             if kwargs.get('fact_history_mode', 'current') not in ('current', 'versioned'):
                 raise ValueError('Unknown fact history mode')
             common = dict(max_items=kwargs.get('max_items', 10))
@@ -38,8 +42,9 @@ class MemoryFactory:
                 allowed |= {'summary_limit', 'max_summary_tokens'}
             if 'fact_store' in names:
                 allowed.add('fact_history_mode')
-            if kwargs.keys() - allowed:
-                raise ValueError(f'{sorted(kwargs.keys() - allowed)[0]} does not apply to {module_type}')
+            unsupported = kwargs.keys() - allowed
+            if unsupported:
+                raise ValueError(f'{sorted(unsupported)[0]} does not apply to {module_type}')
             shares, options = hybrid_settings(module_type, kwargs.get('hybrid_shares'), kwargs.get('component_options'))
             components = {}
             for name in names:
@@ -47,10 +52,8 @@ class MemoryFactory:
                     child_options = {key: kwargs[key] for key in ('summary_limit', 'max_summary_tokens', 'tokenizer') if key in kwargs}
                 else:
                     child_options = {key: kwargs[key] for key in ('embedder', 'max_stored_entries', 'candidate_k', 'reranker') if key in kwargs}
-                    if 'max_stored_entries' in options.get(name, {}):
-                        child_options['max_stored_entries'] = options[name]['max_stored_entries']
-                    if 'candidate_k' in options.get(name, {}):
-                        child_options['candidate_k'] = options[name]['candidate_k']
+                    child_options.update({key: value for key, value in options.get(name, {}).items()
+                                          if key in ('max_stored_entries', 'candidate_k')})
                     if 'retrieval_k' in kwargs:
                         options.setdefault(name, {}).setdefault('retrieval_k', kwargs['retrieval_k'])
                     if name == 'fact_store':
@@ -92,9 +95,12 @@ class MemoryFactory:
             return VectorStoreReranker(embedder=kwargs.get('embedder'), reranker=kwargs.get('reranker'),
                                        max_stored_entries=kwargs.get('max_stored_entries'), candidate_k=kwargs.get('candidate_k', 50))
         elif module_type == "fact_store":
+            fact_class = FactStore
             if kwargs.get('fact_history_mode') == 'versioned':
                 from TemporalFactStore import TemporalFactStore
-                return TemporalFactStore(embedder=kwargs.get('embedder'), extractor=kwargs.get('extractor'), max_stored_entries=kwargs.get('max_stored_entries'), candidate_k=kwargs.get('candidate_k', 50), reranker=kwargs.get('reranker'))
-            return FactStore(embedder=kwargs.get("embedder"), extractor=kwargs.get("extractor"), max_stored_entries=kwargs.get('max_stored_entries'), candidate_k=kwargs.get('candidate_k', 50), reranker=kwargs.get('reranker'))
+                fact_class = TemporalFactStore
+            return fact_class(embedder=kwargs.get('embedder'), extractor=kwargs.get('extractor'),
+                              max_stored_entries=kwargs.get('max_stored_entries'),
+                              candidate_k=kwargs.get('candidate_k', 50), reranker=kwargs.get('reranker'))
         else:
             raise ValueError(f"Unknown memory module type: {module_type}")

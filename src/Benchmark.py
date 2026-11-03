@@ -22,6 +22,7 @@ from SlidingWindow import SlidingWindow
 from RequestPolicy import completion, fatal_provider_error, status_code, cancel_event
 from MemoryContext import build_memory_context, get_benchmark_tokenizer, positive_count, PACKING_POLICY, WINDOW_PACKING_POLICY, TOKENIZER_REVISION
 from AuditProvenance import code_identity, hardware_identity, memory_identity
+from ResultAnalysis import complete_sum, question_phase_seconds
 
 BENCHMARK_MODULES = MODULES[:-1] + ['question_only', 'full_context']
 PROTOCOL_VERSION = 'locomo-controlled-v3'
@@ -135,27 +136,30 @@ def direct_answer(module, question, diagnostics, conversation_text=None,
                   context_limit=1_000_000, max_output_tokens=8192,
                   memory_context_tokens=None, retrieval_k=None, tokenizer=None):
     started = time.perf_counter()
-    import Embeddings
-    import Reranker
-    model_state = dict(embedding_loaded_before=Embeddings._load_model.cache_info().currsize > 0,
-                       reranker_loaded_before=Reranker._load_model.cache_info().currsize > 0)
-    if conversation_text is not None:
-        entries = []
-        context = conversation_text
-    elif memory_context_tokens is not None:
-        token = retrieval_collector.set(diagnostics)
-        try:
-            packed = build_memory_context(module, question, memory_context_tokens, tokenizer, retrieval_k)
-        finally:
-            retrieval_collector.reset(token)
-        entries = packed.pop('entries')
-        context = packed.pop('text')
-        diagnostics.update(packed)
-    else:
-        k = module.buffer.maxlen if isinstance(module, SlidingWindow) else 5
-        entries = module.retrieve(query=question, k=k)
-        context = '\n\n'.join(e.text for e in entries)
-    diagnostics['retrieval_seconds'] = time.perf_counter() - started
+    diagnostics.update(retrieval_seconds=0.0, answer_seconds=0.0)
+    try:
+        import Embeddings
+        import Reranker
+        model_state = dict(embedding_loaded_before=Embeddings._load_model.cache_info().currsize > 0,
+                           reranker_loaded_before=Reranker._load_model.cache_info().currsize > 0)
+        if conversation_text is not None:
+            entries = []
+            context = conversation_text
+        elif memory_context_tokens is not None:
+            token = retrieval_collector.set(diagnostics)
+            try:
+                packed = build_memory_context(module, question, memory_context_tokens, tokenizer, retrieval_k)
+            finally:
+                retrieval_collector.reset(token)
+            entries = packed.pop('entries')
+            context = packed.pop('text')
+            diagnostics.update(packed)
+        else:
+            k = module.buffer.maxlen if isinstance(module, SlidingWindow) else 5
+            entries = module.retrieve(query=question, k=k)
+            context = '\n\n'.join(e.text for e in entries)
+    finally:
+        diagnostics['retrieval_seconds'] = time.perf_counter() - started
     diagnostics['retrieval_model_state'] = dict(**model_state,
         embedding_loaded_after=Embeddings._load_model.cache_info().currsize > 0,
         reranker_loaded_after=Reranker._load_model.cache_info().currsize > 0,
@@ -179,11 +183,13 @@ def direct_answer(module, question, diagnostics, conversation_text=None,
     if budget + max_output_tokens > context_limit:
         raise ContextLimitExceeded('Full request exceeds the conservative context budget; no truncation applied.')
     started = time.perf_counter()
-    response = completion(client, diagnostics, phase='answer',
-        model='deepseek-flash', messages=messages, max_tokens=max_output_tokens,
-        stream=False, reasoning_effort='high', extra_body={'thinking': {'type': 'enabled'}},
-    )
-    diagnostics['answer_seconds'] = time.perf_counter() - started
+    try:
+        response = completion(client, diagnostics, phase='answer',
+            model='deepseek-flash', messages=messages, max_tokens=max_output_tokens,
+            stream=False, reasoning_effort='high', extra_body={'thinking': {'type': 'enabled'}},
+        )
+    finally:
+        diagnostics['answer_seconds'] = time.perf_counter() - started
     usage = getattr(response, 'usage', None)
     diagnostics['answer_tokens'] = getattr(usage, 'total_tokens', None)
     diagnostics['prompt_tokens'] = getattr(usage, 'prompt_tokens', None)
@@ -421,18 +427,19 @@ class BenchmarkJob:
             except PackageNotFoundError:
                 self.result['dependency_versions'][package] = None
         if mode in WINDOW_HYBRIDS:
-            self.result.update(packing_policy=WINDOW_PACKING_POLICY, hybrid_context_version=2, retrieval_policy=dict(strategy='window_plus_summary' if mode in ('alpha', 'windowed_summarization') else 'window_plus_recall', window_size=self.options['window_size'], long_term_k=1 if mode in ('alpha', 'windowed_summarization') else self.options.get('retrieval_k')), protocol='window-hybrid-v2; recent-first-admission; shared-token-budget; configurable-k; no-qa-writeback')
+            self.result.update(packing_policy=WINDOW_PACKING_POLICY, hybrid_context_version=3, retrieval_policy=dict(strategy='window_plus_summary' if mode in ('alpha', 'windowed_summarization') else 'window_plus_recall', window_size=self.options['window_size'], long_term_k=1 if mode in ('alpha', 'windowed_summarization') else self.options.get('retrieval_k')), protocol='window-hybrid-v3; reserved-recall; summary-fit; shared-token-budget; configurable-k; no-qa-writeback')
             if mode == 'alpha':
                 self.result.update(ingestion_unit='turn_batch', memory_batch_settings=dict(max_turns=self.options['summary_batch_size'], max_chars=12000, policy='summarize_evicted_prefix'))
         if mode == 'summarization' and self.options['summary_batch_size'] > 1:
             self.result.update(protocol='session-bounded-summary-batches; shared-token-budget; configurable-k; no-qa-writeback', ingestion_unit='turn_batch', memory_batch_settings=dict(max_turns=self.options['summary_batch_size'], max_chars=12000))
         if mode in HYBRIDS:
-            self.result.update(protocol='independent-hybrid-components-v1; reserved-shares-spillover; no-qa-writeback',
+            self.result.update(packing_policy=HYBRID_PACKING_POLICY,
+                               protocol='independent-hybrid-components-v2; record-spillover-before-summary-expansion; no-qa-writeback',
                                ingestion_unit='hybrid_batch' if MODULE_CAPABILITIES[mode]['summary'] else 'turn',
                                memory_batch_settings=dict(max_turns=self.options['summary_batch_size'] if MODULE_CAPABILITIES[mode]['summary'] else 1,
                                                           max_chars=12000, batched_component='summarization' if MODULE_CAPABILITIES[mode]['summary'] else None))
         if mode in PERIODIC_MODULES:
-            self.result.update(protocol='periodic-window-v2; recent-first-admission; flush-before-qa; shared-token-budget; no-qa-writeback',
+            self.result.update(protocol='periodic-window-v3; reserved-recall; summary-fit; flush-before-qa; shared-token-budget; no-qa-writeback',
                                memory_batch_settings=dict(max_turns=self.options['window_size'],
                                                           policy='latest_k_every_k_writes', flush='before_qa'))
         if mode in RERANKED_MODULES:
@@ -588,6 +595,7 @@ class BenchmarkJob:
                         self.live_progress(ingestion_completed=self.result['progress']['ingestion_completed'] + turns_total)
                         continue
                     self.live_progress('ingestion', sample_id=sample['sample_id'], conversation_index=conversation_index, conversation_total=len(question_sets), turn_completed=0, turn_total=turns_total)
+                    preparation_started = time.perf_counter()
                     factory_options = {key: self.options[key] for key in ('max_stored_entries', 'max_summary_tokens', 'fact_history_mode', 'candidate_k') if key in self.options}
                     if mode in WINDOW_HYBRIDS:
                         factory_options['max_items'] = self.options['window_size']
@@ -642,6 +650,7 @@ class BenchmarkJob:
                     finally:
                         collector.reset(token)
                         ingestion['total_seconds'] = time.perf_counter() - start
+                        ingestion['preparation_seconds'] = time.perf_counter() - preparation_started
                         ingestion['final_storage'] = storage_metrics(module)
                         with self.lock:
                             self.result['memories'].append(dict(sample_id=sample['sample_id'], module=mode, memory=module.inspect(), identity=memory_identity(module), ingestion=ingestion, error=ingestion_error))
@@ -661,6 +670,10 @@ class BenchmarkJob:
                         self.live_progress('answer', question_number=question_number, question_total=len(questions), question_index=index)
                         stop_error = None
                         d = {}
+                        previous_diagnostics = (previous_case or {}).get('diagnostics', {})
+                        previous_phases = {phase: question_phase_seconds(previous_diagnostics, phase) if previous_case else 0.0
+                                           for phase in ('retrieval', 'answer')}
+                        d.update({'execution_' + phase + '_seconds': seconds for phase, seconds in previous_phases.items()})
                         previous_execution_seconds = (previous_case or {}).get('diagnostics', {}).get('execution_total_seconds',
                             (previous_case or {}).get('diagnostics', {}).get('total_seconds', 0))
                         case = dict(sample_id=sample['sample_id'], module=mode, question_index=index, question=qa['question'], category=qa['category'], answer=qa.get('answer'), evidence=qa.get('evidence', []), diagnostics=d, score=None, exact_match=None, token_f1=None, judge=None, correct=None, evidence_recall=None)
@@ -675,8 +688,14 @@ class BenchmarkJob:
                                 d.update(judge_llm_calls=0, judge_seconds=0.0, judge_retries=[], prediction_reused=True)
                                 d.pop('judge_status', None)
                                 d['final_answer'] = previous_case['prediction']
+                                d.update({'execution_' + phase + '_seconds': seconds for phase, seconds in previous_phases.items()})
                             else:
-                                d['final_answer'] = direct_answer(module, qa['question'], d, conversation_text=full_context, context_limit=self.options['context_limit'], max_output_tokens=self.options['max_output_tokens'], memory_context_tokens=self.options.get('memory_context_tokens'), retrieval_k=self.options.get('retrieval_k'), tokenizer=self.tokenizer)
+                                d.update(retrieval_seconds=0.0, answer_seconds=0.0)
+                                try:
+                                    d['final_answer'] = direct_answer(module, qa['question'], d, conversation_text=full_context, context_limit=self.options['context_limit'], max_output_tokens=self.options['max_output_tokens'], memory_context_tokens=self.options.get('memory_context_tokens'), retrieval_k=self.options.get('retrieval_k'), tokenizer=self.tokenizer)
+                                finally:
+                                    for phase, seconds in previous_phases.items():
+                                        d['execution_' + phase + '_seconds'] = complete_sum([seconds, d.get(phase + '_seconds')])
                             d.update(status='completed', answer_status='completed')
                             # Diagnostic-only annotations run after retrieval and answering.
                             for trace in d.get('retrieval_traces', []):
@@ -813,10 +832,13 @@ class BenchmarkJob:
             previous = existing.get((mode, str(sample['sample_id']), index))
             if previous and (previous.get('correct') is not None or previous.get('prediction') is not None or previous.get('diagnostics', {}).get('status') == 'context_limit_exceeded'):
                 continue
+            diagnostics = deepcopy(previous.get('diagnostics', {})) if previous else dict(
+                execution_retrieval_seconds=0.0, execution_answer_seconds=0.0)
+            diagnostics.update(status='ingestion_blocked', retrieved=[])
             self.save_case(dict(module=mode, sample_id=sample['sample_id'], question_index=index,
                 question=qa['question'], category=qa['category'], answer=qa.get('answer'),
                 evidence=qa.get('evidence', []), score=None, correct=None, evidence_recall=None,
-                error=error, diagnostics=dict(status='ingestion_blocked', retrieved=[])))
+                error=error, diagnostics=diagnostics))
 
     def failure_aware_scores(self, summaries):
         cases = {(c['module'], str(c['sample_id']), c['question_index']): c for c in self.result['cases']}

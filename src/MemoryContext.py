@@ -6,7 +6,7 @@ from Embeddings import MODEL_NAME, validate_k
 
 TOKENIZER_REVISION = '1110a243fdf4706b3f48f1d95db1a4f5529b4d41'
 PACKING_POLICY = 'whole-record-first-k-greedy-v1'
-WINDOW_PACKING_POLICY = 'recent-newest-first-whole-record-v2'
+WINDOW_PACKING_POLICY = 'window-reserved-recall-summary-fit-v3'
 
 
 class BenchmarkTokenizer:
@@ -55,6 +55,31 @@ def truncate_summary(text, budget, tokenizer):
     return '', True
 
 
+def fit_summary_entry(entry, token_budget, tokenizer, render, prefix=''):
+    """Shorten a detached summary against the complete rendered prompt fragment.
+
+    Labels, separators, and other selected records count toward the allowance.
+    Storage truncation remains true even when no additional shortening is needed.
+    """
+    candidate = deepcopy(entry)
+    if tokenizer.count(render(candidate)) <= token_budget:
+        return candidate
+    original = entry.text[len(prefix):]
+    allowance = min(token_budget, tokenizer.count(original))
+    while allowance > 0:
+        text, truncated = truncate_summary(original, allowance, tokenizer)
+        if not text or not text.removesuffix('\n[Summary truncated]').strip():
+            return None
+        candidate.text = prefix + text
+        candidate.metadata['truncated'] = entry.metadata.get('truncated', False) or truncated
+        candidate.metadata['context_shortened'] = True
+        excess = tokenizer.count(render(candidate)) - token_budget
+        if excess <= 0:
+            return candidate
+        allowance -= max(1, excess)
+    return None
+
+
 def build_memory_context(module, query, token_budget, tokenizer, retrieval_k=None):
     positive_count(token_budget, 'memory_context_tokens')
     if retrieval_k is not None:
@@ -69,19 +94,69 @@ def build_memory_context(module, query, token_budget, tokenizer, retrieval_k=Non
     if recent_first:
         recent = [e for e in candidates if e.metadata.get('memory_tier') == 'recent']
         candidates = list(reversed(recent)) + [e for e in candidates if e.metadata.get('memory_tier') != 'recent']
+    recent_order = {id(e): i for i, e in enumerate(recent)} if recent_first else {}
 
     def ordered(records):
         if recent_first:
+            # Spillover can admit a newer turn after an older, smaller one.
+            # Restore source order rather than reversing admission order.
+            recent_records = [e for e in records if e.metadata.get('memory_tier') == 'recent']
+            # Selection uses detached copies, so retain their source positions
+            # separately instead of relying on record equality or dialogue IDs.
+            recent_records.sort(key=lambda e: recent_order[id(e)])
             return ([e for e in records if e.metadata.get('memory_tier') != 'recent']
-                    + list(reversed([e for e in records if e.metadata.get('memory_tier') == 'recent'])))
+                    + recent_records)
         return list(reversed(records)) if is_window else records
 
     def render(records):
         return format_context(ordered(records))
 
-    for entry in candidates:
+    def append_entry(entry):
+        candidate = deepcopy(entry)
+        if recent_first and entry.metadata.get('memory_tier') == 'recent':
+            recent_order[id(candidate)] = recent_order[id(entry)]
+        selected.append(candidate)
+
+    def admit(entry):
+        if entry.metadata.get('type') == 'summary' or entry.metadata.get('memory_component') == 'summarization':
+            candidate = fit_summary_entry(entry, token_budget, tokenizer,
+                                          lambda e: render(selected + [e]))
+            if candidate is not None:
+                selected.append(candidate)
+                return True
+            return False
         if tokenizer.count(render(selected + [entry])) <= token_budget:
-            selected.append(deepcopy(entry))
+            append_entry(entry)
+            return True
+        return False
+
+    reserved_long_term = 0
+    if recent_first:
+        long_term = [e for e in candidates if e.metadata.get('memory_tier') != 'recent']
+        # Leave up to half the allowance for recall. An empty or small archive
+        # releases its unused space to recent turns; all counts include framing.
+        if long_term:
+            reserved_long_term = min(token_budget // 2, tokenizer.count(render(long_term)))
+        deferred = []
+        for entry in candidates[:len(recent)]:
+            if tokenizer.count(render(selected + [entry])) <= token_budget - reserved_long_term:
+                append_entry(entry)
+            else:
+                deferred.append(entry)
+        # Under tiny budgets, prefer at least one complete recent turn when
+        # framing makes it impossible to honor both reservations.
+        if not selected:
+            for index, entry in enumerate(deferred):
+                if admit(entry):
+                    deferred.pop(index)
+                    break
+        for entry in long_term:
+            admit(entry)
+        for entry in deferred:
+            admit(entry)
+    else:
+        for entry in candidates:
+            admit(entry)
     text = render(selected)
     entries = ordered(selected)
     result = dict(text=text, entries=entries, memory_context_tokens=tokenizer.count(text),
@@ -100,7 +175,12 @@ def build_memory_context(module, query, token_budget, tokenizer, retrieval_k=Non
             included = sum(e.metadata.get('memory_tier') == tier for e in entries)
             result['tiers'][tier] = dict(candidate_count=len(available), included_count=included,
                 omitted_count=len(available)-included,
+                reserved_tokens=reserved_long_term if tier == 'long_term' else token_budget-reserved_long_term,
+                shortened_count=sum(e.metadata.get('memory_tier') == tier and
+                                    e.metadata.get('context_shortened', False) for e in entries),
                 oversized_count=sum(tokenizer.count(format_context([e])) > token_budget for e in available))
+        result['long_term_context_omitted'] = bool(result['tiers']['long_term']['candidate_count']
+                                                   and not result['tiers']['long_term']['included_count'])
     return result
 
 

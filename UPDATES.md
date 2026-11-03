@@ -1,5 +1,58 @@
 # Updates
 
+## Memory and answering cost per question - 2026-11-03
+
+Benchmark reports and Compare Runs now divide total memory + answering provider
+tokens by recorded question count, excluding judging. Average runtime divides
+total recorded memory preparation + retrieval + answering time by that count,
+also excluding judging. This replaces answer/judge-only token averages and means
+computed over only questions with measured timing. Unknown required usage remains
+unavailable. Recorded rebuilds, query retries, and preparation without questions
+remain in the overall cost; shared conversation costs are allocated before
+category filtering.
+
+New runs record preparation including module setup; old reports use their recorded
+ingestion totals without estimating missing setup time. Comparison schema version
+3 recomputes derived metrics without changing source predictions or judge labels.
+
+## Loading indicators and selected saved run - 2026-11-03
+
+Startup follow-up: bundle the loading helper into the existing workspace scripts
+and create the status element when absent from a cached template. This fixes
+`KAI3Loading is not defined` on servers started before the new asset was registered,
+without restarting an in-process benchmark. Refresh the browser to load the fix.
+All 30 frontend checks passed, and isolated desktop/mobile Chrome verified a
+simulated older template with no helper tag or loading-status element.
+
+Chat, Test Benchmark, and Compare Runs now show small inline spinners during
+loading, imports, downloads, saves, and pending actions. Saved runs show Loading
+while opening, then retain a sidebar highlight. Active benchmark
+progress uses one continuous spinner without flashing on background refreshes.
+Failures clear indicators, and late responses cannot restore a run after switching
+or resetting the view. Shared indicators respect reduced-motion preferences.
+
+Verification: 29 frontend regression checks passed, plus the related Python
+result-library/frontend checks. Isolated Chrome desktop/phone checks and screenshot
+review covered all three workspaces using synthetic data, with no provider calls
+or JavaScript exceptions. See the [shared loading behavior](spec/frontend/workspace_shell.md#assets-and-verification).
+
+## Formation-inclusive runtime comparison - 2026-11-03
+
+Compare Runs now measures each question's allocated conversation memory formation
+time plus retrieval and answering, excluding judging. The visible runtime
+breakdown shows total formation and combined run time, per-question components,
+and measurement coverage. Allocation is fixed before question-type filtering;
+recorded rebuilds count once by ingestion ID. Original timing fields and source
+reports remain unchanged, with new metrics in comparison schema version 2.
+
+New query timing preserves failed attempts across resumes and checkpoints query
+work before judging. Reusing a prediction adds no query time. Missing historical
+measurements remain unavailable. Fifteen of the sixteen current saved reports
+provide complete per-question coverage; the legacy full-context report lacks
+the required timing fields. Verification: all 201 offline tests passed, including
+13 focused runtime tests and the Compare Runs UI regressions. No paid provider
+calls were made. See the [runtime contract](spec/frontend/compare_runs.md#metric-meaning-and-coverage).
+
 ## Approved audit follow-up - 2026-11-03
 
 Reviewed commit `6679238` independently: the existing 165-test offline suite

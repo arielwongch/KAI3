@@ -8,14 +8,14 @@ from Diagnostics import collector
 from Embeddings import validate_k
 from MemoryEntry import MemoryEntry
 from MemoryModule import MemoryModule
-from MemoryContext import positive_count, truncate_summary
+from MemoryContext import positive_count, fit_summary_entry
 
 HYBRIDS = {
     'delta': ('summarization', 'vector_store'),
     'epsilon': ('summarization', 'fact_store'),
     'zeta': ('vector_store', 'fact_store'),
 }
-HYBRID_PACKING_POLICY = 'hybrid-reserved-shares-spillover-v1'
+HYBRID_PACKING_POLICY = 'hybrid-record-spillover-summary-fit-v2'
 
 
 def hybrid_settings(mode, shares=None, component_options=None):
@@ -161,38 +161,30 @@ class HybridMemory(MemoryModule):
         for name, candidates in groups.items():
             for entry in candidates:
                 candidate = deepcopy(entry)
-                if name == 'summarization' and tokenizer.count(candidate.text) > budgets[name]:
-                    candidate.text, truncated = truncate_summary(candidate.text, budgets[name], tokenizer)
-                    candidate.metadata['truncated'] = truncated
-                    if not candidate.text.startswith('[summarization]\n'):
-                        candidate.text = ''
-                if (candidate.text and tokenizer.count(render(selected[name] + [candidate])) <= budgets[name]
+                if name == 'summarization':
+                    candidate = fit_summary_entry(entry, budgets[name], tokenizer,
+                        lambda e: render(selected[name] + [e]), prefix='[summarization]\n')
+                if (candidate is not None and candidate.text and tokenizer.count(render(selected[name] + [candidate])) <= budgets[name]
                         and tokenizer.count(render(flattened() + [candidate])) <= token_budget):
                     selected[name].append(candidate)
                 else:
                     pending.append((name, entry))
-        # A shortened summary can also borrow spare space. Count the complete
-        # rendered context rather than assuming token counts are additive.
-        if selected.get('summarization') and groups['summarization']:
-            shortened = selected['summarization'][0]
-            original = groups['summarization'][0]
-            allowance = token_budget
-            while allowance > tokenizer.count(shortened.text):
-                expanded = deepcopy(original)
-                expanded.text, truncated = truncate_summary(original.text, allowance, tokenizer)
-                expanded.metadata['truncated'] = original.metadata.get('truncated', False) or truncated
-                selected['summarization'][0] = expanded
-                excess = tokenizer.count(render(flattened())) - token_budget
-                if excess <= 0:
-                    break
-                selected['summarization'][0] = shortened
-                allowance -= max(1, excess)
         # Stable round-robin spillover avoids comparing scores across representations.
+        # Whole records borrow spare space before summaries expand into it.
         pending.sort(key=lambda item: (item[1].metadata.get('retrieval_rank', 0), names.index(item[0])))
         for name, entry in pending:
+            if name == 'summarization':
+                continue
             selected[name].append(entry)
             if tokenizer.count(render(flattened())) > token_budget:
                 selected[name].pop()
+        if groups.get('summarization'):
+            original = groups['summarization'][0]
+            selected['summarization'] = []
+            expanded = fit_summary_entry(original, token_budget, tokenizer,
+                lambda e: render([e] + flattened()), prefix='[summarization]\n')
+            if expanded is not None:
+                selected['summarization'] = [expanded]
         entries = flattened()
         context = render(entries)
         count = sum(len(group) for group in groups.values())

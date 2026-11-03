@@ -29,7 +29,120 @@ def phase_tokens(diagnostics, phase):
         if records:
             return complete_sum(r.get('tokens') for r in records)
         return 0 if diagnostics.get(phase + '_llm_calls') == 0 else None
-    return diagnostics.get(phase + '_tokens')
+    value = diagnostics.get(phase + '_tokens')
+    if value is not None:
+        return value
+    if diagnostics.get(phase + '_llm_calls') == 0:
+        return 0
+    prefix = '' if phase == 'answer' else phase + '_'
+    return complete_sum(diagnostics.get(prefix + key) for key in ('prompt_tokens', 'completion_tokens'))
+
+
+def question_phase_seconds(diagnostics, phase):
+    """Prefer cumulative query work; never subtract a judge estimate from a total."""
+    return diagnostics.get('execution_' + phase + '_seconds', diagnostics.get(phase + '_seconds'))
+
+
+def token_records(report, module, cases):
+    """Memory + answering cost; allocate shared memory before category filtering."""
+    builds, seen, conflicts = [], {}, set()
+    for memory in [*report.get('previous_ingestions', []), *report.get('memories', [])]:
+        if str(memory.get('module', 'unknown')) != module:
+            continue
+        ingestion = memory.get('ingestion', {})
+        identity = ingestion.get('ingestion_id')
+        sample = str(memory['sample_id']) if memory.get('sample_id') is not None else None
+        value = (sample, phase_tokens(ingestion, 'memory'))
+        if identity is not None and identity in seen:
+            if seen[identity] != value:
+                conflicts.update((sample, seen[identity][0]))
+            continue
+        if identity is not None:
+            seen[identity] = value
+        builds.append(value)
+    memory_totals, counts = {}, {}
+    for sample, tokens in builds:
+        memory_totals.setdefault(sample, []).append(tokens)
+    memory_totals = {sample: complete_sum(values) if sample not in conflicts else None
+                     for sample, values in memory_totals.items()}
+    for case in cases:
+        sample = str(case['sample_id']) if case.get('sample_id') is not None else None
+        counts[sample] = counts.get(sample, 0) + 1
+    baseline = module in ('full_context', 'question_only', 'no_memory')
+    records, answers = {}, []
+    for case in cases:
+        sample = str(case['sample_id']) if case.get('sample_id') is not None else None
+        memory = memory_totals.get(sample, 0 if baseline and not builds else None)
+        if sample is None and not (baseline and not builds):
+            memory = None
+        answer = phase_tokens(case.get('diagnostics', {}), 'answer')
+        answers.append(answer)
+        records[id(case)] = complete_sum([memory / counts[sample] if number(memory) else None, answer])
+    memory = complete_sum(value for _, value in builds) if builds else (0 if baseline else None)
+    if conflicts:
+        memory = None
+    answer = complete_sum(answers)
+    total = complete_sum([memory, answer])
+    return records, dict(memory_tokens=memory, answer_tokens=answer, total_tokens=total,
+                         mean_tokens=total / len(cases) if number(total) and cases else None,
+                         count=sum(number(value) for value in answers) if number(memory) else 0,
+                         question_count=len(cases), conflicting_ingestion_ids=bool(conflicts))
+
+
+def runtime_records(report, module, cases):
+    """Allocate each conversation's recorded formation builds before filtering."""
+    builds, seen, conflicts = [], {}, set()
+    for memory in [*report.get('previous_ingestions', []), *report.get('memories', [])]:
+        if str(memory.get('module', 'unknown')) != module:
+            continue
+        ingestion = memory.get('ingestion', {})
+        identity = ingestion.get('ingestion_id')
+        seconds = ingestion.get('preparation_seconds', ingestion.get('total_seconds'))
+        sample = str(memory['sample_id']) if memory.get('sample_id') is not None else None
+        if identity is not None and identity in seen:
+            previous_sample, previous_seconds = seen[identity]
+            if (sample, seconds) != (previous_sample, previous_seconds):
+                conflicts.update((sample, previous_sample))
+            continue
+        if identity is not None:
+            seen[identity] = (sample, seconds)
+        builds.append((sample, seconds))
+    formation = {}
+    for sample, seconds in builds:
+        formation.setdefault(sample, []).append(seconds)
+    formation = {sample: complete_sum(seconds) if sample not in conflicts else None
+                 for sample, seconds in formation.items()}
+    counts = {}
+    for case in cases:
+        sample = str(case['sample_id']) if case.get('sample_id') is not None else None
+        counts[sample] = counts.get(sample, 0) + 1
+    records = {}
+    for case in cases:
+        sample = str(case['sample_id']) if case.get('sample_id') is not None else None
+        seconds = formation.get(sample) if sample is not None else None
+        share = seconds / counts[sample] if number(seconds) else None
+        diagnostics = case.get('diagnostics', {})
+        retrieval = question_phase_seconds(diagnostics, 'retrieval')
+        answer = question_phase_seconds(diagnostics, 'answer')
+        records[id(case)] = dict(formation_seconds=share, retrieval_seconds=retrieval,
+                                 answer_seconds=answer, total_seconds=complete_sum([share, retrieval, answer]))
+    unallocated = [seconds for sample, seconds in builds if sample is None or sample not in counts]
+    return records, dict(total_formation_seconds=complete_sum(seconds for _, seconds in builds) if not conflicts else None,
+                         formation_build_count=len(builds),
+                         formation_runtime_count=sum(number(seconds) for _, seconds in builds),
+                         unallocated_formation_seconds=complete_sum(unallocated) if unallocated else (0 if builds else None),
+                         conflicting_ingestion_ids=bool(conflicts))
+
+
+def runtime_group(records):
+    """Each average is a complete total divided by the recorded question count."""
+    known = [r for r in records if number(r['total_seconds'])]
+    metrics = dict(count=len(known), record_count=len(records))
+    for phase in ('formation', 'retrieval', 'answer', 'total'):
+        key = phase + '_seconds'
+        metrics[key] = complete_sum(r[key] for r in records)
+        metrics['mean_' + key] = metrics[key] / len(records) if number(metrics[key]) and records else None
+    return metrics
 
 
 def lifecycle_metrics(report, module, cases):
@@ -82,6 +195,12 @@ def enrich_report(value):
     for field in ('memories', 'question_manifest', 'previous_ingestions'):
         if field in report and not isinstance(report[field], list):
             raise ValueError(f'{field} must be an array.')
+    for memory in [*report.get('previous_ingestions', []), *report.get('memories', [])]:
+        if not isinstance(memory, dict) or not isinstance(memory.get('ingestion', {}), dict):
+            raise ValueError('Each memory must be an object with object ingestion.')
+        identity = memory.get('ingestion', {}).get('ingestion_id')
+        if identity is not None and not isinstance(identity, str):
+            raise ValueError('ingestion_id must be a string.')
     previous = report.get('comparison')
     added = list(previous.get('added_fields', [])) if isinstance(previous, dict) and isinstance(previous.get('added_fields'), list) else []
     for index, case in enumerate(report['cases']):
@@ -118,9 +237,9 @@ def enrich_report(value):
     if any(not isinstance(item, dict) for item in manifest):
         raise ValueError('Each manifest item must be an object.')
 
-    def group(cases, selected):
+    def group(cases, selected, runtimes, tokens):
         judged = [c['correct'] for c in cases if type(c.get('correct')) in (bool, int, float) and c['correct'] in (0, 1)]
-        token_values = [complete_sum(c.get('diagnostics', {}).get(k) for k in ('answer_tokens', 'judge_tokens')) for c in cases]
+        token_values = [tokens[id(c)] for c in cases]
         times = [c.get('diagnostics', {}).get('total_seconds') for c in cases]
         known_tokens = [v for v in token_values if v is not None]
         known_times = [v for v in times if number(v)]
@@ -128,22 +247,35 @@ def enrich_report(value):
                     accuracy_percent=100 * sum(judged) / len(judged) if judged else None,
                     completion_percent=100 * len(judged) / selected if selected else None,
                     success_percent=100 * sum(judged) / selected if selected else None,
-                    mean_question_tokens=sum(known_tokens)/len(known_tokens) if known_tokens else None,
+                    mean_question_tokens=sum(known_tokens)/len(cases) if cases and len(known_tokens) == len(cases) else None,
                     token_count=len(known_tokens), total_question_tokens=complete_sum(token_values),
                     mean_question_seconds=sum(known_times)/len(known_times) if known_times else None,
-                    runtime_count=len(known_times), total_question_seconds=complete_sum(times))
+                    runtime_count=len(known_times), total_question_seconds=complete_sum(times),
+                    runtime=runtime_group([runtimes[id(c)] for c in cases]))
 
     modules = list(dict.fromkeys(str(c.get('module', 'unknown')) for c in [*report['cases'], *manifest]))
     rows = []
     for module in modules:
         cases = [c for c in report['cases'] if str(c.get('module', 'unknown')) == module]
         selected = [c for c in manifest if str(c.get('module', 'unknown')) == module]
-        metrics = group(cases, len(selected) if manifest else len(cases))
+        runtimes, formation = runtime_records(report, module, cases)
+        tokens, token_totals = token_records(report, module, cases)
+        metrics = group(cases, len(selected) if manifest else len(cases), runtimes, tokens)
+        metrics.update(mean_question_tokens=token_totals['mean_tokens'], total_question_tokens=token_totals['total_tokens'],
+                       token_count=token_totals['count'], token_usage=token_totals)
+        metrics['runtime'].update(formation)
+        metrics['runtime']['recorded_total_seconds'] = complete_sum([
+            formation['total_formation_seconds'], metrics['runtime']['retrieval_seconds'], metrics['runtime']['answer_seconds']])
+        runtime = metrics['runtime']
+        runtime['allocated_total_seconds'] = runtime['total_seconds']
+        runtime['total_seconds'] = runtime['recorded_total_seconds']
+        runtime['mean_total_seconds'] = runtime['total_seconds'] / len(cases) if number(runtime['total_seconds']) and cases else None
+        runtime['mean_formation_seconds'] = formation['total_formation_seconds'] / len(cases) if number(formation['total_formation_seconds']) and cases else None
         categories = {}
         for category in sorted({str(c.get('category', 'unknown')) for c in [*cases, *selected]}):
             subset = [c for c in cases if str(c.get('category', 'unknown')) == category]
             count = sum(str(c.get('category', 'unknown')) == category for c in selected) if manifest else len(subset)
-            categories[category] = group(subset, count)
+            categories[category] = group(subset, count, runtimes, tokens)
         memories = [m for m in report.get('memories', []) if str(m.get('module', 'unknown')) == module]
         sizes = []
         for memory in memories:
@@ -158,10 +290,11 @@ def enrich_report(value):
         metrics['memory_count'] = len(memories)
         metrics['lifecycle'] = lifecycle_metrics(report, module, cases)
         rows.append(dict(module=module, overall=metrics, categories=categories))
-    report['comparison'] = dict(version=1, added_fields=added, rows=rows,
+    report['comparison'] = dict(version=3, added_fields=added, rows=rows,
         definitions=dict(accuracy='Correct / judged questions × 100; unavailable labels are excluded.',
-                         tokens='Answer + judge provider tokens per recorded question; excludes ingestion.',
-                         runtime='Recorded total seconds per question, including retrieval, answer and judge; excludes ingestion.',
+                         tokens='Total memory + answering provider tokens / recorded question count; excludes judging. Shared conversation memory is allocated before category filtering. Includes recorded resumed builds and request attempts; unknown usage remains unavailable.',
+                         runtime='Total recorded memory preparation + retrieval + answering time / recorded question count; excludes judging and review pauses. Preparation uses preparation_seconds, falling back to legacy ingestion total_seconds. All recorded builds and cumulative query attempts count, including preparation without recorded questions. Category shares are allocated by conversation before filtering. Missing required totals remain unavailable.',
+                         legacy_runtime='mean_question_seconds and total_question_seconds retain recorded question time including judging and excluding formation.',
                          lifecycle='All recorded ingestion builds (including resumed builds) + retained question attempts. Unknown usage stays unavailable; legacy data may omit failed attempts. No amortization.',
                          storage='Sum of final UTF-8 stored text bytes across memory snapshots; excludes embeddings and runtime overhead.'))
     return report

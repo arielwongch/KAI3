@@ -1,6 +1,5 @@
 """Independent benchmark process; survives the web server exiting."""
 import argparse
-import threading
 import time
 from BenchmarkStore import Lease, atomic_json, path_for, read_json
 

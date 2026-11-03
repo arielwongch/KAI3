@@ -1,7 +1,5 @@
-import json
 import os
 import sys
-import threading
 import unittest
 import tempfile
 from unittest.mock import patch

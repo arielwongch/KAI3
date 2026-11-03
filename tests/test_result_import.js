@@ -6,7 +6,9 @@ class Node {
   append(...items){this.children.push(...items);}
   replaceChildren(...items){this.children=items;}
   querySelectorAll(){return [];}
-  setAttribute(){}
+  setAttribute(key,value){(this.attrs??={})[key]=value;}
+  getAttribute(key){return this.attrs?.[key]??null;}
+  removeAttribute(key){if(this.attrs)delete this.attrs[key];}
   click(){if(this.onclick)return this.onclick();}
   focus(){}
   select(){}
@@ -118,15 +120,33 @@ assert.match(nodes.progressTitle.textContent,/Memory ready for review/);
 context.usageFixture={cases:[
  {prediction:'A',judge:{overall:2},diagnostics:{total_seconds:10,answer_seconds:6,judge_seconds:3,retrieval_seconds:1,answer_tokens:100,judge_tokens:20}},
  {prediction:'B',judge:{overall:2},diagnostics:{total_seconds:20,answer_seconds:12,judge_seconds:6,retrieval_seconds:2,answer_tokens:200,judge_tokens:40}},
- {error:'failed',diagnostics:{answer_tokens:0,judge_tokens:0}}],memories:[{ingestion:{memory_tokens:30,total_seconds:5}}]};
-assert.equal(run('benchmarkUsage(usageFixture).meanRuntime'),15);
-assert.equal(run('benchmarkUsage(usageFixture).meanQuestionTokens'),180);
+ {error:'failed',diagnostics:{answer_tokens:0,judge_tokens:0,retrieval_seconds:0,answer_seconds:0}}],memories:[{ingestion:{memory_tokens:30,total_seconds:5}}]};
+assert.equal(run('benchmarkUsage(usageFixture).meanRuntime'),26/3);
+assert.equal(run('benchmarkUsage(usageFixture).meanQuestionTokens'),110);
+assert.equal(run('benchmarkUsage(usageFixture).totalMemoryAnswerTokens'),330);
+assert.equal(run('benchmarkUsage(usageFixture).totalRuntime'),26);
 assert.equal(run('benchmarkUsage(usageFixture).totalTokens'),390);
 assert.equal(run('benchmarkUsage(usageFixture).recordedSeconds'),35);
 assert.equal(run('benchmarkUsage(usageFixture).answerFailures'),1);
 assert.equal(run('benchmarkUsage({cases:[]}).meanRuntime'),null);
 assert.match(text(nodes.benchmarkResults),/Average question runtime/);
 assert.match(text(nodes.benchmarkResults),/Average tokens per question/);
+const originalUsage=JSON.stringify(context.usageFixture);
+context.retryUsage=JSON.parse(originalUsage);
+context.retryUsage.previous_ingestions=[{ingestion:{ingestion_id:'retry',memory_tokens:60,preparation_seconds:10}}];
+context.retryUsage.cases[0].diagnostics.provider_requests=[{phase:'answer',tokens:40},{phase:'answer',tokens:80},{phase:'judge',tokens:99999}];
+context.retryUsage.cases[0].diagnostics.execution_retrieval_seconds=3;
+context.retryUsage.cases[0].diagnostics.execution_answer_seconds=10;
+assert.equal(run('benchmarkUsage(retryUsage).meanQuestionTokens'),410/3);
+assert.equal(run('benchmarkUsage(retryUsage).meanRuntime'),14);
+context.retryUsage.previous_ingestions.push(JSON.parse(JSON.stringify(context.retryUsage.previous_ingestions[0])));
+assert.equal(run('benchmarkUsage(retryUsage).meanQuestionTokens'),410/3,'Duplicate rebuilds count once');
+assert.equal(run('benchmarkUsage(retryUsage).meanRuntime'),14);
+context.retryUsage.cases[1].diagnostics.answer_tokens=null;
+context.retryUsage.cases[1].diagnostics.execution_answer_seconds=null;
+assert.equal(run('benchmarkUsage(retryUsage).meanQuestionTokens'),null);
+assert.equal(run('benchmarkUsage(retryUsage).meanRuntime'),null);
+assert.equal(JSON.stringify(context.usageFixture),originalUsage,'Computing costs preserves the input');
 // Exercise the file input handler and malformed JSON recovery.
 (async()=>{
   nodes.resultsFile.files=[{name:'bad.json',text:async()=>'{broken'}];

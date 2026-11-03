@@ -115,7 +115,7 @@ Numeric inputs must be finite and nonnegative; booleans are not token or size
 counts. Storage derivation requires an entries array whose records all contain
 text strings. Missing correctness labels and timings are not inferred.
 
-The report's derived `comparison` object is recomputed with `version: 1`,
+The report's derived `comparison` object is recomputed with `version: 3`,
 `added_fields` (paths of filled fields, retained across repeated enrichment),
 `definitions`, and `rows`. Each row contains `module`, `overall`, and `categories`
 keyed by category string. Groups expose:
@@ -123,11 +123,31 @@ keyed by category string. Groups expose:
 - `case_count`, `selected_count`, and `judged_count`;
 - `accuracy_percent`, `completion_percent`, and `success_percent`;
 - `mean_question_tokens`, `total_question_tokens`, and `token_count`;
-- `mean_question_seconds`, `total_question_seconds`, and `runtime_count`.
+- `mean_question_seconds`, `total_question_seconds`, and `runtime_count` retain
+  their legacy question-only timing definition, including judging;
+- `runtime`, containing formation-inclusive timing used by the chart and runtime
+  breakdown table.
 
 Overall groups additionally expose `stored_text_bytes`, `storage_count`, and
 `memory_count`. Existing scores, schema/protocol identifiers, predictions, and
 evidence remain unchanged; the comparison object has its own version.
+
+Each `runtime` object exposes `count`, `record_count`, `formation_seconds`,
+`retrieval_seconds`, `answer_seconds`, `total_seconds`, and corresponding
+`mean_formation_seconds`, `mean_retrieval_seconds`, `mean_answer_seconds`, and
+`mean_total_seconds`. Each mean divides its complete component total by the
+recorded question count. Missing required measurements make that total and mean
+unavailable; a subset of measured questions does not become the denominator.
+
+Overall `runtime` also exposes `total_formation_seconds`, `formation_build_count`,
+`formation_runtime_count`, `unallocated_formation_seconds`,
+`conflicting_ingestion_ids`, and `recorded_total_seconds`. These run-level fields
+are unchanged by category filters. `recorded_total_seconds` adds all recorded
+formation to cumulative retrieval and answering, excluding judging, including
+formation for conversations without recorded cases. It remains unavailable when
+any required timing is missing. Overall `total_seconds` equals this run total;
+`allocated_total_seconds` retains the sum of conversation-allocated question
+costs. Category `total_seconds` sums the allocated costs of that category.
 
 ## Metric meaning and coverage
 
@@ -138,12 +158,50 @@ including unattempted questions. Without one, exported case counts are the
 explicit fallback; they do not establish the original selection or failure-aware
 benchmark denominator. A zero denominator produces an unavailable percentage.
 
-Question tokens are answer plus judge provider tokens, excluding ingestion.
-The mean includes only cases with both counts. Runtime uses recorded
-`diagnostics.total_seconds`, including question retrieval, answering, and judging,
-and excludes ingestion. Runtime means use only recorded finite values. Totals
-remain unavailable if any case lacks the required measurement. Coverage counts
-show the number of contributing cases.
+The Benchmark report and Compare charts use these run-level averages:
+
+```text
+tokens per question = (total memory tokens + total answering tokens) / recorded questions
+average runtime = (total memory preparation + retrieval + answering time) / recorded questions
+```
+
+Both exclude judging. Token totals include memory preparation calls and answering
+prompt/completion usage, preferring recorded provider request ledgers so retries
+are counted. Retrieved context is already part of the answer prompt and is not
+added again. Local embedding/reranking work has no provider-token usage to infer.
+Unknown usage stays unavailable; no-memory baselines can establish zero memory
+tokens. Overall `token_usage` exposes the memory, answer, and combined totals,
+mean, coverage, and recorded question denominator.
+
+Formation uses `ingestion.preparation_seconds` across current and previous builds.
+New runs record module construction, writes, embeddings, summaries, fact extraction,
+and flushes within this timer. Older reports fall back to `ingestion.total_seconds`,
+which lacks separately unrecorded construction time. The narrower `write_seconds`
+is not substituted. Memory-review pauses and judging are outside preparation.
+Each ingestion ID counts once; records without IDs count separately. Conflicting
+measurements invalidate the affected totals.
+
+For category filtering, shared memory tokens and preparation time are divided
+across all recorded cases in their conversation, including failed cases, before
+filtering. Selected but unrecorded questions do not dilute the denominator.
+Preparation without recorded cases is included in the overall numerator, even
+though it cannot be allocated to a category. The time is also exposed in
+`unallocated_formation_seconds`. Missing conversation identities prevent category
+allocation but do not prevent a known overall total divided by question count.
+
+Query components prefer `diagnostics.execution_retrieval_seconds` and
+`execution_answer_seconds`, which accumulate recorded work across resumes.
+Older exports fall back to `retrieval_seconds` and `answer_seconds` only when the
+corresponding cumulative field is absent. Explicit unknown cumulative values
+stay unknown. Failed attempts and provider retry waits are included in new
+recordings; reusing a saved prediction adds no query time. Legacy exports may
+omit earlier failed attempts. Judging is never estimated by subtracting from a
+total. Original `diagnostics.total_seconds` and derived legacy question-time
+fields retain their definitions.
+
+Runtime uses finite nonnegative measurements; zero is valid. Totals remain unavailable if any
+case lacks the required measurement. Coverage shows contributing / recorded
+cases, separately from accuracy and selected-question counts.
 
 Storage sums final UTF-8 stored text bytes across matching module memory
 snapshots. Missing final text size can be derived from snapshot entries. A
@@ -156,8 +214,8 @@ snapshots.
 
 One full-width scatter plot compares two numeric metrics. Independent **X axis**
 and **Y axis** selectors each offer judged accuracy, mean answer + judge tokens
-per question, stored text in KiB (1,024 bytes), and mean runtime per question in
-seconds. Defaults are tokens on x and accuracy on y. Selecting the same metric
+per question, stored text in KiB (1,024 bytes), and mean formation-inclusive
+runtime per question in seconds, excluding judging. Defaults are tokens on x and accuracy on y. Selecting the same metric
 for both axes is supported. There are no chart-order controls.
 
 All numeric axes start at zero. Accuracy has a fixed maximum of 100%; other
@@ -190,7 +248,10 @@ active through filtering and rerendering but reset on page reload.
 Hovering, focusing, or tapping a point shows a tooltip with the full filename,
 module, both axis values/units, and the scope/coverage for each axis. Accuracy includes judged/selected
 counts and judge completion; token and runtime tooltips include contributing
-case counts and totals (unavailable for incomplete measurements); storage shows
+case counts and totals (unavailable for incomplete measurements). Runtime also
+shows allocated formation, retrieval, and answering means, run-level formation
+and combined totals, measured build counts, and unallocated formation. A visible
+runtime breakdown table presents these components alongside the chart. Storage shows
 bytes and measured/total snapshots and explicitly retains run-level scope.
 Notes describe each measurement's denominator and exclusions. Zero and
 unavailable results remain inspectable through their buttons without drawing a
