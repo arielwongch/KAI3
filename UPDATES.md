@@ -1,5 +1,107 @@
 # Updates
 
+## Handle damaged tokenizers and reuse report context counts - 2026-11-03
+
+Malformed locally cached tokenizer artifacts now leave context metrics unavailable
+instead of failing report analysis or unbounded benchmark answering. Native parse
+errors are handled at the tokenizer-loading boundary, without model calls or
+downloads.
+
+Context counts are reused across overall and category calculations within each
+report. The process-wide cache of full context strings was removed. A regression
+with 1,200 distinct contexts plus a duplicate verifies exactly 1,200 encodes per
+analysis, including a second analysis with fresh report-local counts. Recorded
+counts retain precedence over derived counts.
+
+All 223 offline tests passed, including malformed-artifact fallback, duplicate
+context reuse, and recorded-count precedence. Patch whitespace checks passed.
+
+## Align Benchmark breakdown with Compare lifecycle totals - 2026-11-03
+
+Benchmark Reported API tokens now includes known consumption from failed answer
+or judge calls, including calls without a parsed result. Recorded processing time
+uses cumulative execution timing, matching Compare Runs. Memory and ingestion
+totals also follow per-module lifecycle rules for duplicate builds, conflicting
+records, and unknown measurements. Headline averages retain their existing
+definitions and continue to exclude judging where specified.
+
+All 126 checks across 18 saved reports matched the current Compare calculations.
+The two reranker API totals are now 227,169 and 326,295 tokens, correcting omitted
+judge usage. All 30 frontend checks passed, with regressions for failed calls,
+cumulative timing, duplicate IDs/key ordering, and unavailable/conflicting data.
+This fixes display calculations; saved source records were not changed.
+
+## In-chart legend and table copying - 2026-11-03
+
+Moved the run/color legend inside the chart card, wrapping above the plot.
+Added independent copy controls for all four Compare Runs tables, with TSV,
+formatted HTML plus plain-text fallback, and Markdown formats. Copies preserve
+displayed row order and headers/main values while omitting secondary notes and
+small counts. Empty/pending states, clipboard failures, escaping, and feedback
+are handled without modifying saved reports.
+
+The 30 frontend checks passed, including all formats, notes omission, duplicate
+copy prevention, and clipboard denial. Isolated Chrome at desktop/phone sizes
+verified twelve long run labels, the legend's position above the plot, sorted
+copy payloads, all four controls, and no JavaScript exceptions. Clipboard writes
+were stubbed so the system clipboard remained untouched; screenshots were
+visually inspected. No provider calls or saved-result changes were used.
+
+## Separate context size from provider-token cost - 2026-11-03
+
+Benchmark reports now show Context tokens/question alongside Memory + answering
+tokens/question. Compare Runs offers both as independent axis choices and displays
+their separate coverage. Context is only the supplied conversation/memory text;
+it excludes question/instructions/output and uses the fixed benchmark tokenizer.
+The current memory-plus-answering calculation is retained, including its rule for
+ignoring unreported failed-request usage.
+
+Comparison version 5 prefers recorded context counts and can count exact saved
+context with the pinned local tokenizer, without model calls or downloads. Padding
+and truncation are disabled. Empty context is zero; absent context text/counts
+remain unavailable rather than using whole-prompt or byte estimates. Completed
+saved-run analysis and library views expose the derived context metric without
+changing original source records.
+
+All 18 saved comparisons were refreshed with existing provider-cost averages
+unchanged. Thirteen reports have context counts; five older exports lack both
+counts and exact supplied context and remain unavailable for context only.
+Offline tokenization matched all 1,200 existing recorded context counts. All 220
+offline tests and 30 frontend checks passed. Desktop/phone Chrome verified
+separate 200-context-token and 110-provider-token fixture averages, context-axis
+selection, and absence of JavaScript exceptions.
+
+## Ignore failed requests with unreported token usage - 2026-11-03
+
+Per the requested counting rule, token averages now ignore failed requests with
+no reported tokens. Failed requests with known usage still count; successful or
+in-progress requests with missing usage remain unavailable. The rule is shared
+by Benchmark reports and Compare Runs and recorded in comparison version 4.
+Original request ledgers remain intact. This supersedes the strict failed-request
+handling described in the investigation below.
+
+Refreshed all 18 saved reports to version 4 and verified their source records are
+unchanged. Windowed Summary k=10 now reports 36,527.20 tokens/question; k=100
+reports 11,882.34. Frontend calculations match every saved report. All 213 offline
+tests and 30 frontend checks passed; no provider calls were made.
+
+## Verified unavailable token averages - 2026-11-03
+
+Audited all 17 result-library reports. Fifteen have complete memory-plus-answer
+usage. Windowed Summary k=10 has one memory retry with unknown usage (conv-43);
+k=100 has two memory retries (conv-30/conv-44) and one answer retry (conv-30,
+question index 7) with unknown usage. These attempts failed without token or
+prompt/completion counts, then succeeded on retry. Successful-response counters
+exclude the unknown attempts and cannot establish the full total.
+
+Both original saved runs contain the same records as their exports, so the missing
+usage cannot be recovered from those snapshots. Known recorded tokens establish
+lower bounds of 36,527.20 and 11,882.34 tokens/question respectively, not exact
+averages. The exact values correctly remain unavailable. Frontend and backend
+calculations agreed on all 17 actual reports; all ten focused cost tests passed,
+including unknown memory/answer retries and judging-only failure isolation. No
+provider calls or result-file changes were made during this investigation.
+
 ## Memory and answering cost per question - 2026-11-03
 
 Benchmark reports and Compare Runs now divide total memory + answering provider

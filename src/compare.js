@@ -135,6 +135,7 @@ function chartDetails(row,kind){
     const details=[['Question type',kind==='storage'?'All question types (run total)':categoryNames[el('category').value]||'All question types']];
     if(kind==='accuracy')details.push(['Judged / selected',`${fmt(m.judged_count)} / ${fmt(m.selected_count)}`],['Judge completion',finite(m.completion_percent)?fmt(m.completion_percent)+'%':'Unavailable']);
     if(kind==='tokens')details.push(['Cases with token usage',`${fmt(m.token_count)} / ${fmt(m.case_count)}`],['Total memory + answering tokens',fmt(m.total_question_tokens)]);
+    if(kind==='context')details.push(['Cases with context counts',`${fmt(m.context_token_count)} / ${fmt(m.case_count)}`],['Total context tokens',fmt(m.total_context_tokens)]);
     if(kind==='runtime'){
         const r=m.runtime,run=overall.runtime,seconds=value=>finite(value)?fmt(value)+' s':'Unavailable';
         details.push(['Cases with runtime',`${fmt(r?.count??0)} / ${fmt(m.case_count)}`],
@@ -149,7 +150,8 @@ function chartDetails(row,kind){
     return details;
 }
 const chartMetrics={
-    tokens:{label:'Tokens per question',unit:'tokens',value:r=>r.metrics.mean_question_tokens,note:'Total memory preparation + answering provider tokens divided by recorded questions. Excludes judging. Shared conversation memory is allocated before question-type filtering.'},
+    tokens:{label:'Memory + answering tokens/question',unit:'tokens',value:r=>r.metrics.mean_question_tokens,note:'Total memory preparation + answering provider tokens divided by recorded questions. Excludes judging. Failed requests without reported usage are ignored. Shared conversation memory is allocated before question-type filtering.'},
+    context:{label:'Context tokens/question',unit:'tokens',value:r=>r.metrics.mean_context_tokens,note:'Only the conversation/memory context supplied to the answering model. Fixed benchmark tokenizer; excludes the question, instructions, generated output, and memory preparation costs. These are context-size counts, not provider usage.'},
     accuracy:{label:'Judged accuracy',unit:'%',value:r=>r.metrics.accuracy_percent,note:'Correct / judged questions. Unjudged questions are excluded.'},
     storage:{label:'Stored memory text',unit:'KiB',value:r=>finite(r.overall.stored_text_bytes)?r.overall.stored_text_bytes/1024:null,note:'Final UTF-8 memory text across the run. Excludes embeddings and runtime overhead.'},
     runtime:{label:'Runtime per question',unit:'s',value:r=>r.metrics.runtime?.mean_total_seconds,note:'Total recorded memory preparation + retrieval + answering time divided by recorded questions. Excludes judging and review pauses. Includes recorded rebuilds and retries. Missing required timing stays unavailable.'}
@@ -174,7 +176,7 @@ window.addEventListener('resize',hideChartTooltip);
 function chart(data,xKey,yKey){
     const xMetric=chartMetrics[xKey],yMetric=chartMetrics[yKey];
     const card=node('article',null,'chart');
-    card.append(node('h3',xMetric.label+' vs '+yMetric.label),node('p','Each point is a run. Hover, focus, or tap for both values and coverage.'));
+    card.append(node('h3',xMetric.label+' vs '+yMetric.label),node('p','Each point is a run. Hover, focus, or tap for both values and coverage.'),el('runLegend'));
     el('charts').replaceChildren(card);
     if(!data.length)return;
     const plotted=data.filter(row=>finite(xMetric.value(row))&&finite(yMetric.value(row)));
@@ -221,7 +223,70 @@ function chart(data,xKey,yKey){
     }
     if(unavailable.childElementCount){card.append(node('p','Not plotted: a selected measurement is unavailable.'),unavailable);}
 }
-function tableCell(row,text,small){const td=node('td',text);if(small)td.append(node('small',small));row.append(td);}
+function tableCell(row,text,small){const td=node('td',text);td.setAttribute('data-copy-value',String(text??''));if(small)td.append(node('small',small));row.append(td);}
+const tableCopyFormats=new Map();
+function tableCopyRows(table){
+    return [...table.querySelectorAll('tr')].map(row=>[...row.children].map(cell=>cell.getAttribute('data-copy-value')??cell.textContent.trim()));
+}
+function tableAsTSV(rows){
+    const quote=value=>/[\t\r\n"]/.test(value)?'"'+value.replaceAll('"','""')+'"':value;
+    return rows.map(row=>row.map(value=>quote(String(value))).join('\t')).join('\r\n');
+}
+function tableAsMarkdown(rows){
+    const escape=value=>String(value).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;')
+        .replace(/[\\`*_\[\]|~]/g,'\\$&').replace(/\r\n|\r|\n/g,'<br>').replaceAll('\t','    ');
+    const line=row=>'| '+row.map(escape).join(' | ')+' |';
+    return rows.length?[line(rows[0]),line(rows[0].map(()=>'---')),...rows.slice(1).map(line)].join('\n'):'';
+}
+function tableAsHTML(rows){
+    const escape=value=>String(value).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;')
+        .replaceAll('"','&quot;').replaceAll("'",'&#39;').replace(/\r\n|\r|\n/g,'<br>');
+    const line=(row,tag)=>'<tr>'+row.map(value=>`<${tag} style="border:1px solid #bbb;padding:6px 10px;text-align:left">${escape(value)}</${tag}>`).join('')+'</tr>';
+    return rows.length?'<table style="border-collapse:collapse"><thead>'+line(rows[0],'th')+'</thead><tbody>'+rows.slice(1).map(row=>line(row,'td')).join('')+'</tbody></table>':'';
+}
+async function writeCopiedTable(rows,format){
+    const clipboard=globalThis.navigator?.clipboard;
+    if(!clipboard)throw new Error('Clipboard is unavailable. Open this page on localhost or HTTPS.');
+    const tsv=tableAsTSV(rows);
+    if(format==='html'&&clipboard.write&&globalThis.ClipboardItem){
+        await clipboard.write([new ClipboardItem({
+            'text/html':new Blob([tableAsHTML(rows)],{type:'text/html'}),
+            'text/plain':new Blob([tsv],{type:'text/plain'})
+        })]);
+        return 'Copied formatted table.';
+    }
+    if(!clipboard.writeText)throw new Error('This browser does not support copying tables.');
+    await clipboard.writeText(format==='markdown'?tableAsMarkdown(rows):tsv);
+    return format==='html'?'Copied as spreadsheet text; formatted copy is unavailable.':format==='markdown'?'Copied Markdown table.':'Copied spreadsheet table.';
+}
+function tableCopyControls(table,key,title,hasData){
+    const toolbar=node('div',null,'table-copy-controls'),label=node('label','Copy format');
+    const format=node('select');format.setAttribute('aria-label',`Copy format for ${title}`);
+    for(const [value,text]of [['tsv','Spreadsheet (TSV)'],['html','Formatted table'],['markdown','Markdown']]){
+        const option=node('option',text);option.value=value;format.append(option);
+    }
+    format.value=tableCopyFormats.get(key)||'tsv';format.disabled=!hasData;
+    format.onchange=()=>{tableCopyFormats.set(key,format.value);feedback.textContent='';};
+    label.append(format);
+    const button=node('button','Copy table');button.type='button';button.disabled=!hasData;
+    button.setAttribute('aria-label',`Copy ${title} table`);
+    const feedback=node('span',null,'table-copy-status');feedback.setAttribute('role','status');feedback.setAttribute('aria-live','polite');
+    button.onclick=async()=>{
+        if(button.disabled)return;
+        const rows=tableCopyRows(table),choice=format.value;
+        button.disabled=true;format.disabled=true;feedback.textContent='Copying…';feedback.setAttribute('data-tone','info');
+        const finish=KAI3Loading.begin(button);
+        try{feedback.textContent=await writeCopiedTable(rows,choice);}
+        catch(error){feedback.textContent=error.name==='NotAllowedError'?'Copy blocked by the browser. Allow clipboard access and try again.':error.message||'Could not copy this table. Try another format.';feedback.setAttribute('data-tone','error');}
+        finally{finish();button.disabled=!hasData;format.disabled=!hasData;}
+    };
+    toolbar.append(label,button,feedback);return toolbar;
+}
+function copyableTable(table,key,title,hasData){
+    const section=node('section',null,'copyable-table');section.setAttribute('aria-label',title);
+    const scroll=node('div',null,'table-scroll');scroll.append(table);
+    section.append(tableCopyControls(table,key,title,hasData),scroll);return section;
+}
 function render(){
     hideChartTooltip();
     const data=rows(),category=el('category').value;
@@ -234,7 +299,7 @@ function render(){
     el('comparisonEmpty').children[2].textContent=selected.size?'The selected files contain no recorded conditions. Choose results with benchmark cases.':'Select results from your library above. Each condition gets a consistent color across axis choices.';
     el('charts').hidden=!data.length;
     el('chartHint').hidden=!data.length;
-    const legend=el('runLegend');legend.replaceChildren();
+    const legend=el('runLegend');legend.replaceChildren();legend.hidden=!data.length;
     data.forEach(row=>{const item=node('span',null,'legend-item'),swatch=node('span',null,'swatch');swatch.style.backgroundColor=row.color;item.append(swatch,node('strong',`Run ${row.runNumber}`),node('span',row.label));legend.append(item);});
     chart(data,el('chartX').value||'tokens',el('chartY').value||'accuracy');
     const types=el('types');types.replaceChildren();const head=node('thead'),hr=node('tr');
@@ -245,8 +310,11 @@ function render(){
         for(const key of Object.keys(categoryNames)){const m=row.categories[key];tableCell(tr,m&&finite(m.accuracy_percent)?fmt(m.accuracy_percent)+'%':'Unavailable',m?`${m.judged_count} judged / ${m.selected_count} selected`:null);}
         tableCell(tr,finite(row.metrics.completion_percent)?fmt(row.metrics.completion_percent)+'%':'Unavailable',`${row.metrics.judged_count??0} judged / ${row.metrics.selected_count??0} selected`);body.append(tr);
     });if(!data.length){const tr=node('tr'),td=node('td','Select results to compare accuracy by question type.','empty-cell');td.colSpan=7;tr.append(td);body.append(tr);}types.append(body);
-    const coverage=node('table'),ch=node('tr');for(const title of ['Run','Token coverage','Runtime coverage','Storage coverage'])ch.append(node('th',title));coverage.append(ch);
-    data.forEach(row=>{const tr=node('tr');tableCell(tr,`Run ${row.runNumber}: ${row.label}`);tableCell(tr,`${row.metrics.token_count??0} / ${row.metrics.case_count??0} cases`);tableCell(tr,`${row.metrics.runtime?.count??0} / ${row.metrics.case_count??0} cases`);tableCell(tr,`${row.overall.storage_count} / ${row.overall.memory_count} snapshots`);coverage.append(tr);});
+    let accuracyCopy=el('accuracyCopy');
+    if(!accuracyCopy){accuracyCopy=node('div');accuracyCopy.id='accuracyCopy';types.parentElement.before(accuracyCopy);}
+    accuracyCopy.replaceChildren(tableCopyControls(types,'accuracy','Accuracy by question type',data.length>0));
+    const coverage=node('table'),ch=node('tr');for(const title of ['Run','Context coverage','Memory + answering coverage','Runtime coverage','Storage coverage'])ch.append(node('th',title));coverage.append(ch);
+    data.forEach(row=>{const tr=node('tr');tableCell(tr,`Run ${row.runNumber}: ${row.label}`);tableCell(tr,`${row.metrics.context_token_count??0} / ${row.metrics.case_count??0} cases`);tableCell(tr,`${row.metrics.token_count??0} / ${row.metrics.case_count??0} cases`);tableCell(tr,`${row.metrics.runtime?.count??0} / ${row.metrics.case_count??0} cases`);tableCell(tr,`${row.overall.storage_count} / ${row.overall.memory_count} snapshots`);coverage.append(tr);});
     const runtime=node('table'),rh=node('tr');
     for(const title of ['Run','Formation total (all types, s)','Combined total (all types, s)','Formation / question (s)','Retrieval / question (s)','Answering / question (s)','Combined / question (s)','Runtime coverage'])rh.append(node('th',title));runtime.append(rh);
     data.forEach(row=>{const tr=node('tr'),r=row.metrics.runtime,run=row.overall.runtime;
@@ -256,10 +324,10 @@ function render(){
         for(const phase of ['formation','retrieval','answer','total'])tableCell(tr,fmt(r?.['mean_'+phase+'_seconds']));
         tableCell(tr,`${r?.count??0} / ${row.metrics.case_count??0} cases`);runtime.append(tr);
     });
-    el('runtimeBreakdown').replaceChildren(runtime);
+    el('runtimeBreakdown').replaceChildren(copyableTable(runtime,'runtime','Runtime breakdown',data.length>0));
     const lifecycle=node('table'),lh=node('tr');for(const title of ['Run (all question types)','Ingestion tokens','Answer tokens','Judge tokens','Lifecycle tokens','Lifecycle seconds','Request ledger'])lh.append(node('th',title));lifecycle.append(lh);
     data.forEach(row=>{const tr=node('tr'),l=row.overall.lifecycle;tableCell(tr,`Run ${row.runNumber}`);for(const phase of ['ingestion','answer','judge'])tableCell(tr,fmt(l?.[phase]?.tokens),l?`${l[phase].known_count} / ${l[phase].record_count} records with usage`:null);tableCell(tr,fmt(l?.total_provider_tokens));tableCell(tr,fmt(l?.total_seconds));tableCell(tr,l?.request_ledger_complete?'Complete for recorded attempts':'Partial / legacy');lifecycle.append(tr);});
-    el('coverage').replaceChildren(coverage,lifecycle);
+    el('coverage').replaceChildren(copyableTable(coverage,'coverage','Measurement coverage',data.length>0),copyableTable(lifecycle,'lifecycle','Lifecycle usage',data.length>0));
 }
 function chooseDuplicate(file,conflict,index,total){
     const dialog=el('duplicateDialog'),target=el('replaceTarget');

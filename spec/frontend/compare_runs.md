@@ -115,7 +115,7 @@ Numeric inputs must be finite and nonnegative; booleans are not token or size
 counts. Storage derivation requires an entries array whose records all contain
 text strings. Missing correctness labels and timings are not inferred.
 
-The report's derived `comparison` object is recomputed with `version: 3`,
+The report's derived `comparison` object is recomputed with `version: 5`,
 `added_fields` (paths of filled fields, retained across repeated enrichment),
 `definitions`, and `rows`. Each row contains `module`, `overall`, and `categories`
 keyed by category string. Groups expose:
@@ -123,6 +123,7 @@ keyed by category string. Groups expose:
 - `case_count`, `selected_count`, and `judged_count`;
 - `accuracy_percent`, `completion_percent`, and `success_percent`;
 - `mean_question_tokens`, `total_question_tokens`, and `token_count`;
+- `mean_context_tokens`, `total_context_tokens`, and `context_token_count`;
 - `mean_question_seconds`, `total_question_seconds`, and `runtime_count` retain
   their legacy question-only timing definition, including judging;
 - `runtime`, containing formation-inclusive timing used by the chart and runtime
@@ -169,9 +170,25 @@ Both exclude judging. Token totals include memory preparation calls and answerin
 prompt/completion usage, preferring recorded provider request ledgers so retries
 are counted. Retrieved context is already part of the answer prompt and is not
 added again. Local embedding/reranking work has no provider-token usage to infer.
-Unknown usage stays unavailable; no-memory baselines can establish zero memory
+Failed requests (`status: error`) with no reported tokens are ignored, as requested.
+Reported tokens on failed requests still count; missing usage on successful or
+in-progress requests remains unavailable. This is a reported-usage metric, not an
+estimate of unreported usage. No-memory baselines can establish zero memory
 tokens. Overall `token_usage` exposes the memory, answer, and combined totals,
 mean, coverage, and recorded question denominator.
+
+**Context tokens/question** is a separate measure of the supplied conversation or
+memory text only. It excludes the question, instructions, generated answer, and
+memory preparation costs. It uses the fixed benchmark WordPiece tokenizer rather
+than provider usage counts. Recorded `diagnostics.memory_context_tokens` are
+preferred; missing counts can be derived from exact `supplied_context` text using
+the pinned locally cached tokenizer with padding/truncation disabled. This makes
+no model calls or downloads. Empty context is zero. Missing text or a missing
+local tokenizer remains unavailable; whole-prompt usage and byte budgets are not
+substitutes. Means require a count for each recorded question in the selected
+group. Both context and memory-plus-answering metrics are independent chart-axis
+choices, with separate coverage. Completed saved-run analysis and library views
+derive these metrics without changing the original source/export snapshots.
 
 Formation uses `ingestion.preparation_seconds` across current and previous builds.
 New runs record module construction, writes, embeddings, summaries, fact extraction,
@@ -227,6 +244,9 @@ If either value is missing, omit that point and expose the run through an
 Coincident points retain their real coordinates; tooltips identify other runs
 at the same coordinates, and every point remains keyboard-focusable. Run numbers
 and colors use name order and remain stable across axes, filters, and table sorts.
+The run/color legend sits inside the bordered chart card in a wrapping row above
+the plotting area. Long filenames wrap without covering points or axes; each
+redraw moves the same legend into the new card without duplicates.
 
 SVG coordinates use CSS pixels without viewBox scaling: tick text is 11px and
 axis labels 12px, inheriting the workspace body font. Chart headings use the same
@@ -244,6 +264,21 @@ name to ascending; **Table order** can reverse this. Only the active column has
 an `aria-sort` direction and arrow. Missing values always remain last in either
 direction; equal values keep their original name order. Sort choices remain
 active through filtering and rerendering but reset on page reload.
+
+Each of the four tables (accuracy, runtime, measurement coverage, and lifecycle)
+has its own Copy format selector and Copy table button. Spreadsheet copies use
+quoted tab-separated text, formatted-table copies include HTML plus a plain TSV
+fallback, and Markdown copies escape cell text. Copies include column headers and
+the currently displayed primary values in their displayed row order, with no
+secondary small notes/counts or CSS sorting arrows. Values shown as Unavailable
+stay distinct from zero. Copying does not change source data, selections, filters,
+or sort order. Format choices survive page-local rerenders.
+
+Empty tables disable copying. Pending copies disable their own controls and show
+a spinner; completion and clipboard errors are announced beside the control.
+Browsers without formatted clipboard support copy spreadsheet text and identify
+the fallback. Clipboard denial does not report success. The operation runs only
+from the user's Copy table action.
 
 Hovering, focusing, or tapping a point shows a tooltip with the full filename,
 module, both axis values/units, and the scope/coverage for each axis. Accuracy includes judged/selected

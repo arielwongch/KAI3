@@ -328,7 +328,7 @@ $('resultLibrary').onchange=async()=>{
     const selected=$('resultLibrary').value;if(!selected)return;
     const requested=++resultFileRequest;
     benchmarkRequest++;loadingRunId=null;$('benchmarkLoadStatus').hidden=true;updateSavedRunSelection();
-    try{const {report}=await jsonRequest(`/api/results/file?path=${encodeURIComponent(selected)}`);if(requested!==resultFileRequest||$('resultLibrary').value!==selected)return;showImportedBenchmark(report,`data/result/${selected}`);}
+    try{const {report}=await jsonRequest(`/api/results/file?analysis=1&path=${encodeURIComponent(selected)}`);if(requested!==resultFileRequest||$('resultLibrary').value!==selected)return;showImportedBenchmark(report,`data/result/${selected}`);}
     catch(error){if(requested===resultFileRequest)$(benchmark&&!$('benchmarkReport').hidden?'reportStatus':'benchmarkStatus').textContent=error.message;}
 };
 $('resultsFile').onchange=async()=>{
@@ -616,7 +616,7 @@ async function pollBenchmark(){
     if(importedBenchmark)return;
     const requestedRun=runId,requested=++benchmarkRequest;
     try{
-        const result=await jsonRequest(`/api/benchmarks/${requestedRun}`,undefined,[]);
+        const result=await jsonRequest(`/api/benchmarks/${requestedRun}?analysis=1`,undefined,[]);
         if(importedBenchmark||requestedRun!==runId||requested!==benchmarkRequest)return false;
         selectedRunId=requestedRun;loadingRunId=null;$('benchmarkLoadStatus').hidden=true;updateSavedRunSelection();
         benchmark=result;const running=['queued','running','waiting_review'].includes(benchmark.status);$('resultsFile').disabled=running;$('resultLibrary').disabled=running;$('reportMode').hidden=true;$('reviewLabelsControl').hidden=false;$('reportMoreActions').hidden=false;$('reportMoreActions').open=false;
@@ -641,7 +641,7 @@ function recordedPhaseTokens(diagnostics,phase){
     const complete=values=>values.length&&values.every(value=>typeof value==='number'&&Number.isFinite(value)&&value>=0)?values.reduce((a,b)=>a+b,0):null;
     if(Array.isArray(diagnostics.provider_requests)){
         const requests=diagnostics.provider_requests.filter(request=>request.phase===phase);
-        return requests.length?complete(requests.map(request=>request.tokens)):diagnostics[phase+'_llm_calls']===0?0:null;
+        return requests.length?complete(requests.map(request=>request.status==='error'&&request.tokens==null?0:request.tokens)):diagnostics[phase+'_llm_calls']===0?0:null;
     }
     if(diagnostics[phase+'_tokens']!=null)return diagnostics[phase+'_tokens'];
     if(diagnostics[phase+'_llm_calls']===0)return 0;
@@ -684,25 +684,63 @@ function benchmarkRuntimeUsage(report){
     const total=complete([preparation,retrieval,answer]);
     return {preparation,total,mean:finite(total)&&cases.length?total/cases.length:null,questionCount:cases.length};
 }
+function benchmarkContextUsage(report){
+    const cases=report.cases||[],counts=cases.map(c=>{
+        const d=c.diagnostics||{};
+        if('memory_context_tokens' in d)return Number.isSafeInteger(d.memory_context_tokens)&&d.memory_context_tokens>=0?d.memory_context_tokens:null;
+        return d.supplied_context===''?0:null;
+    });
+    let count=counts.filter(value=>value!==null).length,total=count===cases.length&&cases.length?counts.reduce((a,b)=>a+b,0):null;
+    if(total===null&&report.comparison?.version>=5){
+        const rows=Array.isArray(report.comparison.rows)?report.comparison.rows:[],groups=rows.map(row=>row?.overall);
+        if(groups.length&&groups.every(g=>g&&Number.isSafeInteger(g.total_context_tokens)&&g.total_context_tokens>=0&&Number.isSafeInteger(g.case_count)&&Number.isSafeInteger(g.context_token_count))&&groups.reduce((n,g)=>n+g.case_count,0)===cases.length){
+            total=groups.reduce((n,g)=>n+g.total_context_tokens,0);count=groups.reduce((n,g)=>n+g.context_token_count,0);
+        }
+    }
+    return {mean:total!==null&&cases.length?total/cases.length:null,total,count};
+}
+function benchmarkLifecycleUsage(report){
+    const finite=value=>typeof value==='number'&&Number.isFinite(value)&&value>=0;
+    const complete=values=>values.length&&values.every(finite)?values.reduce((a,b)=>a+b,0):null;
+    const canonical=value=>JSON.stringify(value,(_,item)=>item&&typeof item==='object'&&!Array.isArray(item)?Object.fromEntries(Object.entries(item).sort(([a],[b])=>a.localeCompare(b))):item);
+    const cases=report.cases||[],memories=[...(report.previous_ingestions||[]),...(report.memories||[])];
+    const modules=[...new Set([...cases,...(report.question_manifest||[])].map(c=>String(c.module??'unknown')))];
+    const groups=modules.map(module=>{
+        const builds=[],seen=new Map();let conflicting=false;
+        for(const memory of memories){
+            if(String(memory.module??'unknown')!==module)continue;
+            const ingestion=memory.ingestion||{},id=ingestion.ingestion_id;
+            if(id!=null&&seen.has(id)){if(canonical(seen.get(id))!==canonical(ingestion))conflicting=true;continue;}
+            if(id!=null)seen.set(id,ingestion);builds.push(ingestion);
+        }
+        const diagnostics=cases.filter(c=>String(c.module??'unknown')===module).map(c=>c.diagnostics||{});
+        const memory=conflicting?null:complete(builds.map(d=>recordedPhaseTokens(d,'memory')));
+        const answer=complete(diagnostics.map(d=>recordedPhaseTokens(d,'answer'))),judge=complete(diagnostics.map(d=>recordedPhaseTokens(d,'judge')));
+        const ingestion=conflicting?null:complete(builds.map(d=>d.total_seconds));
+        const query=complete(diagnostics.map(d=>'execution_total_seconds' in d?d.execution_total_seconds:d.total_seconds));
+        return {memory,tokens:complete([memory,answer,judge]),ingestion,processing:complete([ingestion,query])};
+    });
+    return {memoryTokens:complete(groups.map(g=>g.memory)),totalTokens:complete(groups.map(g=>g.tokens)),
+        ingestionSeconds:complete(groups.map(g=>g.ingestion)),recordedSeconds:complete(groups.map(g=>g.processing))};
+}
 function benchmarkUsage(report){
     const cases=report.cases||[],finite=v=>typeof v==='number'&&Number.isFinite(v)&&v>=0;
     const values=field=>cases.map(c=>c.diagnostics?.[field]).filter(finite);
     const average=list=>list.length?list.reduce((a,b)=>a+b,0)/list.length:null;
-    const sum=list=>list.length?list.reduce((a,b)=>a+b,0):null;
     const answerTokens=cases.filter(c=>c.prediction!=null).map(c=>c.diagnostics?.answer_tokens).filter(finite);
     const judgeTokens=cases.filter(c=>c.judge!=null).map(c=>c.diagnostics?.judge_tokens).filter(finite);
     const tokenUsage=benchmarkTokenUsage(report);
     const runtimeUsage=benchmarkRuntimeUsage(report);
-    const ingestions=[...(report.previous_ingestions||[]),...(report.memories||[])].map(m=>m.ingestion||{});
-    const memoryTokens=ingestions.map(i=>i.memory_tokens).filter(finite);
-    const ingestionTimes=ingestions.map(i=>i.total_seconds).filter(finite);
-    const tokenValues=[...answerTokens,...judgeTokens,...memoryTokens];
+    const contextUsage=benchmarkContextUsage(report);
+    const lifecycleUsage=benchmarkLifecycleUsage(report);
     const recall=cases.map(c=>c.evidence_recall).filter(finite);
-    return {caseCount:cases.length,meanRuntime:runtimeUsage.mean,runtimeCount:runtimeUsage.questionCount,totalRuntime:runtimeUsage.total,
+    return {caseCount:cases.length,meanContextTokens:contextUsage.mean,contextTokenCount:contextUsage.count,
+        meanRuntime:runtimeUsage.mean,runtimeCount:runtimeUsage.questionCount,totalRuntime:runtimeUsage.total,
         meanAnswerTime:average(values('answer_seconds')),meanJudgeTime:average(values('judge_seconds')),meanRetrievalTime:average(values('retrieval_seconds')),
         meanAnswerTokens:average(answerTokens),answerTokenCount:answerTokens.length,meanJudgeTokens:average(judgeTokens),judgeTokenCount:judgeTokens.length,
-        meanQuestionTokens:tokenUsage.mean,tokenQuestionCount:tokenUsage.questionCount,totalMemoryAnswerTokens:tokenUsage.total,totalTokens:sum(tokenValues),memoryTokens:tokenUsage.memoryTokens,
-        ingestionSeconds:sum(ingestionTimes),recordedSeconds:sum([...values('total_seconds'),...ingestionTimes]),
+        meanQuestionTokens:tokenUsage.mean,tokenQuestionCount:tokenUsage.questionCount,totalMemoryAnswerTokens:tokenUsage.total,
+        totalTokens:lifecycleUsage.totalTokens,memoryTokens:lifecycleUsage.memoryTokens,
+        ingestionSeconds:lifecycleUsage.ingestionSeconds,recordedSeconds:lifecycleUsage.recordedSeconds,
         answerFailures:cases.filter(c=>c.error).length,judgeFailures:cases.filter(c=>c.judge_error).length,
         contextFailures:cases.filter(c=>c.diagnostics?.status==='context_limit_exceeded').length,
         meanEvidenceRecall:average(recall),evidenceCount:recall.length,
@@ -719,7 +757,7 @@ function drawUsageSummary(body){
      ['Reported API tokens',formatCount(usage.totalTokens)],['Memory API tokens',formatCount(usage.memoryTokens)],['Total ingestion time',formatDuration(usage.ingestionSeconds)],
      ['Memory + answering tokens',formatCount(usage.totalMemoryAnswerTokens)],['Total runtime excluding judging',formatDuration(usage.totalRuntime)],
      ['Recorded processing time',formatDuration(usage.recordedSeconds)]].forEach(([k,v])=>addField(grid,k,v));
-    section.append(grid);const note=document.createElement('p');note.className='summary-note';note.textContent='Totals include recorded usage only. Processing time excludes review pauses and unrecorded work.';section.append(note);body.append(section);
+    section.append(grid);const note=document.createElement('p');note.className='summary-note';note.textContent='Reported API tokens and recorded processing time include recorded judging, failed attempts, and resumed work, matching Compare Runs lifecycle totals. Failed requests without reported tokens are ignored. Processing time excludes review pauses and unrecorded work; missing required measurements remain unavailable.';section.append(note);body.append(section);
     const memory=reportDetails('Memory and retrieval');const memoryGrid=document.createElement('div');memoryGrid.className='config-grid';
     addField(memoryGrid,'Evidence recall',usage.meanEvidenceRecall==null?'Unavailable':`${(usage.meanEvidenceRecall*100).toFixed(1)}% (${usage.evidenceCount} questions)`);
     addField(memoryGrid,'Legacy context-byte proxy',usage.meanRetrievedBudget==null?'Unavailable':`${formatCount(usage.meanRetrievedBudget)} (conservative estimate)`);memory.append(memoryGrid);
@@ -732,7 +770,8 @@ function drawBenchmark(){
     const metrics=document.createElement('div');metrics.className='metric-grid headline-metrics';
     metrics.append(metricCard(binary?'Judged accuracy':'LoCoMo score',binary?`${(overall.accuracy*100).toFixed(1)}%`:overall.mean_qa_score,binary?`${overall.correct_count??0} / ${overall.scored_count??0} correct`:`${overall.answer_count??0} answers scored; binary accuracy unavailable`),
         metricCard('Average question runtime',formatDuration(usage.meanRuntime),`Memory preparation + retrieval + answering; excludes judging; ${usage.runtimeCount} questions`),
-        metricCard('Average tokens per question',formatCount(usage.meanQuestionTokens),`Memory + answering; excludes judging; ${usage.tokenQuestionCount} questions`));body.append(metrics);
+        metricCard('Context tokens/question',formatCount(usage.meanContextTokens),`Conversation/memory context only; benchmark tokenizer; ${usage.contextTokenCount} of ${usage.caseCount} recorded`),
+        metricCard('Memory + answering tokens/question',formatCount(usage.meanQuestionTokens),`Provider usage; excludes judging; ${usage.tokenQuestionCount} questions`));body.append(metrics);
     if(overall.selected_count!=null){const operational=document.createElement('div');operational.className='metric-grid headline-metrics';operational.append(metricCard('End-to-end success',`${(overall.end_to_end_success_rate*100).toFixed(1)}%`,`${overall.correct_count} / ${overall.selected_count} selected; ${benchmark.status==='completed'?'final':'provisional'}`),metricCard('Judge completion',`${(overall.completion_rate*100).toFixed(1)}%`,`${overall.judged_count} / ${overall.selected_count} selected`));body.append(operational);const accounting=reportDetails('Selected-question outcomes');for(const [state,count] of Object.entries(overall.failure_counts||{}))addField(accounting,state.replaceAll('_',' '),count);body.append(accounting);}
     const failures=usage.answerFailures+usage.judgeFailures;
     if(failures||(benchmark.errors||[]).length){const notice=reportDetails(`${usage.answerFailures} answer failures, ${usage.judgeFailures} judge failures${usage.contextFailures?`, ${usage.contextFailures} context-limit cases`:''}`);notice.classList.add('failure-notice');

@@ -548,7 +548,10 @@ def benchmark_status(run_id):
         job = jobs.get(run_id)
     if job is None:
         return jsonify(error='Benchmark run is unavailable.'), 404
-    response = jsonify(job.snapshot())
+    snapshot = job.snapshot()
+    if request.args.get('analysis') == '1' and snapshot.get('status') not in ACTIVE:
+        snapshot = enrich_report(snapshot)
+    response = jsonify(snapshot)
     if request.path.endswith('/export'):
         response.headers['Content-Disposition'] = 'attachment; filename="locomo-results.json"'
     return response

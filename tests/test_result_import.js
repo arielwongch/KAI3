@@ -51,7 +51,7 @@ assert.equal(nodes.resumeBenchmark.hidden,true);
 assert.equal(nodes.reviewFile.disabled,true);
 assert.equal(run('runId'),null);
 assert.equal(fixture.cases[0].question_index,undefined); // original unchanged
-assert.equal(nodes.benchmarkResults.children[0].children.length,3);
+assert.equal(nodes.benchmarkResults.children[0].children.length,4);
 const folds=nodes.benchmarkResults.children.filter(n=>n.tag==='details');
 assert.equal(folds.length,6);
 assert.ok(folds.every(n=>!n.open));
@@ -120,7 +120,7 @@ assert.match(nodes.progressTitle.textContent,/Memory ready for review/);
 context.usageFixture={cases:[
  {prediction:'A',judge:{overall:2},diagnostics:{total_seconds:10,answer_seconds:6,judge_seconds:3,retrieval_seconds:1,answer_tokens:100,judge_tokens:20}},
  {prediction:'B',judge:{overall:2},diagnostics:{total_seconds:20,answer_seconds:12,judge_seconds:6,retrieval_seconds:2,answer_tokens:200,judge_tokens:40}},
- {error:'failed',diagnostics:{answer_tokens:0,judge_tokens:0,retrieval_seconds:0,answer_seconds:0}}],memories:[{ingestion:{memory_tokens:30,total_seconds:5}}]};
+ {error:'failed',diagnostics:{answer_tokens:0,judge_tokens:0,total_seconds:0,retrieval_seconds:0,answer_seconds:0}}],memories:[{ingestion:{memory_tokens:30,total_seconds:5}}]};
 assert.equal(run('benchmarkUsage(usageFixture).meanRuntime'),26/3);
 assert.equal(run('benchmarkUsage(usageFixture).meanQuestionTokens'),110);
 assert.equal(run('benchmarkUsage(usageFixture).totalMemoryAnswerTokens'),330);
@@ -130,7 +130,18 @@ assert.equal(run('benchmarkUsage(usageFixture).recordedSeconds'),35);
 assert.equal(run('benchmarkUsage(usageFixture).answerFailures'),1);
 assert.equal(run('benchmarkUsage({cases:[]}).meanRuntime'),null);
 assert.match(text(nodes.benchmarkResults),/Average question runtime/);
-assert.match(text(nodes.benchmarkResults),/Average tokens per question/);
+assert.match(text(nodes.benchmarkResults),/Memory \+ answering tokens\/question/);
+assert.match(text(nodes.benchmarkResults),/Context tokens\/question/);
+context.contextUsage={cases:[{diagnostics:{memory_context_tokens:100,answer_tokens:99999}},{diagnostics:{memory_context_tokens:300}}]};
+assert.equal(run('benchmarkUsage(contextUsage).meanContextTokens'),200);
+context.contextUsage.cases[1].diagnostics={supplied_context:''};
+assert.equal(run('benchmarkUsage(contextUsage).meanContextTokens'),50);
+context.contextUsage.cases[1].diagnostics={};
+assert.equal(run('benchmarkUsage(contextUsage).meanContextTokens'),null);
+context.contextUsage.comparison={version:5,rows:[{overall:{case_count:2,total_context_tokens:800,context_token_count:2}}]};
+assert.equal(run('benchmarkUsage(contextUsage).meanContextTokens'),400,'Use backend offline counts when legacy records lack counts');
+context.contextUsage.comparison={version:5,rows:{}};
+assert.equal(run('benchmarkUsage(contextUsage).meanContextTokens'),null,'Malformed optional comparison metadata cannot break report imports');
 const originalUsage=JSON.stringify(context.usageFixture);
 context.retryUsage=JSON.parse(originalUsage);
 context.retryUsage.previous_ingestions=[{ingestion:{ingestion_id:'retry',memory_tokens:60,preparation_seconds:10}}];
@@ -141,12 +152,32 @@ assert.equal(run('benchmarkUsage(retryUsage).meanQuestionTokens'),410/3);
 assert.equal(run('benchmarkUsage(retryUsage).meanRuntime'),14);
 context.retryUsage.previous_ingestions.push(JSON.parse(JSON.stringify(context.retryUsage.previous_ingestions[0])));
 assert.equal(run('benchmarkUsage(retryUsage).meanQuestionTokens'),410/3,'Duplicate rebuilds count once');
+context.retryUsage.cases[0].diagnostics.provider_requests.unshift({phase:'answer',status:'error',tokens:null});
+context.retryUsage.previous_ingestions[0].ingestion.provider_requests=[{phase:'memory',status:'error',tokens:null},{phase:'memory',status:'completed',tokens:60}];
+assert.equal(run('benchmarkUsage(retryUsage).meanQuestionTokens'),410/3,'Unreported failed requests do not hide the average');
+assert.equal(run("recordedPhaseTokens({provider_requests:[{phase:'memory',status:'error',tokens:5},{phase:'memory',status:'completed',tokens:30}]},'memory')"),35);
+assert.equal(run("recordedPhaseTokens({provider_requests:[{phase:'memory',status:'completed',tokens:null}]},'memory')"),null);
 assert.equal(run('benchmarkUsage(retryUsage).meanRuntime'),14);
 context.retryUsage.cases[1].diagnostics.answer_tokens=null;
 context.retryUsage.cases[1].diagnostics.execution_answer_seconds=null;
 assert.equal(run('benchmarkUsage(retryUsage).meanQuestionTokens'),null);
 assert.equal(run('benchmarkUsage(retryUsage).meanRuntime'),null);
 assert.equal(JSON.stringify(context.usageFixture),originalUsage,'Computing costs preserves the input');
+context.lifecycleFixture={cases:[{module:'vector_store',prediction:'A',judge:null,judge_error:'Invalid judge output',diagnostics:{answer_tokens:100,judge_tokens:20,total_seconds:10,execution_total_seconds:15}}],
+ memories:[{module:'vector_store',ingestion:{ingestion_id:'build-a',memory_tokens:30,total_seconds:5}}]};
+assert.equal(run('benchmarkUsage(lifecycleFixture).totalTokens'),150,'Known tokens from failed judging count even without a parsed judgment');
+assert.equal(run('benchmarkUsage(lifecycleFixture).recordedSeconds'),20,'Prefer cumulative execution time to the earlier question timer');
+context.lifecycleFixture.previous_ingestions=[{module:'vector_store',ingestion:{total_seconds:5,memory_tokens:30,ingestion_id:'build-a'}}];
+assert.equal(run('benchmarkUsage(lifecycleFixture).totalTokens'),150,'Duplicate build identity is counted once, independent of object key order');
+assert.equal(run('benchmarkUsage(lifecycleFixture).ingestionSeconds'),5);
+context.lifecycleFixture.cases.push({module:'vector_store',prediction:null,error:'Answer failed',diagnostics:{answer_llm_calls:2,judge_llm_calls:0,provider_requests:[{phase:'answer',status:'error',tokens:5},{phase:'answer',status:'error',tokens:null}],total_seconds:2,execution_total_seconds:3}});
+assert.equal(run('benchmarkUsage(lifecycleFixture).totalTokens'),155,'Reported tokens from failed answers count; unreported failures are ignored');
+assert.equal(run('benchmarkUsage(lifecycleFixture).recordedSeconds'),23);
+context.lifecycleFixture.cases[1].diagnostics.execution_total_seconds=null;
+assert.equal(run('benchmarkUsage(lifecycleFixture).recordedSeconds'),null,'An explicitly unknown cumulative time is not replaced with a partial total');
+context.lifecycleFixture.previous_ingestions[0].ingestion.total_seconds=6;
+assert.equal(run('benchmarkUsage(lifecycleFixture).totalTokens'),null,'Conflicting duplicate ingestion records follow Compare lifecycle rules');
+assert.equal(run('benchmarkUsage(lifecycleFixture).ingestionSeconds'),null);
 // Exercise the file input handler and malformed JSON recovery.
 (async()=>{
   nodes.resultsFile.files=[{name:'bad.json',text:async()=>'{broken'}];

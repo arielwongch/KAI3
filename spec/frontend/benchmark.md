@@ -58,14 +58,31 @@ in the dialog for retry; the API rechecks execution state before any deletion.
 
 ## Reports and inspection
 
-Average tokens per question is total recorded memory-preparation plus answering
+The report separates **Context tokens/question** from **Memory + answering
+tokens/question**. Context is just the supplied conversation/memory text, excluding
+the question, instructions, and output, counted with the benchmark tokenizer.
+Its average and coverage are independent of provider-token cost. Historical counts
+may be derived from exact saved context with the pinned local tokenizer; missing
+text is not replaced with prompt usage or byte estimates.
+
+Memory + answering tokens/question is total recorded memory-preparation plus answering
 provider tokens divided by recorded question count. Average question runtime is
 total recorded memory preparation, retrieval, and answering time divided by that
-same count. Both exclude judging and include recorded rebuilds/retries. Unknown
+same count. Both exclude judging and include recorded rebuilds/retries. Failed
+requests without reported tokens are ignored; reported usage still counts. Unknown
 required measurements stay unavailable. Shared preparation is not charged once per
 question; it enters the numerator once. The breakdown shows both numerators.
 See [cost definitions](compare_runs.md#metric-meaning-and-coverage) for category
 allocation and legacy timing limits.
+
+The breakdown's Reported API tokens, Memory API tokens, Total ingestion time,
+and Recorded processing time follow the same per-module lifecycle accounting as
+Compare Runs. All recorded answer/judge usage counts even when prediction or
+judge parsing failed. Ingestion IDs are deduplicated, conflicting records or
+missing required measurements remain unavailable, and processing time prefers
+cumulative `execution_total_seconds` over the earlier per-case timer. API and
+processing lifecycle totals include judging; the headline cost/runtime averages
+retain their exclusion of judging.
 
 Reports show configuration/status, accuracy and completion metrics with denominators,
 category summaries, efficiency/storage, failures, human-review status, and an
@@ -108,7 +125,7 @@ The read-only import behavior described above applies to `/benchmark`.
 | `GET /api/benchmarks/dataset` | Read the bundled LoCoMo dataset |
 | `POST /api/benchmarks` | Validate `{dataset, options}` and start one job; return 202/run ID |
 | `GET /api/benchmarks` | List saved runs, resumability, and `deletable` |
-| `GET /api/benchmarks/<run_id>` | Poll full snapshot/status |
+| `GET /api/benchmarks/<run_id>` | Poll full snapshot/status; optional `analysis=1` adds derived metrics for stopped runs |
 | `DELETE /api/benchmarks/<run_id>` | Delete a stopped run and its owned files; 200/deleted run ID |
 | `GET /api/benchmarks/<run_id>/export` | Download saved result JSON |
 | `POST /api/benchmarks/<run_id>/cancel` | Request cooperative cancellation |

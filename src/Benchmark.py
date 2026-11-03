@@ -22,7 +22,7 @@ from SlidingWindow import SlidingWindow
 from RequestPolicy import completion, fatal_provider_error, status_code, cancel_event
 from MemoryContext import build_memory_context, get_benchmark_tokenizer, positive_count, PACKING_POLICY, WINDOW_PACKING_POLICY, TOKENIZER_REVISION
 from AuditProvenance import code_identity, hardware_identity, memory_identity
-from ResultAnalysis import complete_sum, question_phase_seconds
+from ResultAnalysis import complete_sum, question_phase_seconds, context_tokens
 
 BENCHMARK_MODULES = MODULES[:-1] + ['question_only', 'full_context']
 PROTOCOL_VERSION = 'locomo-controlled-v3'
@@ -158,6 +158,10 @@ def direct_answer(module, question, diagnostics, conversation_text=None,
             k = module.buffer.maxlen if isinstance(module, SlidingWindow) else 5
             entries = module.retrieve(query=question, k=k)
             context = '\n\n'.join(e.text for e in entries)
+        if 'memory_context_tokens' not in diagnostics:
+            count = tokenizer.count(context) if tokenizer is not None else context_tokens({'supplied_context': context})
+            if count is not None:
+                diagnostics['memory_context_tokens'] = count
     finally:
         diagnostics['retrieval_seconds'] = time.perf_counter() - started
     diagnostics['retrieval_model_state'] = dict(**model_state,

@@ -21,11 +21,16 @@ class Element {
 const elements = {};
 const get = id => elements[id] ||= new Element('div');
 const clicks=[],requests=[];
+const copies=[];let failClipboard=false;
+class ClipboardItem {
+    constructor(data){this.data=data;this.types=Object.keys(data);}
+    async getType(type){return this.data[type];}
+}
 const documentEvents={},windowEvents={};
 get('comparisonEmpty').append(new Element('span'),new Element('h3'),new Element('p'));
 get('category').value='overall';get('headroom').value='10';
 get('chartX').value='tokens';get('chartY').value='accuracy';get('tableSort').value='name';get('tableOrder').value='asc';
-const overall = {accuracy_percent:80,mean_question_tokens:200,total_question_tokens:null,mean_question_seconds:2,total_question_seconds:null,stored_text_bytes:2048,judged_count:4,selected_count:5,token_count:4,runtime_count:3,case_count:5,storage_count:1,memory_count:1,completion_percent:80};
+const overall = {accuracy_percent:80,mean_context_tokens:400,total_context_tokens:2000,context_token_count:5,mean_question_tokens:200,total_question_tokens:null,mean_question_seconds:2,total_question_seconds:null,stored_text_bytes:2048,judged_count:4,selected_count:5,token_count:4,runtime_count:3,case_count:5,storage_count:1,memory_count:1,completion_percent:80};
 overall.runtime={mean_total_seconds:8,mean_formation_seconds:6,mean_retrieval_seconds:.5,mean_answer_seconds:1.5,total_seconds:null,total_formation_seconds:30,recorded_total_seconds:null,formation_build_count:1,formation_runtime_count:1,unallocated_formation_seconds:0,count:3,record_count:5};
 const temporal = {...overall,accuracy_percent:100,mean_question_tokens:100,mean_question_seconds:null,runtime:{...overall.runtime,mean_total_seconds:null,mean_formation_seconds:null,mean_retrieval_seconds:null,mean_answer_seconds:null,count:0},judged_count:1,selected_count:2,completion_percent:50};
 const report = {comparison:{rows:[{module:'vector_store',overall,categories:{2:temporal}}]}};
@@ -36,6 +41,10 @@ class FormData { constructor(){this.data=new Map();}append(key,value){this.data.
 const resizeObservers=[];
 class ResizeObserver {constructor(callback){this.callback=callback;resizeObservers.push(this);}observe(element){this.element=element;}}
 const context = vm.createContext({ResizeObserver,document:{getElementById:get,createElement:tag=>new Element(tag),createElementNS:(_,tag)=>new Element(tag),createTextNode:text=>text,addEventListener:(name,handler)=>documentEvents[name]=handler},
+    Blob,ClipboardItem,navigator:{clipboard:{
+        writeText:async text=>{if(failClipboard)throw Object.assign(new Error('Denied'),{name:'NotAllowedError'});copies.push({text});},
+        write:async items=>{if(failClipboard)throw Object.assign(new Error('Denied'),{name:'NotAllowedError'});copies.push({items});}
+    }},
     window:{innerWidth:1024,innerHeight:768,addEventListener:(name,handler)=>windowEvents[name]=handler},
     URL:{createObjectURL:()=> 'blob:selected',revokeObjectURL:()=>{}},setTimeout:fn=>fn(),FormData,
     fetch:async (url,options={})=>{requests.push({url,...options});if(url==='/api/results/import'){const response=uploadResponses.shift();assert(response,'Unexpected upload request');if(response.path&&!library.includes(response.path))library.push(response.path);return {ok:!response.error,status:response.error?409:response.replaced?200:201,json:async()=>response};}if(url==='/api/results/rename'){if(failRename)return {ok:false,status:409,json:async()=>({error:'Name already exists'})};const payload=JSON.parse(options.body),path=payload.path.slice(0,payload.path.lastIndexOf('/')+1)+payload.name;library=library.map(name=>name===payload.path?path:name);return {ok:true,json:async()=>({path})};}const failed=(options.method==='DELETE'&&failDelete)||(url.includes('&download=1')&&failDownload)||(url.includes('analysis=1')&&failLoad);return {ok:!failed,blob:async()=>({}),json:async()=>failed?{error:'Test failure'}:url==='/api/results'?{files:library}:{report}};}});
@@ -46,6 +55,7 @@ const evaluate = code => vm.runInContext(code,context);
     assert.equal(get('library').children.length,2);
     assert.equal(get('downloadSelected').disabled,true);
     assert.equal(get('comparisonEmpty').hidden,false);
+    assert.equal(get('accuracyCopy').children[0].children[1].disabled,true,'Empty tables cannot be copied');
     assert.equal(get('library').children[0].children[1].children.length,2,'File cards contain only Rename and Delete');
     assert.equal(get('library').querySelectorAll('a').length,0,'Downloads are available only through Download selected');
     assert.equal(evaluate(`displayName(${JSON.stringify(upload)})`),'Trial (vector_k=10) 測試.json');
@@ -59,6 +69,58 @@ const evaluate = code => vm.runInContext(code,context);
     assert.equal(get('library').children[0].children[0].children[1].attrs['data-loading'],undefined);
     assert.equal(get('downloadSelected').disabled,false);
     assert.equal(get('comparisonEmpty').hidden,true);
+    const accuracyControls=get('accuracyCopy').children[0];
+    const copyFormat=accuracyControls.children[0].children[0],copyButton=accuracyControls.children[1],copyFeedback=accuracyControls.children[2];
+    const mainRows=JSON.parse(evaluate("JSON.stringify(tableCopyRows(el('types')))"));
+    assert.equal(mainRows.length,2);
+    assert.equal(mainRows[1][2],'100%');
+    assert.equal(JSON.stringify(mainRows).includes('judged /'),false,'Secondary accuracy counts are omitted');
+    assert.equal(JSON.stringify(mainRows).includes('Unknown protocol'),false,'Secondary run notes are omitted');
+    await copyButton.onclick();
+    assert.equal(copies.at(-1).text,mainRows.map(row=>row.join('\t')).join('\r\n'));
+    assert.match(copyFeedback.textContent,/Copied spreadsheet/);
+    copyFormat.value='markdown';copyFormat.onchange();await copyButton.onclick();
+    assert.match(copies.at(-1).text,/^\| Run \| Multi-hop/);
+    assert.match(copies.at(-1).text,/\| --- \| ---/);
+    assert.match(copyFeedback.textContent,/Copied Markdown/);
+    copyFormat.value='html';copyFormat.onchange();await copyButton.onclick();
+    const formatted=copies.at(-1).items[0];
+    assert.deepEqual(formatted.types,['text/html','text/plain']);
+    const html=await (await formatted.getType('text/html')).text();
+    assert.match(html,/<thead><tr><th /);
+    assert.equal(html.includes('<small>'),false);
+    assert.equal(await (await formatted.getType('text/plain')).text(),mainRows.map(row=>row.join('\t')).join('\r\n'));
+    assert.match(copyFeedback.textContent,/Copied formatted/);
+    context.ClipboardItem=undefined;await copyButton.onclick();
+    assert.match(copyFeedback.textContent,/formatted copy is unavailable/);
+    context.ClipboardItem=ClipboardItem;
+    failClipboard=true;const previousCopies=copies.length;await copyButton.onclick();failClipboard=false;
+    assert.equal(copies.length,previousCopies);
+    assert.match(copyFeedback.textContent,/Copy blocked by the browser/);
+    assert.equal(copyFeedback.attrs['data-tone'],'error');
+    assert.equal(copyButton.disabled,false);
+    assert.equal(copyButton.attrs['data-loading'],undefined);
+    const originalWriteText=context.navigator.clipboard.writeText;
+    let releaseCopy,writeCalls=0;
+    context.navigator.clipboard.writeText=()=>{writeCalls++;return new Promise(resolve=>releaseCopy=resolve);};
+    copyFormat.value='tsv';const copying=copyButton.onclick();
+    assert.equal(copyButton.disabled,true);assert.equal(copyFormat.disabled,true);
+    assert.equal(copyButton.attrs['data-loading'],'true');
+    await copyButton.onclick();assert.equal(writeCalls,1,'Pending copy blocks duplicate writes');
+    releaseCopy();await copying;
+    assert.equal(copyButton.disabled,false);assert.equal(copyFormat.disabled,false);
+    context.navigator.clipboard.writeText=originalWriteText;
+    assert.equal(get('runtimeBreakdown').querySelectorAll('button').length,1);
+    assert.equal(get('coverage').querySelectorAll('button').length,2);
+    for(const button of [...get('runtimeBreakdown').querySelectorAll('button'),...get('coverage').querySelectorAll('button')]){
+        assert.equal(button.disabled,false);await button.onclick();assert(copies.at(-1).text.includes('\r\n'));
+    }
+    context.specialRows=[['Name','Value'],['A\t"B"\nC|<script>&_','0']];
+    assert.equal(evaluate('tableAsTSV(specialRows)'), 'Name\tValue\r\n"A\t""B""\nC|<script>&_"\t0');
+    assert.equal(evaluate('tableAsMarkdown(specialRows).includes("\\\\|")'),true);
+    assert.equal(evaluate('tableAsMarkdown(specialRows).includes("<script>")'),false);
+    assert.equal(evaluate('tableAsHTML(specialRows).includes("<script>")'),false);
+    assert.equal(evaluate('tableAsHTML(specialRows).includes("&lt;script&gt;&amp;_")'),true);
     await get('downloadSelected').onclick();
     assert.equal(clicks.at(-1).download,'run.json');
     assert(requests.some(r=>r.url.includes('path=run.json&download=1')));
@@ -68,13 +130,15 @@ const evaluate = code => vm.runInContext(code,context);
     const textContent=element=>[element.textContent,...element.children.map(c=>typeof c==='string'?c:textContent(c))].join(' ');
     const chooseAxes=(x,y)=>{get('chartX').value=x;get('chartY').value=y;get('chartX').onchange();assert.equal(get('charts').children.length,1);return get('charts').children[0];};
     let current=get('charts').children[0];
-    assert.match(svg(current).attrs['aria-label'],/X: Tokens per question, axis from 0 to 250 tokens; Y: Judged accuracy, axis from 0 to 100 %/);
+    assert(current.children.includes(get('runLegend')),'The run/color legend is inside the chart card');
+    assert(current.children.indexOf(get('runLegend'))<current.children.indexOf(svg(current)),'Legend is above the plotting area');
+    assert.match(svg(current).attrs['aria-label'],/X: Memory \+ answering tokens\/question, axis from 0 to 250 tokens; Y: Judged accuracy, axis from 0 to 100 %/);
     assert.equal(svg(current).attrs.viewBox,undefined,'Text is not enlarged or shrunk by an SVG viewBox');
     const dots=chart=>svg(chart).querySelectorAll('circle').filter(c=>c.attrs.class==='chart-dot');
     assert.equal(dots(current).length,1);
     point(current).onpointerenter({clientX:1000,clientY:750});
     assert.equal(get('chartTooltip').hidden,false);
-    assert.match(textContent(get('chartTooltip')),/Run 1.*run.json.*vector_store.*X · Tokens per question.*200 tokens.*Y · Judged accuracy.*80 %/);
+    assert.match(textContent(get('chartTooltip')),/Run 1.*run.json.*vector_store.*X · Memory \+ answering tokens\/question.*200 tokens.*Y · Judged accuracy.*80 %/);
     assert.match(textContent(get('chartTooltip')),/Cases with token usage.*4 \/ 5.*Total memory \+ answering tokens.*Unavailable.*Judged \/ selected.*4 \/ 5/);
     assert(Number.parseFloat(get('chartTooltip').style.left)+330<=1012);
     assert(Number.parseFloat(get('chartTooltip').style.top)+280<=756);
@@ -90,10 +154,16 @@ const evaluate = code => vm.runInContext(code,context);
     assert(Number(dots(current)[0].attrs.cx)<originalX,'Changing X changes the horizontal coordinate');
     assert(Number(dots(current)[0].attrs.cy)<originalY,'Changing Y changes the vertical coordinate');
     overall.accuracy_percent=80;
-    for(const x of ['accuracy','tokens','storage','runtime'])for(const y of ['accuracy','tokens','storage','runtime']){
+    for(const x of ['accuracy','context','tokens','storage','runtime'])for(const y of ['accuracy','context','tokens','storage','runtime']){
         current=chooseAxes(x,y);assert.equal(dots(current).length,1);
         point(current).onfocus();assert.equal(get('chartTooltip').hidden,false);
     }
+    current=chooseAxes('context','accuracy');point(current).onfocus();
+    assert.match(textContent(get('chartTooltip')),/Context tokens\/question.*400 tokens.*Cases with context counts.*5 \/ 5.*Total context tokens.*2,000/);
+    assert.match(textContent(get('chartTooltip')),/excludes the question, instructions, generated output/);
+    const savedContext=overall.mean_context_tokens;delete overall.mean_context_tokens;
+    current=chooseAxes('context','accuracy');assert.equal(dots(current).length,0,'Missing context size cannot use provider token cost');
+    overall.mean_context_tokens=savedContext;
     current=chooseAxes('runtime','accuracy');point(current).onfocus();
     assert.match(textContent(get('chartTooltip')),/Runtime per question.*8 s/,'Runtime uses the formation-inclusive value, not legacy mean_question_seconds');
     assert.match(textContent(get('chartTooltip')),/Formation per question.*6 s.*Retrieval per question.*0.5 s.*Answering per question.*1.5 s/);
@@ -273,5 +343,5 @@ const evaluate = code => vm.runInContext(code,context);
     get('tableOrder').value='asc';get('tableOrder').onchange();assert.deepEqual(tableNames(),['Zeta.json','Tied.json','Alpha.json','Missing.json']);
     chooseTable('completion');assert.deepEqual(tableNames(),['Zeta.json','Tied.json','Alpha.json','Missing.json']);
     chooseTable('name');assert.equal(get('tableOrder').value,'asc');assert.deepEqual(tableNames(),['Alpha.json','Missing.json','Tied.json','Zeta.json']);
-    console.log('Comparison UI: configurable scatter plot and independent table sorting, stable identities, filters/zero/missing/ties, selected-only downloads, tooltips, rename, deletion, and duplicates passed.');
+    console.log('Comparison UI: in-chart legend, table copy formats/errors, scatter plot, sorting, stable identities, filters/zero/missing/ties, downloads, tooltips, rename, deletion, and duplicates passed.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

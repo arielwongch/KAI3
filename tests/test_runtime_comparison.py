@@ -53,7 +53,7 @@ class RuntimeAnalysisTests(unittest.TestCase):
         self.assertEqual(row['categories']['4']['runtime']['mean_total_seconds'], 24)
         self.assertEqual(row['categories']['2']['runtime']['mean_formation_seconds'], 30)
         self.assertEqual(row['overall']['mean_question_seconds'], 1000)
-        self.assertEqual(report['comparison']['version'], 3)
+        self.assertEqual(report['comparison']['version'], 5)
         self.assertEqual(source, original)
         self.assertEqual(enrich_report(report), report)
 

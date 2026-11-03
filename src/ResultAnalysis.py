@@ -1,5 +1,6 @@
 """Offline, reproducible comparison metrics. Never invoke a model on import."""
 from copy import deepcopy
+from functools import lru_cache
 import math
 
 
@@ -27,7 +28,8 @@ def phase_tokens(diagnostics, phase):
     if isinstance(requests, list):
         records = [r for r in requests if r.get('phase') == phase]
         if records:
-            return complete_sum(r.get('tokens') for r in records)
+            return complete_sum(0 if r.get('status') == 'error' and r.get('tokens') is None
+                                else r.get('tokens') for r in records)
         return 0 if diagnostics.get(phase + '_llm_calls') == 0 else None
     value = diagnostics.get(phase + '_tokens')
     if value is not None:
@@ -36,6 +38,46 @@ def phase_tokens(diagnostics, phase):
         return 0
     prefix = '' if phase == 'answer' else phase + '_'
     return complete_sum(diagnostics.get(prefix + key) for key in ('prompt_tokens', 'completion_tokens'))
+
+
+@lru_cache(maxsize=1)
+def _context_tokenizer():
+    """Load only the pinned local tokenizer artifact; never download or call a model."""
+    try:
+        from huggingface_hub import try_to_load_from_cache
+        from tokenizers import Tokenizer
+        from MemoryContext import TOKENIZER_REVISION
+        from Embeddings import MODEL_NAME
+        path = try_to_load_from_cache(MODEL_NAME, 'tokenizer.json', revision=TOKENIZER_REVISION)
+    except (ImportError, OSError, ValueError):
+        return None
+    if not isinstance(path, str):
+        return None
+    try:
+        tokenizer = Tokenizer.from_file(path)
+    except Exception:
+        # Native tokenizer parsing errors use the base Exception type.
+        return None
+    # Cached artifacts can enable training-time padding/truncation.
+    tokenizer.no_padding()
+    tokenizer.no_truncation()
+    return tokenizer
+
+
+def _count_context(text):
+    tokenizer = _context_tokenizer()
+    return len(tokenizer.encode(text, add_special_tokens=False).ids) if tokenizer else None
+
+
+def context_tokens(diagnostics):
+    """Count only the actual supplied context, excluding the question and instructions."""
+    if 'memory_context_tokens' in diagnostics:
+        value = diagnostics['memory_context_tokens']
+        return value if type(value) is int and value >= 0 else None
+    text = diagnostics.get('supplied_context')
+    if text == '':
+        return 0
+    return _count_context(text) if isinstance(text, str) else None
 
 
 def question_phase_seconds(diagnostics, phase):
@@ -237,18 +279,34 @@ def enrich_report(value):
     if any(not isinstance(item, dict) for item in manifest):
         raise ValueError('Each manifest item must be an object.')
 
+    contexts_by_case, counts_by_text = {}, {}
+    for case in report['cases']:
+        diagnostics = case.get('diagnostics', {})
+        text = diagnostics.get('supplied_context')
+        if 'memory_context_tokens' not in diagnostics and isinstance(text, str):
+            if text not in counts_by_text:
+                counts_by_text[text] = context_tokens(diagnostics)
+            count = counts_by_text[text]
+        else:
+            count = context_tokens(diagnostics)
+        contexts_by_case[id(case)] = count
+
     def group(cases, selected, runtimes, tokens):
         judged = [c['correct'] for c in cases if type(c.get('correct')) in (bool, int, float) and c['correct'] in (0, 1)]
         token_values = [tokens[id(c)] for c in cases]
         times = [c.get('diagnostics', {}).get('total_seconds') for c in cases]
         known_tokens = [v for v in token_values if v is not None]
         known_times = [v for v in times if number(v)]
+        contexts = [contexts_by_case[id(c)] for c in cases]
+        context_total = complete_sum(contexts)
         return dict(case_count=len(cases), selected_count=selected, judged_count=len(judged),
                     accuracy_percent=100 * sum(judged) / len(judged) if judged else None,
                     completion_percent=100 * len(judged) / selected if selected else None,
                     success_percent=100 * sum(judged) / selected if selected else None,
                     mean_question_tokens=sum(known_tokens)/len(cases) if cases and len(known_tokens) == len(cases) else None,
                     token_count=len(known_tokens), total_question_tokens=complete_sum(token_values),
+                    mean_context_tokens=context_total / len(cases) if number(context_total) and cases else None,
+                    total_context_tokens=context_total, context_token_count=sum(number(v) for v in contexts),
                     mean_question_seconds=sum(known_times)/len(known_times) if known_times else None,
                     runtime_count=len(known_times), total_question_seconds=complete_sum(times),
                     runtime=runtime_group([runtimes[id(c)] for c in cases]))
@@ -290,9 +348,11 @@ def enrich_report(value):
         metrics['memory_count'] = len(memories)
         metrics['lifecycle'] = lifecycle_metrics(report, module, cases)
         rows.append(dict(module=module, overall=metrics, categories=categories))
-    report['comparison'] = dict(version=3, added_fields=added, rows=rows,
+    report['comparison'] = dict(version=5, added_fields=added, rows=rows,
         definitions=dict(accuracy='Correct / judged questions × 100; unavailable labels are excluded.',
-                         tokens='Total memory + answering provider tokens / recorded question count; excludes judging. Shared conversation memory is allocated before category filtering. Includes recorded resumed builds and request attempts; unknown usage remains unavailable.',
+                         tokens='Total memory + answering provider tokens / recorded question count; excludes judging. Shared conversation memory is allocated before category filtering. Includes reported usage across recorded resumed builds and request attempts. Failed requests without reported usage are ignored; missing successful-response usage remains unavailable.',
+                         failed_request_usage='Failed requests with no reported token usage are ignored. Reported usage on failed requests still counts. Missing usage on successful or in-progress requests remains unavailable.',
+                         context_tokens='Supplied conversation/memory context only, excluding question, instructions, outputs, and memory preparation. Fixed benchmark WordPiece tokens, not provider usage. Uses recorded memory_context_tokens, or counts saved supplied_context with the pinned local tokenizer without padding/truncation; missing text or tokenizer remains unavailable.',
                          runtime='Total recorded memory preparation + retrieval + answering time / recorded question count; excludes judging and review pauses. Preparation uses preparation_seconds, falling back to legacy ingestion total_seconds. All recorded builds and cumulative query attempts count, including preparation without recorded questions. Category shares are allocated by conversation before filtering. Missing required totals remain unavailable.',
                          legacy_runtime='mean_question_seconds and total_question_seconds retain recorded question time including judging and excluding formation.',
                          lifecycle='All recorded ingestion builds (including resumed builds) + retained question attempts. Unknown usage stays unavailable; legacy data may omit failed attempts. No amortization.',

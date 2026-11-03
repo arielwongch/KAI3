@@ -55,12 +55,17 @@ answer timers are recorded on errors as well as success. An ingestion-blocked
 case records zero query work when none has occurred and preserves prior query
 timing when a rebuild fails. Unknown legacy timing remains unknown. Existing
 total-time fields retain their original definitions. The derived comparison
-schema is now version 3; the source schema and protocol version are unchanged.
+schema is now version 5; the source schema and protocol version are unchanged.
 The cost update records `ingestion.preparation_seconds`, including module setup,
 alongside the existing ingestion and write timers. Historical reports use their
 recorded ingestion time without estimating missing setup time. Token and runtime
 averages divide full recorded memory-plus-query totals by recorded question count
 and exclude judging.
+Version 4 ignores failed requests without reported tokens in token totals, while
+retaining their original ledger records and any usage actually reported.
+Version 5 adds separate context-only token totals, averages, and coverage. New
+answer diagnostics also record context-only counts for unbounded and baseline
+paths when the tokenizer is available. Recorded bounded counts are preserved.
 See [Compare runtime definitions](../frontend/compare_runs.md#metric-meaning-and-coverage).
 
 ## Write and recovery flow

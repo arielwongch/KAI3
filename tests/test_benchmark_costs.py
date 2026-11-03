@@ -74,6 +74,48 @@ class BenchmarkCostTests(unittest.TestCase):
         source['memories'][0]['ingestion']['preparation_seconds'] = None
         self.assertIsNone(self.row(source)['overall']['runtime']['mean_total_seconds'])
 
+    def test_unreported_failed_retry_usage_is_ignored(self):
+        for phase, aggregate in (('memory', 30), ('answer', 100)):
+            with self.subTest(phase=phase):
+                source = self.fixture()
+                diagnostics = (source['memories'][0]['ingestion'] if phase == 'memory'
+                               else source['cases'][0]['diagnostics'])
+                diagnostics[phase + '_tokens'] = aggregate
+                diagnostics['provider_requests'] = [
+                    dict(phase=phase, attempt=1, status='error', tokens=None),
+                    dict(phase=phase, attempt=2, status='completed', tokens=aggregate)]
+                metrics = self.row(source)['overall']
+                self.assertEqual(metrics['token_usage'][phase + '_tokens'], 30 if phase == 'memory' else 300)
+                self.assertEqual(metrics['total_question_tokens'], 330)
+                self.assertEqual(metrics['mean_question_tokens'], 110)
+
+    def test_unknown_successful_or_inflight_usage_stays_unavailable(self):
+        for status in ('completed', 'started', None):
+            with self.subTest(status=status):
+                source = self.fixture()
+                source['memories'][0]['ingestion']['provider_requests'] = [dict(phase='memory', status=status, tokens=None)]
+                self.assertIsNone(self.row(source)['overall']['mean_question_tokens'])
+
+    def test_reported_tokens_on_failed_requests_still_count(self):
+        source = self.fixture()
+        source['memories'][0]['ingestion']['provider_requests'] = [
+            dict(phase='memory', status='error', tokens=5),
+            dict(phase='memory', status='error', tokens=None),
+            dict(phase='memory', status='completed', tokens=30)]
+        self.assertEqual(self.row(source)['overall']['mean_question_tokens'], 335 / 3)
+        source['memories'][0]['ingestion']['provider_requests'] = [dict(phase='memory', status='error', tokens=None)]
+        self.assertEqual(self.row(source)['overall']['mean_question_tokens'], 100)
+
+    def test_unknown_judging_usage_does_not_affect_memory_answer_average(self):
+        source = self.fixture()
+        source['cases'][0]['diagnostics']['provider_requests'] = [
+            dict(phase='answer', status='completed', tokens=100),
+            dict(phase='judge', status='error', tokens=None),
+            dict(phase='judge', status='completed', tokens=99999)]
+        metrics = self.row(source)['overall']
+        self.assertEqual(metrics['total_question_tokens'], 330)
+        self.assertEqual(metrics['mean_question_tokens'], 110)
+
     def test_preparation_covers_module_initialization_when_recorded(self):
         source = self.fixture()
         source['memories'][0]['ingestion']['preparation_seconds'] = 8
@@ -98,8 +140,11 @@ class BenchmarkCostTests(unittest.TestCase):
         os.environ.setdefault('DEEPSEEK_API_KEY', 'test-only')
         import app
         source = self.fixture()
+        for case, context in zip(source['cases'], (100, 300, 200)):
+            case['diagnostics']['memory_context_tokens'] = context
         source['comparison'] = dict(version=1, rows=[dict(module='vector_store', overall=dict(
-            mean_question_tokens=99999, runtime=dict(mean_total_seconds=99999)))])
+            mean_question_tokens=99999, mean_context_tokens=99999,
+            runtime=dict(mean_total_seconds=99999)))])
         with tempfile.TemporaryDirectory() as directory, patch.object(app, 'RESULT_LIBRARY', Path(directory)):
             path = Path(directory) / 'stale.json'
             path.write_text(json.dumps(source), encoding='utf-8')
@@ -107,16 +152,18 @@ class BenchmarkCostTests(unittest.TestCase):
             client = app.app.test_client()
             preview = client.get('/api/results/file', query_string={'path': 'stale.json', 'analysis': '1'})
             self.assertEqual(preview.status_code, 200)
-            self.assertEqual(preview.json['report']['comparison']['version'], 3)
+            self.assertEqual(preview.json['report']['comparison']['version'], 5)
             self.assertEqual(path.read_bytes(), before, 'Viewing analysis does not silently save')
             response = client.post('/api/results/enrich', json={'path': 'stale.json'})
             self.assertEqual(response.status_code, 200)
             saved = json.loads(path.read_text(encoding='utf-8'))
             self.assertEqual(saved, response.json['report'])
-            self.assertEqual(saved['comparison']['version'], 3)
+            self.assertEqual(saved['comparison']['version'], 5)
             metrics = saved['comparison']['rows'][0]['overall']
             self.assertEqual(metrics['total_question_tokens'], 330)
             self.assertEqual(metrics['mean_question_tokens'], 110)
+            self.assertEqual(metrics['total_context_tokens'], 600)
+            self.assertEqual(metrics['mean_context_tokens'], 200)
             self.assertEqual(metrics['runtime']['total_seconds'], 26)
             self.assertAlmostEqual(metrics['runtime']['mean_total_seconds'], 26 / 3)
             self.assertEqual(saved['cases'], source['cases'])
