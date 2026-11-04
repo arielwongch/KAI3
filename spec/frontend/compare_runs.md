@@ -115,7 +115,7 @@ Numeric inputs must be finite and nonnegative; booleans are not token or size
 counts. Storage derivation requires an entries array whose records all contain
 text strings. Missing correctness labels and timings are not inferred.
 
-The report's derived `comparison` object is recomputed with `version: 5`,
+The report's derived `comparison` object is recomputed with `version: 6`,
 `added_fields` (paths of filled fields, retained across repeated enrichment),
 `definitions`, and `rows`. Each row contains `module`, `overall`, and `categories`
 keyed by category string. Groups expose:
@@ -170,12 +170,46 @@ Both exclude judging. Token totals include memory preparation calls and answerin
 prompt/completion usage, preferring recorded provider request ledgers so retries
 are counted. Retrieved context is already part of the answer prompt and is not
 added again. Local embedding/reranking work has no provider-token usage to infer.
-Failed requests (`status: error`) with no reported tokens are ignored, as requested.
-Reported tokens on failed requests still count; missing usage on successful or
-in-progress requests remains unavailable. This is a reported-usage metric, not an
-estimate of unreported usage. No-memory baselines can establish zero memory
-tokens. Overall `token_usage` exposes the memory, answer, and combined totals,
-mean, coverage, and recorded question denominator.
+Missing usage on any request, including a failed request, makes complete totals
+and their averages unavailable. Reported tokens on failed requests still count.
+`token_usage.known_recorded_tokens` is a separately labelled lower bound, never
+an estimate of the missing usage or currency cost. Coverage includes
+`missing_request_count`, `missing_failed_request_count`, `request_count`,
+`records_without_ledger`, `unknown_record_count`, and `usage_complete`. Missing
+legacy ledgers limit knowledge of unrecorded attempts even when an aggregate is
+available. Conflicting duplicate ingestion measurements invalidate both complete
+and known subtotals instead of arbitrarily choosing a cost.
+
+Overall `token_usage` includes memory, answer, and combined complete totals,
+coverage, and the recorded question denominator. Lifecycle subtotals use the same
+semantics for memory, answering, and judging, with a separate
+`known_recorded_provider_tokens` lower bound. Judging is excluded from headline
+memory-plus-answering totals and included in lifecycle totals. Recorded rebuilds
+and retry history affect campaign totals; per-question construction shares depend
+on the query workload, so these plots do not isolate batching cost.
+
+`stored_text_bytes` remains the sum of current snapshots only. It is accompanied
+by `storage_scope`, `storage_conversation_count`, `expected_conversation_count`,
+and `storage_cohort_complete`. `latest_successful_storage` separately selects the
+latest explicitly successful retained ingestion per selected conversation,
+including previous builds, and exposes measured/expected conversation counts.
+Missing or failed builds are not silently counted as final successful storage.
+This storage excludes embeddings and runtime overhead.
+
+Library analysis supplies the actual source filename. Derived `source_name` and
+`warnings` flag a `windowed_summary_k=N` filename that disagrees with configured
+`window_size`. Configuration governs interpretation. Analysis never renames or
+writes the source file; explicit enrichment remains a separate user action.
+
+The main Benchmark report also renders these qualifiers directly for live runs,
+library imports, and local file imports. Its token breakdown shows separate
+known memory-plus-answering and lifecycle lower bounds, missing failed/all
+request counts, incomplete phase records, legacy phase records without ledgers,
+and deduplicated ingestion-build counts. Conflicting duplicate builds invalidate
+known subtotals. Memory details show current-snapshot and latest-successful
+storage with selected-conversation coverage. Local filename warnings use the
+actual imported filename, without modifying the original imported report or
+requiring network access. Missing ledger history cannot establish zero failures.
 
 **Context tokens/question** is a separate measure of the supplied conversation or
 memory text only. It excludes the question, instructions, generated answer, and

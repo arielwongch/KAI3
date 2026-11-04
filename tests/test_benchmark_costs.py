@@ -74,7 +74,7 @@ class BenchmarkCostTests(unittest.TestCase):
         source['memories'][0]['ingestion']['preparation_seconds'] = None
         self.assertIsNone(self.row(source)['overall']['runtime']['mean_total_seconds'])
 
-    def test_unreported_failed_retry_usage_is_ignored(self):
+    def test_unreported_failed_retry_usage_is_unknown_with_recorded_lower_bound(self):
         for phase, aggregate in (('memory', 30), ('answer', 100)):
             with self.subTest(phase=phase):
                 source = self.fixture()
@@ -85,9 +85,12 @@ class BenchmarkCostTests(unittest.TestCase):
                     dict(phase=phase, attempt=1, status='error', tokens=None),
                     dict(phase=phase, attempt=2, status='completed', tokens=aggregate)]
                 metrics = self.row(source)['overall']
-                self.assertEqual(metrics['token_usage'][phase + '_tokens'], 30 if phase == 'memory' else 300)
-                self.assertEqual(metrics['total_question_tokens'], 330)
-                self.assertEqual(metrics['mean_question_tokens'], 110)
+                self.assertIsNone(metrics['token_usage'][phase + '_tokens'])
+                self.assertIsNone(metrics['total_question_tokens'])
+                self.assertIsNone(metrics['mean_question_tokens'])
+                self.assertEqual(metrics['token_usage']['known_recorded_tokens'], 330)
+                self.assertEqual(metrics['token_usage']['missing_failed_request_count'], 1)
+                self.assertFalse(metrics['token_usage']['usage_complete'])
 
     def test_unknown_successful_or_inflight_usage_stays_unavailable(self):
         for status in ('completed', 'started', None):
@@ -102,9 +105,11 @@ class BenchmarkCostTests(unittest.TestCase):
             dict(phase='memory', status='error', tokens=5),
             dict(phase='memory', status='error', tokens=None),
             dict(phase='memory', status='completed', tokens=30)]
-        self.assertEqual(self.row(source)['overall']['mean_question_tokens'], 335 / 3)
+        self.assertIsNone(self.row(source)['overall']['mean_question_tokens'])
+        self.assertEqual(self.row(source)['overall']['token_usage']['known_recorded_tokens'], 335)
         source['memories'][0]['ingestion']['provider_requests'] = [dict(phase='memory', status='error', tokens=None)]
-        self.assertEqual(self.row(source)['overall']['mean_question_tokens'], 100)
+        self.assertIsNone(self.row(source)['overall']['mean_question_tokens'])
+        self.assertEqual(self.row(source)['overall']['token_usage']['known_recorded_tokens'], 300)
 
     def test_unknown_judging_usage_does_not_affect_memory_answer_average(self):
         source = self.fixture()
@@ -152,13 +157,13 @@ class BenchmarkCostTests(unittest.TestCase):
             client = app.app.test_client()
             preview = client.get('/api/results/file', query_string={'path': 'stale.json', 'analysis': '1'})
             self.assertEqual(preview.status_code, 200)
-            self.assertEqual(preview.json['report']['comparison']['version'], 5)
+            self.assertEqual(preview.json['report']['comparison']['version'], 6)
             self.assertEqual(path.read_bytes(), before, 'Viewing analysis does not silently save')
             response = client.post('/api/results/enrich', json={'path': 'stale.json'})
             self.assertEqual(response.status_code, 200)
             saved = json.loads(path.read_text(encoding='utf-8'))
             self.assertEqual(saved, response.json['report'])
-            self.assertEqual(saved['comparison']['version'], 5)
+            self.assertEqual(saved['comparison']['version'], 6)
             metrics = saved['comparison']['rows'][0]['overall']
             self.assertEqual(metrics['total_question_tokens'], 330)
             self.assertEqual(metrics['mean_question_tokens'], 110)

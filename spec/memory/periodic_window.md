@@ -27,11 +27,37 @@ Current-fact provenance includes the original source entries for that batch.
 Benchmark facts use one extraction call returning an ordered operations result
 for each dialogue ID, including empty results. Apply results chronologically to
 a detached store, validating source IDs, same-speaker targets, current-version
-references, embeddings, and capacity. Later turns can reference sequential
-version IDs allocated by earlier turns. Superseded/corrected/retracted assertions
+references, embeddings, and capacity. Additions and replacements declare unique
+`result_ref` handles such as `new:job`; later turns can reference these handles
+in `id` or `supporting_version_ids`. Python resolves handles to stored numeric
+version IDs, including deduplicated additions. Numeric references must identify
+versions supplied in the starting snapshot; the model never predicts allocated
+IDs. Handles from the current or future turn, duplicate handles, evicted records,
+and repeated resolved targets are rejected. Superseded/corrected/retracted assertions
 remain historical versions as in the existing temporal store. No state commits
 until every turn succeeds. Failure leaves both tiers and pending batch unchanged;
 benchmark ingestion failure blocks QA rather than using incomplete memory.
+
+Versioned batches use a standalone JSON prompt and a compact complete version
+snapshot (ID, assertion, speaker, status, and observation session/timestamp).
+Full source text and provenance remain stored locally. The extraction policy
+`temporal-batch-handles-v1` bounds the base prompt plus serialized payload to
+524,288 UTF-8 bytes and requests at most 16,384 output tokens with JSON output.
+These extraction limits are separate from QA context/output limits and are not
+claims about the provider's context capacity. Exceeding the byte bound fails
+explicitly; facts are never silently truncated.
+
+Malformed or truncated extraction results receive at most one validation repair
+call from the unchanged starting snapshot. Every attempt is counted in memory
+usage. Embedding and transport errors do not trigger validation repair; transport
+retries retain the shared request policy. Failed attempts save private JSON
+artifacts under ignored `instance/memory_failures/`, including the input, raw
+response, prompt identity, provider metadata, and structured validation location.
+Run ingestion diagnostics link artifact IDs without embedding raw text in UI
+errors. Terminal failure preserves both tiers, pending entries, IDs, revisions,
+and eviction counters. Reports include the extraction policy in batch settings;
+resume requires matching settings and prompt identity. `ingestion_outcome`
+distinguishes successful ingestion from completed runs with ingestion errors.
 
 Retrieval returns long-term context followed by chronological recent entries.
 Summary retrieval ignores the query. Fact retrieval uses the shared vector

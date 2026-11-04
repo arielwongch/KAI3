@@ -1,7 +1,9 @@
 # External audit follow-up plan
 
 First recorded and reviewed: 2026-11-02.
-Reviewed and updated: 2026-11-03.
+Reviewed and updated: 2026-11-04.
+The [4 November decision-brief validation](decision_brief_2026-11-04.md) records
+current evidence, cost-uncertainty fixes, and remaining review/experiment gates.
 Status: packing and provenance implemented at `6679238`; offline review tooling
 implemented in the approved follow-up. Human calibration and experiments pending.
 Scope: follow-up to the external decision brief for commit `d52eb6d` and its
@@ -31,21 +33,24 @@ The review priority union contains 35 unique questions before agreement sampling
 Status: implemented at `6679238`; focused regression coverage added 2026-11-03.
 Real-model current/historical answer accuracy remains unverified.
 
-Original problem: long-term candidates could consume the budget before a fitting
-recent correction. `MemoryContext.build_memory_context` now prioritizes recent
-admission independently of candidate/display order.
+Original problem: fitting recent corrections could be crowded out by recall.
+The original recent-first admission policy has since been superseded by
+`window-reserved-recall-summary-fit-v3` in the reviewed commit `bb3c46a`.
+Current behavior for Alpha/Beta/Gamma and periodic window modes:
 
-Implemented policy for Alpha/Beta/Gamma and the two periodic window modes:
-
-- Admit recent whole records newest first, counting headings and separators.
-- Spend the remaining allowance on long-term records in retrieval order.
-- Render selected recent records oldest to newest. Admission order and display
-  order must be separate.
-- Keep stored history intact. Apply correction precedence to current-state
-  questions; make prompt guidance explicitly permit earlier statements when the
-  question asks about a historical state.
-- Record omissions by tier, including recent records too large to fit alone.
-  Do not promise correction retention when the correction itself exceeds budget.
+- Reserve up to half the framed token allowance for long-term recall. Empty or
+  small archives release unused space to recent turns.
+- Admit recent whole records newest first within the remainder. Under tiny
+  budgets, attempt one fitting recent record if neither reservation can fit.
+- Admit recall, then reuse spare space for deferred recent records. Render
+  selected recent records chronologically; shorten detached summaries against
+  full rendered framing.
+- Preserve stored history and distinguish current-state corrections from
+  historical-state questions. A fitting correction is not guaranteed admission
+  merely because it fits the entire budget: it competes within this policy.
+- Record omissions by tier and validate both current/historical behavior in
+  separate model experiments. Offline packing tests establish implementation,
+  not answer-quality gains.
 
 Files: `src/WindowHybridMemory.py`, `src/MemoryContext.py`, relevant prompt code
 in `src/ReAct.py`, benchmark identity/resume code in `src/Benchmark.py`,
@@ -54,7 +59,8 @@ Update the window/periodic memory and context-budget specifications.
 
 Acceptance:
 
-- A fitting latest correction survives competition from long-term records.
+- Reserved recall, recent admission, and tiny-budget fallback match the stated
+  policy; oversized records and correction omissions remain visible.
 - Tight-budget tests cover multiple recent turns, oversized records, empty tiers,
   labels, and chronological rendering without storage mutation.
 - Current-state and historical-state fixtures verify the selected evidence and
@@ -119,8 +125,12 @@ Exports now include:
 
 Files: `src/Benchmark.py`, `src/Diagnostics.py`, `src/ResultAnalysis.py`, relevant
 retrieval code, and results/evaluation specifications. Expose the minimum needed
-in Compare Runs to label current token/runtime figures as query-only and make
-lifecycle scope clear. A monetary estimator is optional; prices and currency must
+in Compare Runs to label headline usage/runtime as formation plus answering
+(excluding judging), and distinguish lifecycle totals including judging. The
+2026-11-04 follow-up preserves unknown failed-request usage, exposes known
+recorded lower bounds and missing-failure counts, flags filename/config mismatch
+without rewriting exports, and distinguishes current snapshot storage from the
+latest retained successful ingestion per conversation. A monetary estimator is optional; prices and currency must
 be dated if introduced.
 
 Acceptance: fixtures verify pool/packed distinctions, total accounting without
@@ -187,7 +197,8 @@ separate from model effectiveness.
 
 ## Sequence and completion
 
-Packing and diagnostic implementation in 1 and 3 is complete; maintain regression
+Packing and diagnostic implementation in 1 and 3, including the 2026-11-04
+usage-uncertainty and artifact-scope correction, is implemented locally; maintain regression
 coverage. Use the prepared tooling in 2 for actual human review.
 Complete human calibration before spending on 4. Run 5 only after confirmation
 provides a reliable reference. These are dependency stages, not calendar promises.

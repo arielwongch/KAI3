@@ -1,5 +1,119 @@
 # Updates
 
+## Align ingestion accounting and release unused initialization resources - 2026-11-04
+
+Headline and lifecycle token accounting now share ingestion deduplication rules
+in Python and the browser. Reused ingestion IDs with conflicting provider
+provenance or conversation ownership leave complete totals and known subtotals
+unavailable; identical builds count once regardless of JSON property order.
+
+Per-chat initialization locks now expire when no request retains them, including
+missing restored chats and failed construction. Temporal batch staging copies
+mutable entries while sharing read-only embedding vectors, preserving rollback
+without repeatedly copying vector arrays. Regression coverage exercises conflict
+handling, lock lifetime, and metadata isolation across failed and successful batches.
+
+Verification: all 247 offline Python tests, 31 frontend state checks, and the
+import/export regression suite passed. JavaScript syntax and whitespace checks
+passed. No provider-backed calls were made.
+
+## Complete report-level usage and storage qualifiers - 2026-11-04
+
+Finished the remaining reporting scope in live and imported Benchmark reports.
+The report now displays known memory-plus-answering and lifecycle token lower
+bounds, missing-request and missing-failure coverage, incomplete/legacy phase
+records, and deduplicated ingestion-build counts. Conflicting builds keep known
+subtotals unavailable. Memory details distinguish current snapshots from latest
+successful retained ingestion storage, including selected-conversation coverage.
+Local imports now flag filename/config mismatches directly without network
+access or source mutation. These qualifiers match the Compare Runs interpretation.
+
+Added regressions for displayed fields, judging scope, duplicate/conflicting
+builds, incomplete storage cohorts, Unicode text bytes, filename changes, and
+preservation of imported data. Provider experiments and human adjudication remain
+outside this reporting-only follow-up.
+
+Verification: 30 frontend state checks, the import/export regression suite and
+its Python wrapper, and comparison UI checks passed. All three saved periodic
+summary exports rendered through the complete import/export path. Fixed optional
+saved-export test isolation so later assertions use their original fixture.
+Whitespace checks passed; original saved result files remain unchanged.
+
+## Validate the 4 November decision brief and qualify comparison costs - 2026-11-04
+
+Reproduced the periodic-summary scores (36, 34, and 35 correct out of 100),
+matched settings, and recorded usage subtotals. Confirmed that the filename
+claiming window 100 actually configures 50, interval 20 records 15 ingestion
+builds and only three current snapshots, and the blinded 84-response template
+has no actual human labels. The vector/reranker refresh changes only derived
+comparison data. Research descriptions were checked against the linked primary
+sources; they do not validate KAI3's configuration.
+
+Comparison schema 6 keeps complete provider-token totals unavailable when any
+required request usage is missing, including failed attempts. Known recorded
+usage is a separate lower bound with missing-failure, request, record, and
+legacy-ledger coverage. Headline memory-plus-answer totals exclude judging;
+lifecycle totals include it. Live/imported report calculations follow the same
+unknown-usage rule. Original request ledgers and saved export bytes are preserved.
+
+Library analysis flags filename/config mismatches without renaming or rewriting
+files. Storage charts identify current-snapshot scope and conversation coverage;
+latest retained successful-ingestion storage is separately available across
+current and previous builds. Updated the audit plan's superseded packing and
+query-only cost descriptions. Actual blinded adjudication remains next, followed
+by the frozen standalone reranker confirmation and independent periodic-factor
+experiments. No human labels or new provider-backed experiments were generated.
+
+Verification: all 242 offline Python tests, 30 workspace frontend checks, and
+the comparison UI checks passed. Whitespace checks passed. Original saved result
+files have no diff.
+See [validation, evidence, and remaining fix plan](plans/decision_brief_2026-11-04.md).
+
+## Repair versioned windowed fact extraction - 2026-11-04
+
+Versioned fact batches now use explicit local result handles resolved by Python,
+including deduplicated assertions, instead of asking the model to predict numeric
+version IDs. A standalone batch prompt defines ordered results and reference
+scope. Extraction sends compact complete fact state while retaining full stored
+provenance; the saved conv-50 version payload shrank by 80.5% in UTF-8 bytes.
+
+Malformed or truncated batches receive one bounded repair from the original
+snapshot. Terminal failures preserve both memory tiers and pending entries.
+Private failure artifacts under ignored `instance/memory_failures/` capture raw
+responses, input, provider metadata, and structured validation locations. Memory
+requests have separate byte/output limits, and repair calls count toward usage.
+Reports identify ingestion failures, including older saved reports; prompt and
+extraction-policy identities prevent incompatible resume.
+
+Validation: the 234-test Python suite passed, followed by 24 final targeted
+memory/recovery tests and 29 frontend state checks. Whitespace checks passed.
+All validation used offline fixtures; no new provider-backed benchmark was launched.
+See [investigation and fix plan](plans/windowed_fact_store_failure.md) and the
+[periodic memory contract](spec/memory/periodic_window.md).
+
+## Refine workspace readability and chat responsiveness - 2026-11-03
+
+Refined the existing Flask frontend with a functional charcoal/lime palette,
+higher-contrast secondary text, a 12px minimum for small labels, and consistent
+4/8px spacing for cards and form groups. Removed decorative section numbering
+from benchmark setup and Compare Runs. Added shared hover/pressed feedback,
+keyboard focus treatment for file/radio containers, reduced-motion handling,
+accessible chat input/group labels, and selected-memory pressed state.
+
+Memory-module construction now uses per-chat initialization locks outside the
+global registry lock. Slow model/tokenizer setup no longer holds up unrelated
+chats or their diagnostics. Concurrent first messages still share one memory
+module. Flask request threading is explicit; benchmark workers and asynchronous
+browser requests retain their existing execution paths.
+
+Verification: all 225 offline tests passed, including two new concurrency
+regressions. All 28 workspace frontend state checks passed. Isolated headless
+Chrome rendered Chat, benchmark setup, and Compare Runs at 1440px and 390px;
+page-level horizontal overflow and visible-text contrast checks passed in those
+views. Screenshots were inspected. These scoped checks do not establish full
+WCAG conformance or cover every report, dialog, and assistive-technology state.
+No live model/API calls were made.
+
 ## Handle damaged tokenizers and reuse report context counts - 2026-11-03
 
 Malformed locally cached tokenizer artifacts now leave context metrics unavailable

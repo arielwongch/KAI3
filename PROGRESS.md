@@ -1,6 +1,6 @@
 # Project progress
 
-Original phase review: 2026-10-08. Latest implementation/status update: 2026-11-03.
+Original phase review: 2026-10-08. Latest implementation/status update: 2026-11-04.
 The original five-item Phase 1 outline is preserved in
 [the development-plan archive](plans/archive/initial_phase.md), first recorded
 on 2026-09-15 in commit `df2e17f`.
@@ -17,6 +17,26 @@ This is an evidence-based status summary, not an assertion that every experiment
 or acceptance criterion is complete. Use the [plan register](plans/README.md) for
 dated milestones, dependencies, remaining work, and unscheduled proposals.
 Current contracts are indexed under [spec/](spec/README.md).
+
+## Decision-brief verification and comparison uncertainty - 2026-11-04
+
+The [decision-brief validation](plans/decision_brief_2026-11-04.md) reproduces
+the periodic-summary exports and distinguishes campaign usage from controlled
+batching effects. Comparison schema 6 preserves missing failed-request usage as
+unknown, exposes known recorded lower bounds and coverage, flags actual
+filename/config mismatches on analysis, and separates current-snapshot storage
+from latest successful-ingestion storage over the selected conversation cohort.
+Original exports remain unchanged. Actual human calibration is still zero;
+standalone confirmation and periodic-factor experiments remain unexecuted.
+The audit follow-up plan now reflects current reserved-recall packing and
+formation-inclusive accounting. These are implementation/evidence updates,
+not new model-effectiveness findings.
+
+The report-level follow-up is complete: live and imported reports display usage
+lower bounds, missing-usage and rebuild coverage, storage cohorts, and local
+filename/config warnings. Thirty frontend checks, import/export and comparison
+tests, and rendering of all three saved periodic-summary exports passed. Source
+exports remain unchanged; documentation is reconciled with the final behavior.
 
 ## Approved audit follow-up - 2026-11-03
 

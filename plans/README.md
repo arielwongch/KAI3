@@ -2,7 +2,8 @@
 
 Original status review: 2026-10-08. Latest Compare/shared-shell/export, local setup,
 recovery, and documentation reconciliation: 2026-11-02. Audit tooling/policy
-verification and confirmation-contract update: 2026-11-03.
+verification and confirmation-contract update: 2026-11-03. Decision-brief
+validation and usage-uncertainty/artifact-scope correction: 2026-11-04.
 Current behavior is documented under
 [spec/](../spec/README.md). This directory owns implementation sequences,
 outstanding work, dependencies, and dated history.
@@ -22,6 +23,7 @@ a tagged release, deployment, or fresh application test run.
 | [Controlled comparison](controlled_comparison.md) | 2026-10-06 (`c84cb77`) | Protocol implemented; completion of a matched study not established | Choose matched configuration, validate, then run study; unscheduled |
 | [External audit follow-up](audit_followup.md) | 2026-11-02 | Packing/provenance implemented at `6679238`; offline review tooling added 2026-11-03 | Actual human calibration, then frozen standalone reranker confirmation; unscheduled |
 | [Reranker confirmation contract](reranker_confirmation.md) | 2026-11-03 | Prepared; not frozen or executed | Seal cohort, power/analysis and frozen states after calibration; provider execution separately authorized |
+| [4 November decision-brief validation](decision_brief_2026-11-04.md) | 2026-11-04 | Experiment claims reproduced; usage uncertainty, artifact identity, and storage scope corrected locally | Actual blinded adjudication, then frozen standalone confirmation; periodic factor isolation afterward |
 | [Documentation review](documentation_review.md) | 2026-11-02 (`8035e9b`) | Complete inventory and post-commit recheck; affected docs reconciled, archives preserved | Keep in sync with future feature changes |
 
 No new feature implementation or benchmark execution is scheduled by this

@@ -52,7 +52,10 @@ def completion(api_client, diagnostics=None, phase='answer', **kwargs):
                     completion_tokens=getattr(usage, 'completion_tokens', None))
                 return response
             except Exception as error:
-                request.update(status='error', status_code=status_code(error))
+                request.update(status='error', status_code=status_code(error),
+                    exception_type=type(error).__name__, error=str(error),
+                    cause_type=type(error.__cause__).__name__ if error.__cause__ else None,
+                    cause=str(error.__cause__) if error.__cause__ else None)
                 retryable = status_code(error) in (408, 429, 500, 502, 503, 504) or isinstance(error, (APIConnectionError, APITimeoutError))
                 if not retryable or attempt == 4:
                     raise

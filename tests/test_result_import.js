@@ -154,7 +154,7 @@ context.retryUsage.previous_ingestions.push(JSON.parse(JSON.stringify(context.re
 assert.equal(run('benchmarkUsage(retryUsage).meanQuestionTokens'),410/3,'Duplicate rebuilds count once');
 context.retryUsage.cases[0].diagnostics.provider_requests.unshift({phase:'answer',status:'error',tokens:null});
 context.retryUsage.previous_ingestions[0].ingestion.provider_requests=[{phase:'memory',status:'error',tokens:null},{phase:'memory',status:'completed',tokens:60}];
-assert.equal(run('benchmarkUsage(retryUsage).meanQuestionTokens'),410/3,'Unreported failed requests do not hide the average');
+assert.equal(run('benchmarkUsage(retryUsage).meanQuestionTokens'),null,'Unreported failed requests make the complete average unknown');
 assert.equal(run("recordedPhaseTokens({provider_requests:[{phase:'memory',status:'error',tokens:5},{phase:'memory',status:'completed',tokens:30}]},'memory')"),35);
 assert.equal(run("recordedPhaseTokens({provider_requests:[{phase:'memory',status:'completed',tokens:null}]},'memory')"),null);
 assert.equal(run('benchmarkUsage(retryUsage).meanRuntime'),14);
@@ -171,13 +171,46 @@ context.lifecycleFixture.previous_ingestions=[{module:'vector_store',ingestion:{
 assert.equal(run('benchmarkUsage(lifecycleFixture).totalTokens'),150,'Duplicate build identity is counted once, independent of object key order');
 assert.equal(run('benchmarkUsage(lifecycleFixture).ingestionSeconds'),5);
 context.lifecycleFixture.cases.push({module:'vector_store',prediction:null,error:'Answer failed',diagnostics:{answer_llm_calls:2,judge_llm_calls:0,provider_requests:[{phase:'answer',status:'error',tokens:5},{phase:'answer',status:'error',tokens:null}],total_seconds:2,execution_total_seconds:3}});
-assert.equal(run('benchmarkUsage(lifecycleFixture).totalTokens'),155,'Reported tokens from failed answers count; unreported failures are ignored');
+assert.equal(run('benchmarkUsage(lifecycleFixture).totalTokens'),null,'Missing failed usage makes the complete lifecycle total unknown');
 assert.equal(run('benchmarkUsage(lifecycleFixture).recordedSeconds'),23);
+assert.equal(run('benchmarkUsage(lifecycleFixture).knownMemoryAnswerTokens'),135,'Headline lower bound excludes judging');
+assert.equal(run('benchmarkUsage(lifecycleFixture).knownTotalTokens'),155,'Lifecycle lower bound retains reported failed usage');
+assert.equal(run('benchmarkUsage(lifecycleFixture).missingFailedRequests'),1);
+assert.equal(run('benchmarkUsage(lifecycleFixture).missingMemoryAnswerFailedRequests'),1);
+assert.equal(run('benchmarkUsage(lifecycleFixture).missingRequests'),1);
+assert.equal(run('benchmarkUsage(lifecycleFixture).buildCount'),1,'Duplicate ingestion builds count once');
+
 context.lifecycleFixture.cases[1].diagnostics.execution_total_seconds=null;
 assert.equal(run('benchmarkUsage(lifecycleFixture).recordedSeconds'),null,'An explicitly unknown cumulative time is not replaced with a partial total');
 context.lifecycleFixture.previous_ingestions[0].ingestion.total_seconds=6;
 assert.equal(run('benchmarkUsage(lifecycleFixture).totalTokens'),null,'Conflicting duplicate ingestion records follow Compare lifecycle rules');
 assert.equal(run('benchmarkUsage(lifecycleFixture).ingestionSeconds'),null);
+assert.equal(run('benchmarkUsage(lifecycleFixture).knownTotalTokens'),null,'Conflicting ingestion data invalidates lower bounds');
+const storageFixture={cases:[{module:'vector_store',sample_id:'a'},{module:'vector_store',sample_id:'b'}],
+ memories:[{module:'vector_store',sample_id:'a',error:null,ingestion:{final_storage:{stored_text_bytes:6}},memory:{entries:[{text:'\u4f60\u597d'}]}}],
+ previous_ingestions:[{module:'vector_store',sample_id:'b',error:null,ingestion:{final_storage:{stored_text_bytes:12}}}]};
+context.storageFixture=storageFixture;
+assert.equal(run('benchmarkStorageUsage(storageFixture).currentBytes'),6);
+assert.equal(run('benchmarkStorageUsage(storageFixture).currentConversations'),1);
+assert.equal(run('benchmarkStorageUsage(storageFixture).expectedConversations'),2);
+assert.equal(run('benchmarkStorageUsage(storageFixture).successfulBytes'),18);
+assert.equal(run('benchmarkStorageUsage(storageFixture).successfulConversations'),2);
+storageFixture.previous_ingestions[0].error='ingestion failed';
+assert.equal(run('benchmarkStorageUsage(storageFixture).successfulBytes'),null,'Failed builds cannot complete the successful storage cohort');
+storageFixture.memories[0].ingestion.final_storage={};
+assert.equal(run('benchmarkStorageUsage(storageFixture).currentBytes'),6,'Current text fallback counts UTF-8 bytes');
+const warningFixture=JSON.parse(JSON.stringify(fixture));warningFixture.config.window_size=50;
+context.warningFixture=warningFixture;
+const warningOriginal=JSON.stringify(warningFixture);
+run("showImportedBenchmark(warningFixture,'windowed_summary_k=100.json')");
+assert.match(text(nodes.benchmarkResults),/Filename window 100 differs from configured window 50/);
+assert.match(text(nodes.benchmarkResults),/Known memory \+ answering tokens \(lower bound\)/);
+assert.match(text(nodes.benchmarkResults),/Failed requests missing usage \(includes judging\)/);
+assert.match(text(nodes.benchmarkResults),/Current snapshot conversation coverage/);
+assert.equal(JSON.stringify(warningFixture),warningOriginal,'Rendering warnings and usage preserves the imported source');
+run("showImportedBenchmark(warningFixture,'windowed_summary_k=50.json')");
+assert.doesNotMatch(text(nodes.benchmarkResults),/Filename window 100 differs/,'Warnings follow the actual current filename');
+
 // Exercise the file input handler and malformed JSON recovery.
 (async()=>{
   nodes.resultsFile.files=[{name:'bad.json',text:async()=>'{broken'}];
@@ -190,11 +223,16 @@ assert.equal(run('benchmarkUsage(lifecycleFixture).ingestionSeconds'),null);
   assert.equal(requests,0);
   if(process.argv[2]){
     context.actual=JSON.parse(fs.readFileSync(process.argv[2],'utf8').replace(/^\uFEFF/,''));
-    run("showImportedBenchmark(actual,'no_mem_locomo.json')");
+    context.actualFilename=require('node:path').basename(process.argv[2]);
+    const originalActual=JSON.stringify(context.actual);
+    run('showImportedBenchmark(actual,actualFilename)');
     assert.equal(run('benchmark.cases.length'),100);
     assert.match(text(nodes.benchmarkResults),/Scores by category/);
+    assert.match(text(nodes.benchmarkResults),/Known memory \+ answering tokens \(lower bound\)/);
+    assert.equal(JSON.stringify(context.actual),originalActual,'Actual saved report rendering preserves source data');
     assert.equal(requests,0);
     console.log('Actual 100-question export rendered successfully.');
+    run("showImportedBenchmark(fixture,'legacy.json')");
   }
   const exports=[],responses=[];
   context.fetch=async (url,options={})=>{

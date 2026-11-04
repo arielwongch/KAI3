@@ -435,3 +435,39 @@ test('memory availability checks show a spinner and clean up after failure',asyn
     assert.equal(run("$('moduleStatus').getAttribute('data-loading')"),null);
     assert.equal(run("$('inspectionStatus').getAttribute('data-loading')"),null);
 });
+
+
+test('completed reports distinguish failed ingestion including older saved runs',async()=>{
+    const {run}=await harness({},'/benchmark');
+    assert.equal(run("benchmarkStatusLabel({status:'completed',ingestion_outcome:{failed_conversations:2}})"),'Completed with ingestion errors');
+    assert.equal(run("ingestionFailureCount({memories:[{module:'windowed_fact_store',sample_id:'conv-1',error:'bad batch'},{module:'windowed_fact_store',sample_id:'conv-1',error:'bad batch'}]})"),1);
+    assert.equal(run("benchmarkStatusLabel({status:'completed',memories:[]})"),'completed');
+});
+
+
+test('live report does not turn unknown failed request usage into zero',async()=>{
+    const {run}=await harness({},'/benchmark');
+    assert.equal(run("recordedPhaseTokens({provider_requests:[{phase:'memory',status:'error',tokens:null},{phase:'memory',status:'completed',tokens:30}]},'memory')"),null);
+    assert.equal(run("recordedPhaseTokens({provider_requests:[{phase:'memory',status:'error',tokens:5},{phase:'memory',status:'completed',tokens:30}]},'memory')"),35);
+});
+
+test('headline and lifecycle usage agree on duplicate ingestion provenance and ownership',async()=>{
+    const {run}=await harness({},'/benchmark');
+    run(`let accountingReport={config:{modules:['windowed_summarization']},
+        cases:[{module:'windowed_summarization',sample_id:'a',diagnostics:{answer_tokens:10,judge_tokens:5}}],
+        memories:[{module:'windowed_summarization',sample_id:'a',ingestion:{ingestion_id:'one',
+            provider_requests:[{phase:'memory',status:'completed',tokens:20,response_id:'first'}]}}]};
+        accountingReport.previous_ingestions=JSON.parse(JSON.stringify(accountingReport.memories));`);
+    assert.equal(run('benchmarkTokenUsage(accountingReport).total'),30);
+    assert.equal(run('benchmarkLifecycleUsage(accountingReport).totalTokens'),35);
+    assert.equal(run('benchmarkLifecycleUsage(accountingReport).buildCount'),1);
+    // Property order is irrelevant to duplicate identity.
+    run("accountingReport.previous_ingestions[0].ingestion={provider_requests:accountingReport.previous_ingestions[0].ingestion.provider_requests,ingestion_id:'one'}");
+    assert.equal(run('benchmarkTokenUsage(accountingReport).total'),30);
+    run("accountingReport.previous_ingestions[0].ingestion.provider_requests[0].response_id='other'");
+    assert.equal(run('benchmarkTokenUsage(accountingReport).total'),null);
+    assert.equal(run('benchmarkLifecycleUsage(accountingReport).knownMemoryAnswerTokens'),null);
+    run("accountingReport.previous_ingestions[0].ingestion.provider_requests[0].response_id='first';accountingReport.previous_ingestions[0].sample_id='b'");
+    assert.equal(run('benchmarkTokenUsage(accountingReport).total'),null);
+    assert.equal(run('benchmarkLifecycleUsage(accountingReport).knownTotalTokens'),null);
+});

@@ -34,6 +34,11 @@ def setUpModule():
 
 
 def batch_response(*results):
+    results = deepcopy(results)
+    for source, ops in results:
+        for index, op in enumerate(ops):
+            if op['op'] in ('add', 'supersede', 'correct'):
+                op.setdefault('result_ref', f'new:{source.replace(":", "_")}_{index}')
     return json.dumps({'turns': [dict(dialogue_id=source, operations=ops)
                                for source, ops in results]}), 0, 7
 
@@ -114,9 +119,9 @@ class TemporalBatchTests(unittest.TestCase):
     def test_one_extraction_retains_ordered_changes_speakers_and_source_observations(self):
         extractor = Mock(return_value=batch_response(
             ('D1', [add('Bob works at Google.', 'D1')]),
-            ('D2', [dict(op='supersede', id='version-1', text='Bob works at Microsoft.',
+            ('D2', [dict(op='supersede', id='new:D1_0', text='Bob works at Microsoft.',
                          source_ids=['D2'], supporting_version_ids=[])]),
-            ('D3', [dict(op='retract', id='version-2', source_ids=['D3'])]),
+            ('D3', [dict(op='retract', id='new:D2_0', source_ids=['D3'])]),
             ('D4', [add('Alice works at Google.', 'D4')]),
         ))
         store = TemporalFactStore(FakeEmbeddings(), extractor)
@@ -138,7 +143,7 @@ class TemporalBatchTests(unittest.TestCase):
 
     def test_invalid_later_turn_rejects_whole_batch(self):
         for second in (
-            dict(op='retract', id='version-1', source_ids=['wrong-source']),
+            dict(op='retract', id='new:D1_0', source_ids=['wrong-source']),
             dict(op='retract', id='version-999', source_ids=['D2']),
         ):
             extractor = Mock(return_value=batch_response(('D1', [add('cat', 'D1')]), ('D2', [second])))
@@ -152,7 +157,7 @@ class TemporalBatchTests(unittest.TestCase):
     def test_batch_cannot_change_other_speakers_version(self):
         store = TemporalFactStore(FakeEmbeddings(), Mock(return_value=batch_response(
             ('D1', [add('cat', 'D1')]),
-            ('D2', [dict(op='retract', id='version-1', source_ids=['D2'])]))))
+            ('D2', [dict(op='retract', id='new:D1_0', source_ids=['D2'])]))))
         with self.assertRaises(ValueError):
             store.write_batch([turn('cat', 'D1'), turn('withdrawn', 'D2', speaker='Alice')])
         self.assertEqual(store.inspect()['entries'], [])
@@ -214,6 +219,7 @@ class PeriodicIntegrationTests(unittest.TestCase):
                 job.run()
             report = job.snapshot()
             self.assertEqual(report['status'], 'completed')
+            self.assertEqual(report['ingestion_outcome']['status'], 'successful')
             self.assertEqual(report['cases'][0]['correct'], 1)
             memory = report['memories'][0]
             self.assertEqual(memory['ingestion']['memory_llm_calls'], 2)
@@ -222,6 +228,10 @@ class PeriodicIntegrationTests(unittest.TestCase):
             self.assertEqual(len([e for e in memory['memory']['entries'] if e['metadata']['memory_tier'] == 'recent']), 4)
             if mode == 'windowed_fact_store':
                 self.assertEqual([len(json.loads(c.args[1])['turns']) for c in facts.call_args_list], [4, 2])
+                legacy = deepcopy(report)
+                legacy['memory_batch_settings'].pop('extraction')
+                with self.assertRaisesRegex(ValueError, 'memory_batch_settings'):
+                    Benchmark.BenchmarkJob.resume(dataset(), legacy)
             else:
                 self.assertIn('D2:0', summary.call_args_list[0].args[1])
                 self.assertNotIn('D2:1', summary.call_args_list[0].args[1])

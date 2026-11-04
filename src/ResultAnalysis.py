@@ -2,6 +2,7 @@
 from copy import deepcopy
 from functools import lru_cache
 import math
+import re
 
 
 def number(value):
@@ -28,8 +29,7 @@ def phase_tokens(diagnostics, phase):
     if isinstance(requests, list):
         records = [r for r in requests if r.get('phase') == phase]
         if records:
-            return complete_sum(0 if r.get('status') == 'error' and r.get('tokens') is None
-                                else r.get('tokens') for r in records)
+            return complete_sum(r.get('tokens') for r in records)
         return 0 if diagnostics.get(phase + '_llm_calls') == 0 else None
     value = diagnostics.get(phase + '_tokens')
     if value is not None:
@@ -38,6 +38,31 @@ def phase_tokens(diagnostics, phase):
         return 0
     prefix = '' if phase == 'answer' else phase + '_'
     return complete_sum(diagnostics.get(prefix + key) for key in ('prompt_tokens', 'completion_tokens'))
+
+
+def phase_usage(diagnostics, phase):
+    """Separate complete totals from known recorded usage; unknown is never zero."""
+    total = phase_tokens(diagnostics, phase)
+    requests = diagnostics.get('provider_requests')
+    records = [r for r in requests if r.get('phase') == phase] if isinstance(requests, list) else []
+    missing = [r for r in records if not number(r.get('tokens'))]
+    return dict(tokens=total,
+        known_recorded_tokens=sum(r['tokens'] for r in records if number(r.get('tokens'))) if records else (total if number(total) else 0),
+        missing_request_count=len(missing),
+        missing_failed_request_count=sum(r.get('status') == 'error' for r in missing),
+        request_count=len(records),
+        records_without_ledger=int(not isinstance(requests, list)),
+        unknown_record_count=int(not number(total)))
+
+
+def usage_coverage(usages):
+    usages = list(usages)
+    result = {key: sum(u[key] for u in usages) for key in (
+        'known_recorded_tokens', 'missing_request_count', 'missing_failed_request_count',
+        'request_count', 'records_without_ledger', 'unknown_record_count')}
+    result['usage_complete'] = bool(usages) and not result['unknown_record_count']
+    result['semantics'] = 'known recorded usage; lower bound, not monetary cost'
+    return result
 
 
 @lru_cache(maxsize=1)
@@ -85,8 +110,8 @@ def question_phase_seconds(diagnostics, phase):
     return diagnostics.get('execution_' + phase + '_seconds', diagnostics.get(phase + '_seconds'))
 
 
-def token_records(report, module, cases):
-    """Memory + answering cost; allocate shared memory before category filtering."""
+def ingestion_builds(report, module):
+    """Deduplicate builds by ID, rejecting conflicting provenance or ownership."""
     builds, seen, conflicts = [], {}, set()
     for memory in [*report.get('previous_ingestions', []), *report.get('memories', [])]:
         if str(memory.get('module', 'unknown')) != module:
@@ -94,7 +119,7 @@ def token_records(report, module, cases):
         ingestion = memory.get('ingestion', {})
         identity = ingestion.get('ingestion_id')
         sample = str(memory['sample_id']) if memory.get('sample_id') is not None else None
-        value = (sample, phase_tokens(ingestion, 'memory'))
+        value = (sample, ingestion)
         if identity is not None and identity in seen:
             if seen[identity] != value:
                 conflicts.update((sample, seen[identity][0]))
@@ -102,6 +127,14 @@ def token_records(report, module, cases):
         if identity is not None:
             seen[identity] = value
         builds.append(value)
+    return builds, conflicts
+
+
+def token_records(report, module, cases):
+    """Memory + answering cost; allocate shared memory before category filtering."""
+    retained, conflicts = ingestion_builds(report, module)
+    build_usage = [phase_usage(d, 'memory') for _, d in retained]
+    builds = [(sample, usage['tokens']) for (sample, _), usage in zip(retained, build_usage)]
     memory_totals, counts = {}, {}
     for sample, tokens in builds:
         memory_totals.setdefault(sample, []).append(tokens)
@@ -125,9 +158,15 @@ def token_records(report, module, cases):
         memory = None
     answer = complete_sum(answers)
     total = complete_sum([memory, answer])
+    coverage = usage_coverage([*build_usage,
+        *(phase_usage(c.get('diagnostics', {}), 'answer') for c in cases)])
+    coverage['usage_complete'] = number(total)
+    if conflicts:
+        coverage.update(known_recorded_tokens=None, usage_complete=False)
     return records, dict(memory_tokens=memory, answer_tokens=answer, total_tokens=total,
+                         **coverage,
                          mean_tokens=total / len(cases) if number(total) and cases else None,
-                         count=sum(number(value) for value in answers) if number(memory) else 0,
+                         count=sum(number(value) for value in records.values()),
                          question_count=len(cases), conflicting_ingestion_ids=bool(conflicts))
 
 
@@ -189,34 +228,29 @@ def runtime_group(records):
 
 def lifecycle_metrics(report, module, cases):
     """Recorded run cost, including previous ingestion attempts exactly once."""
-    builds, seen, conflicting = [], {}, False
-    for memory in [*report.get('previous_ingestions', []), *report.get('memories', [])]:
-        if str(memory.get('module', 'unknown')) != module:
-            continue
-        ingestion = memory.get('ingestion', {})
-        identity = ingestion.get('ingestion_id')
-        if identity is not None and identity in seen:
-            conflicting |= seen[identity] != ingestion
-            continue
-        if identity is not None:
-            seen[identity] = ingestion
-        builds.append(ingestion)
+    retained, conflicts = ingestion_builds(report, module)
+    builds = [ingestion for _, ingestion in retained]
+    conflicting = bool(conflicts)
     ds = [c.get('diagnostics', {}) for c in cases]
     phases = {}
     for phase, diagnostics in (('memory', builds), ('answer', ds), ('judge', ds)):
         values = [phase_tokens(d, phase) for d in diagnostics]
-        phases[phase] = dict(tokens=complete_sum(values), known_count=sum(number(v) for v in values),
+        phases[phase] = dict(tokens=complete_sum(values),
+                             **usage_coverage(phase_usage(d, phase) for d in diagnostics),
+                             known_count=sum(number(v) for v in values),
                              record_count=len(values))
     ingestion_time = complete_sum(d.get('total_seconds') for d in builds)
     query_times = [d.get('execution_total_seconds', d.get('total_seconds')) for d in ds]
     query_time = complete_sum(query_times)
     if conflicting:
-        phases['memory']['tokens'] = None
+        phases['memory'].update(tokens=None, known_recorded_tokens=None, usage_complete=False)
         ingestion_time = None
     retrieval = [d.get('retrieval_seconds') for d in ds]
     return dict(scope='all recorded ingestion builds and retained question attempts; no amortization',
         ingestion=phases['memory'], answer=phases['answer'], judge=phases['judge'],
         total_provider_tokens=complete_sum(phases[p]['tokens'] for p in ('memory', 'answer', 'judge')),
+        known_recorded_provider_tokens=complete_sum(phases[p]['known_recorded_tokens'] for p in ('memory', 'answer', 'judge')),
+        missing_failed_request_count=sum(phases[p]['missing_failed_request_count'] for p in ('memory', 'answer', 'judge')),
         ingestion_seconds=ingestion_time, query_seconds=query_time,
         total_seconds=complete_sum([ingestion_time, query_time]),
         ingestion_runtime_count=sum(number(d.get('total_seconds')) for d in builds),
@@ -230,7 +264,7 @@ def lifecycle_metrics(report, module, cases):
                        scope='recorded retrieval and packing; consult per-case cache state'))
 
 
-def enrich_report(value):
+def enrich_report(value, source_name=None):
     if not isinstance(value, dict) or not isinstance(value.get('cases'), list):
         raise ValueError('Upload a benchmark results object containing a cases array.')
     report = deepcopy(value)
@@ -346,15 +380,40 @@ def enrich_report(value):
         metrics['stored_text_bytes'] = complete_sum(sizes)
         metrics['storage_count'] = sum(number(v) for v in sizes)
         metrics['memory_count'] = len(memories)
+        expected_samples = {str(c['sample_id']) for c in [*cases, *selected] if c.get('sample_id') is not None}
+        current_samples = {str(m['sample_id']) for m in memories if m.get('sample_id') is not None}
+        metrics['storage_scope'] = 'current snapshots only; not all builds or guaranteed all conversations'
+        metrics['storage_conversation_count'] = len(current_samples & expected_samples)
+        metrics['expected_conversation_count'] = len(expected_samples)
+        metrics['storage_cohort_complete'] = bool(expected_samples) and expected_samples <= current_samples and all(number(v) for v in sizes)
+        latest = {}
+        for memory in [*report.get('previous_ingestions', []), *memories]:
+            if (str(memory.get('module', 'unknown')) == module and 'error' in memory
+                    and memory['error'] is None and memory.get('sample_id') is not None):
+                latest[str(memory['sample_id'])] = memory.get('ingestion', {}).get('final_storage', {}).get('stored_text_bytes')
+        measured = [latest.get(sample) for sample in expected_samples]
+        metrics['latest_successful_storage'] = dict(
+            scope='latest recorded successful ingestion per selected conversation; may use previous builds',
+            stored_text_bytes=complete_sum(measured),
+            conversation_count=sum(number(v) for v in measured), expected_conversation_count=len(expected_samples))
         metrics['lifecycle'] = lifecycle_metrics(report, module, cases)
         rows.append(dict(module=module, overall=metrics, categories=categories))
-    report['comparison'] = dict(version=5, added_fields=added, rows=rows,
+    artifact_name = source_name if source_name is not None else (previous.get('source_name') if isinstance(previous, dict) else None)
+    warnings = []
+    artifact_name = artifact_name if isinstance(artifact_name, str) else None
+    match = re.search(r'windowed_summary_k=(\d+)', artifact_name or '', re.IGNORECASE)
+    actual_window = (report.get('config') or {}).get('window_size') if isinstance(report.get('config'), dict) else None
+    if match and type(actual_window) is int and int(match.group(1)) != actual_window:
+        warnings.append(dict(code='filename_config_mismatch', filename_window=int(match.group(1)),
+            configured_window=actual_window,
+            message=f'Filename window {match.group(1)} differs from configured window {actual_window}; use recorded configuration.'))
+    report['comparison'] = dict(version=6, source_name=artifact_name, warnings=warnings, added_fields=added, rows=rows,
         definitions=dict(accuracy='Correct / judged questions × 100; unavailable labels are excluded.',
-                         tokens='Total memory + answering provider tokens / recorded question count; excludes judging. Shared conversation memory is allocated before category filtering. Includes reported usage across recorded resumed builds and request attempts. Failed requests without reported usage are ignored; missing successful-response usage remains unavailable.',
-                         failed_request_usage='Failed requests with no reported token usage are ignored. Reported usage on failed requests still counts. Missing usage on successful or in-progress requests remains unavailable.',
+                         tokens='Total memory + answering provider tokens / recorded question count; excludes judging. Shared conversation memory is allocated before category filtering. Includes reported usage across recorded resumed builds and request attempts. Missing request usage makes complete totals unavailable; known recorded subtotals are lower bounds with explicit coverage. Judging is excluded; rebuild history and recorded query workload affect averages.',
+                         failed_request_usage='Missing usage for any request, including failure, is unknown. Known recorded usage counts all reported attempts and is a lower bound; missing-failure counts are exposed. Currency costs remain unknown.',
                          context_tokens='Supplied conversation/memory context only, excluding question, instructions, outputs, and memory preparation. Fixed benchmark WordPiece tokens, not provider usage. Uses recorded memory_context_tokens, or counts saved supplied_context with the pinned local tokenizer without padding/truncation; missing text or tokenizer remains unavailable.',
                          runtime='Total recorded memory preparation + retrieval + answering time / recorded question count; excludes judging and review pauses. Preparation uses preparation_seconds, falling back to legacy ingestion total_seconds. All recorded builds and cumulative query attempts count, including preparation without recorded questions. Category shares are allocated by conversation before filtering. Missing required totals remain unavailable.',
                          legacy_runtime='mean_question_seconds and total_question_seconds retain recorded question time including judging and excluding formation.',
                          lifecycle='All recorded ingestion builds (including resumed builds) + retained question attempts. Unknown usage stays unavailable; legacy data may omit failed attempts. No amortization.',
-                         storage='Sum of final UTF-8 stored text bytes across memory snapshots; excludes embeddings and runtime overhead.'))
+                         storage='Sum of UTF-8 stored text bytes in current snapshots only, possibly a partial conversation cohort. Latest recorded successful ingestion storage is reported separately with selected-conversation coverage. Excludes embeddings and runtime overhead.'))
     return report

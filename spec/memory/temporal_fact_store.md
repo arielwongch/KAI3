@@ -139,3 +139,8 @@ atomic failures, capacity, version links, and evidence coverage.
 The [periodic fact variant](periodic_window.md) uses `write_batch` for one
 extraction call and an atomic, chronological application of per-turn operations.
 Existing per-turn temporal writes retain their extraction contract.
+
+Versioned batches now use explicit `new:` result handles rather than predicted
+numeric version IDs, a compact extraction snapshot, and one bounded validation
+repair. See the [periodic contract](periodic_window.md) for reference scope,
+extraction budgets, private failure artifacts, and resume identity.

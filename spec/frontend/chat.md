@@ -26,7 +26,10 @@ session; it does not erase all previous sessions. Selecting a history entry
 switches the active chat and its inspection state.
 
 Server `ChatSession` instances hold one memory module, a lock, and turn diagnostics
-per chat ID. They are process-local. Restored browser messages are not replayed
+per chat ID. Memory construction is serialized per chat outside the global
+registry lock, so slow initialization cannot block unrelated chats or diagnostics.
+Concurrent first messages reuse the same module. Flask handles requests in threads;
+browser requests remain asynchronous. Sessions are process-local. Restored browser messages are not replayed
 into memory after restart. The client checks server availability and disables
 continuation for lost memory, prompting a new chat.
 

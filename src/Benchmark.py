@@ -446,6 +446,9 @@ class BenchmarkJob:
             self.result.update(protocol='periodic-window-v3; reserved-recall; summary-fit; flush-before-qa; shared-token-budget; no-qa-writeback',
                                memory_batch_settings=dict(max_turns=self.options['window_size'],
                                                           policy='latest_k_every_k_writes', flush='before_qa'))
+        if mode == 'windowed_fact_store':
+            from TemporalFactStore import BATCH_POLICY
+            self.result['memory_batch_settings']['extraction'] = deepcopy(BATCH_POLICY)
         if mode in RERANKED_MODULES:
             self.result['retrieval_version'] = 'vector-shortlist-cross-encoder-rerank-v1'
 
@@ -765,6 +768,10 @@ class BenchmarkJob:
                             self.update(status='failed', error=str(stop_error), failure_status_code=status_code(stop_error))
                             return
             self.live_progress('finalizing')
+            failures = sum(m.get('error') is not None for m in self.result['memories'])
+            self.result['ingestion_outcome'] = dict(
+                status='completed_with_errors' if failures else 'successful',
+                failed_conversations=failures, total_conversations=len(self.result['memories']))
             completed_run = True
         except Exception as error:
             self.update(status='failed', error=str(error))

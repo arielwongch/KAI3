@@ -6,6 +6,8 @@ from copy import deepcopy
 collector = ContextVar("memory_llm_metrics", default=None)
 retrieval_collector = ContextVar('retrieval_metrics', default=None)
 retrieval_component = ContextVar('retrieval_component', default=None)
+memory_request_options = ContextVar('memory_request_options', default={})
+memory_response = ContextVar('memory_response', default=None)
 
 
 def record_retrieval(stage, entries, **details):

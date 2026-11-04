@@ -95,7 +95,12 @@ function controlState() {
     $('chatWindowSize').disabled=session.started||busy||checking;
     $('chatWindowDescription').textContent=periodicWindow(session.module)?'Keep k recent entries and update long-term memory every k completed entries.':isWindowHybrid(session.module)?'Keep recent turns alongside long-term memory. Configure before the first message.':'Use the full recent window in chat.';
     $('moduleStatus').textContent = unavailable ? 'Memory unavailable · start a new chat' : checking ? 'Checking memory…' : labelMode(session.module);
-    document.querySelectorAll('.memory-choice').forEach(b => { b.disabled = !!session.module || busy || checking; b.classList.toggle('selected', b.dataset.module === session.module); });
+    document.querySelectorAll('.memory-choice').forEach(button => {
+        const selected = button.dataset.module === session.module;
+        button.disabled = !!session.module || busy || checking;
+        button.classList.toggle('selected', selected);
+        button.setAttribute('aria-pressed', String(selected));
+    });
     $('userInput').placeholder = session.module ? 'Message KAI3…' : 'Select a memory architecture to start';
     $('chatRerankerSettings').hidden=!usesReranker(session.module)||session.messages.length>0;
     if(usesReranker(session.module)){
@@ -314,7 +319,7 @@ function showImportedBenchmark(value,filename){
     localStorage.removeItem('kai3-benchmark-run');
     $('benchmarkSetup').hidden=true;$('benchmarkRunning').hidden=true;$('benchmarkReport').hidden=false;
     $('reportMoreActions').hidden=true;$('reportMoreActions').open=false;$('reportTitle').textContent='Benchmark results';$('reportMode').hidden=false;$('reviewLabelsControl').hidden=true;
-    $('reportSubtitle').textContent=`${filename} ? ${report.status||'Saved report'} ? ${report.cases.length} question results`;
+    $('reportSubtitle').textContent=`${filename} ? ${benchmarkStatusLabel(report)} ? ${report.cases.length} question results`;
     $('reportStatus').textContent=report.error?displayFailure(report.error):'';
     $('resumeBenchmark').hidden=true;$('exportReview').hidden=true;$('reviewFile').disabled=true;
     drawBenchmark();
@@ -482,6 +487,13 @@ function benchmarkMemoryOptions(mode){
     if(caps.hybrid)Object.assign(options,hybridFormOptions(mode,$('hybridShare').value,$('componentOptions').value));
     return options;
 }
+function ingestionFailureCount(report){
+    if(Number.isInteger(report.ingestion_outcome?.failed_conversations))return report.ingestion_outcome.failed_conversations;
+    return new Set((report.memories||[]).filter(m=>m.error).map(m=>`${m.module}:${m.sample_id}`)).size;
+}
+function benchmarkStatusLabel(report){
+    return report.status==='completed'&&ingestionFailureCount(report)>0?'Completed with ingestion errors':report.status||'Saved report';
+}
 function benchmarkConditionLabel(report){
     const mode=report.config?.modules?.[0];if(mode!=='no_memory')return labelMode(mode||'Unknown');
     const condition=report.condition||report.config?.no_memory_context;
@@ -623,7 +635,7 @@ async function pollBenchmark(){
         $('benchmarkSetup').hidden=true;$('benchmarkRunning').hidden=!running;$('benchmarkReport').hidden=running;
         const progress=benchmark.progress||{completed:0,total:0};
         renderRunProgress(benchmark);
-        $('reportTitle').textContent=benchmark.status==='completed'?'Run complete':benchmark.status==='cancelled'?'Run cancelled · partial results':'Run report';
+        $('reportTitle').textContent=benchmark.status==='completed'?(ingestionFailureCount(benchmark)?'Run complete with ingestion errors':'Run complete'):benchmark.status==='cancelled'?'Run cancelled · partial results':'Run report';
         $('reportSubtitle').textContent=`${benchmark.status} · ${progress.completed} of ${progress.total} questions processed`;
         $('reportStatus').textContent=benchmark.error?displayFailure(benchmark.error):'';
         $('resumeBenchmark').disabled=running;
@@ -641,26 +653,37 @@ function recordedPhaseTokens(diagnostics,phase){
     const complete=values=>values.length&&values.every(value=>typeof value==='number'&&Number.isFinite(value)&&value>=0)?values.reduce((a,b)=>a+b,0):null;
     if(Array.isArray(diagnostics.provider_requests)){
         const requests=diagnostics.provider_requests.filter(request=>request.phase===phase);
-        return requests.length?complete(requests.map(request=>request.status==='error'&&request.tokens==null?0:request.tokens)):diagnostics[phase+'_llm_calls']===0?0:null;
+        return requests.length?complete(requests.map(request=>request.tokens)):diagnostics[phase+'_llm_calls']===0?0:null;
     }
     if(diagnostics[phase+'_tokens']!=null)return diagnostics[phase+'_tokens'];
     if(diagnostics[phase+'_llm_calls']===0)return 0;
     const prefix=phase==='answer'?'':phase+'_';
     return complete([diagnostics[prefix+'prompt_tokens'],diagnostics[prefix+'completion_tokens']]);
 }
+function benchmarkIngestionBuilds(report,module){
+    const canonical=value=>JSON.stringify(value,(_,item)=>item&&typeof item==='object'&&!Array.isArray(item)?Object.fromEntries(Object.entries(item).sort(([a],[b])=>a.localeCompare(b))):item);
+    const seen=new Map(),builds=[];let conflicting=false;
+    for(const memory of [...(report.previous_ingestions||[]),...(report.memories||[])]){
+        const owner=String(memory.module??'unknown');
+        if(module!==undefined&&owner!==module)continue;
+        const ingestion=memory.ingestion||{},id=ingestion.ingestion_id;
+        const record=canonical([memory.sample_id==null?null:String(memory.sample_id),ingestion]);
+        if(id!=null){
+            const key=canonical([owner,id]);
+            if(seen.has(key)){if(seen.get(key)!==record)conflicting=true;continue;}
+            seen.set(key,record);
+        }
+        builds.push(ingestion);
+    }
+    return {builds,conflicting};
+}
 function benchmarkTokenUsage(report){
     const finite=value=>typeof value==='number'&&Number.isFinite(value)&&value>=0;
     const complete=values=>values.length&&values.every(finite)?values.reduce((a,b)=>a+b,0):null;
-    const seen=new Map(),builds=[];let conflicting=false;
-    for(const memory of [...(report.previous_ingestions||[]),...(report.memories||[])]){
-        const ingestion=memory.ingestion||{},id=ingestion.ingestion_id;
-        const record=[memory.module??'unknown',memory.sample_id==null?null:String(memory.sample_id),recordedPhaseTokens(ingestion,'memory')];
-        if(id!=null&&seen.has(id)){if(JSON.stringify(seen.get(id))!==JSON.stringify(record))conflicting=true;continue;}
-        if(id!=null)seen.set(id,record);builds.push(record);
-    }
+    const {builds,conflicting}=benchmarkIngestionBuilds(report);
     const cases=report.cases||[],modules=report.config?.modules||[...new Set(cases.map(c=>c.module||'unknown'))];
     const baseline=modules.length&&modules.every(module=>['full_context','question_only','no_memory'].includes(module));
-    const memoryTokens=conflicting?null:builds.length?complete(builds.map(record=>record[2])):baseline?0:null;
+    const memoryTokens=conflicting?null:builds.length?complete(builds.map(d=>recordedPhaseTokens(d,'memory'))):baseline?0:null;
     const answers=cases.map(c=>recordedPhaseTokens(c.diagnostics||{},'answer'));
     const answerTokens=complete(answers),total=complete([memoryTokens,answerTokens]);
     return {memoryTokens,answerTokens,total,mean:finite(total)&&cases.length?total/cases.length:null,
@@ -699,28 +722,79 @@ function benchmarkContextUsage(report){
     }
     return {mean:total!==null&&cases.length?total/cases.length:null,total,count};
 }
+function recordedUsageCoverage(records){
+    const finite=value=>typeof value==='number'&&Number.isFinite(value)&&value>=0;
+    let known=0,missing=0,missingFailed=0,withoutLedger=0,unknownRecords=0;
+    for(const [diagnostics,phase] of records){
+        const total=recordedPhaseTokens(diagnostics,phase);
+        if(!finite(total))unknownRecords++;
+        if(Array.isArray(diagnostics.provider_requests)){
+            const requests=diagnostics.provider_requests.filter(r=>r.phase===phase);
+            for(const request of requests){
+                if(finite(request.tokens))known+=request.tokens;
+                else{missing++;if(request.status==='error')missingFailed++;}
+            }
+        }else{withoutLedger++;if(finite(total))known+=total;}
+    }
+    return {known,missing,missingFailed,withoutLedger,unknownRecords};
+}
+function benchmarkArtifactWarnings(report,filename){
+    const match=/windowed_summary_k=(\d+)/i.exec(filename||'');
+    const windowSize=report.config?.window_size;
+    return match&&Number.isInteger(windowSize)&&Number(match[1])!==windowSize
+        ?[`Filename window ${match[1]} differs from configured window ${windowSize}; use recorded configuration.`]:[];
+}
+function benchmarkStorageUsage(report){
+    const finite=value=>typeof value==='number'&&Number.isFinite(value)&&value>=0;
+    const complete=values=>values.length&&values.every(finite)?values.reduce((a,b)=>a+b,0):null;
+    const key=record=>record.sample_id==null?null:JSON.stringify([String(record.module??'unknown'),String(record.sample_id)]);
+    const expected=new Set([...(report.cases||[]),...(Array.isArray(report.question_manifest)?report.question_manifest:[])].map(key).filter(v=>v!==null));
+    const memories=report.memories||[],current=new Set(memories.map(key).filter(k=>expected.has(k)));
+    const bytes=memory=>{
+        const recorded=memory.ingestion?.final_storage?.stored_text_bytes;
+        if(finite(recorded))return recorded;
+        const entries=memory.memory?.entries;
+        if(!Array.isArray(entries)||!entries.every(e=>typeof e.text==='string'))return null;
+        return entries.reduce((sum,e)=>sum+Array.from(e.text).reduce((n,char)=>{
+            const c=char.codePointAt(0);return n+(c<=127?1:c<=2047?2:c<=65535?3:4);
+        },0),0);
+    };
+    const latest=new Map();
+    for(const memory of [...(report.previous_ingestions||[]),...memories]){
+        const id=key(memory);
+        if(expected.has(id)&&'error' in memory&&memory.error===null)latest.set(id,memory.ingestion?.final_storage?.stored_text_bytes);
+    }
+    const successful=[...expected].map(id=>latest.get(id));
+    return {currentBytes:complete(memories.map(bytes)),snapshotCount:memories.length,
+        currentConversations:current.size,expectedConversations:expected.size,
+        successfulBytes:complete(successful),successfulConversations:successful.filter(finite).length};
+}
 function benchmarkLifecycleUsage(report){
     const finite=value=>typeof value==='number'&&Number.isFinite(value)&&value>=0;
     const complete=values=>values.length&&values.every(finite)?values.reduce((a,b)=>a+b,0):null;
-    const canonical=value=>JSON.stringify(value,(_,item)=>item&&typeof item==='object'&&!Array.isArray(item)?Object.fromEntries(Object.entries(item).sort(([a],[b])=>a.localeCompare(b))):item);
-    const cases=report.cases||[],memories=[...(report.previous_ingestions||[]),...(report.memories||[])];
+    const cases=report.cases||[];
     const modules=[...new Set([...cases,...(report.question_manifest||[])].map(c=>String(c.module??'unknown')))];
     const groups=modules.map(module=>{
-        const builds=[],seen=new Map();let conflicting=false;
-        for(const memory of memories){
-            if(String(memory.module??'unknown')!==module)continue;
-            const ingestion=memory.ingestion||{},id=ingestion.ingestion_id;
-            if(id!=null&&seen.has(id)){if(canonical(seen.get(id))!==canonical(ingestion))conflicting=true;continue;}
-            if(id!=null)seen.set(id,ingestion);builds.push(ingestion);
-        }
+        const {builds,conflicting}=benchmarkIngestionBuilds(report,module);
         const diagnostics=cases.filter(c=>String(c.module??'unknown')===module).map(c=>c.diagnostics||{});
         const memory=conflicting?null:complete(builds.map(d=>recordedPhaseTokens(d,'memory')));
         const answer=complete(diagnostics.map(d=>recordedPhaseTokens(d,'answer'))),judge=complete(diagnostics.map(d=>recordedPhaseTokens(d,'judge')));
         const ingestion=conflicting?null:complete(builds.map(d=>d.total_seconds));
         const query=complete(diagnostics.map(d=>'execution_total_seconds' in d?d.execution_total_seconds:d.total_seconds));
-        return {memory,tokens:complete([memory,answer,judge]),ingestion,processing:complete([ingestion,query])};
+        const headlineRecords=[...builds.map(d=>[d,'memory']),...diagnostics.map(d=>[d,'answer'])];
+        const headlineCoverage=recordedUsageCoverage(headlineRecords);
+        const lifecycleCoverage=recordedUsageCoverage([...headlineRecords,...diagnostics.map(d=>[d,'judge'])]);
+        if(conflicting){headlineCoverage.known=null;lifecycleCoverage.known=null;}
+        return {memory,tokens:complete([memory,answer,judge]),ingestion,processing:complete([ingestion,query]),
+            headlineCoverage,lifecycleCoverage,buildCount:builds.length};
     });
+    const coverage=(name,field)=>field==='known'?complete(groups.map(g=>g[name][field])):groups.reduce((sum,g)=>sum+g[name][field],0);
     return {memoryTokens:complete(groups.map(g=>g.memory)),totalTokens:complete(groups.map(g=>g.tokens)),
+        knownMemoryAnswerTokens:coverage('headlineCoverage','known'),knownTotalTokens:coverage('lifecycleCoverage','known'),
+        missingMemoryAnswerFailedRequests:coverage('headlineCoverage','missingFailed'),
+        missingFailedRequests:coverage('lifecycleCoverage','missingFailed'),missingRequests:coverage('lifecycleCoverage','missing'),
+        phaseRecordsWithoutLedger:coverage('lifecycleCoverage','withoutLedger'),unknownUsageRecords:coverage('lifecycleCoverage','unknownRecords'),
+        buildCount:groups.reduce((sum,g)=>sum+g.buildCount,0),
         ingestionSeconds:complete(groups.map(g=>g.ingestion)),recordedSeconds:complete(groups.map(g=>g.processing))};
 }
 function benchmarkUsage(report){
@@ -740,6 +814,11 @@ function benchmarkUsage(report){
         meanAnswerTokens:average(answerTokens),answerTokenCount:answerTokens.length,meanJudgeTokens:average(judgeTokens),judgeTokenCount:judgeTokens.length,
         meanQuestionTokens:tokenUsage.mean,tokenQuestionCount:tokenUsage.questionCount,totalMemoryAnswerTokens:tokenUsage.total,
         totalTokens:lifecycleUsage.totalTokens,memoryTokens:lifecycleUsage.memoryTokens,
+        knownMemoryAnswerTokens:lifecycleUsage.knownMemoryAnswerTokens,knownTotalTokens:lifecycleUsage.knownTotalTokens,
+        missingMemoryAnswerFailedRequests:lifecycleUsage.missingMemoryAnswerFailedRequests,
+        missingFailedRequests:lifecycleUsage.missingFailedRequests,missingRequests:lifecycleUsage.missingRequests,
+        phaseRecordsWithoutLedger:lifecycleUsage.phaseRecordsWithoutLedger,unknownUsageRecords:lifecycleUsage.unknownUsageRecords,
+        buildCount:lifecycleUsage.buildCount,
         ingestionSeconds:lifecycleUsage.ingestionSeconds,recordedSeconds:lifecycleUsage.recordedSeconds,
         answerFailures:cases.filter(c=>c.error).length,judgeFailures:cases.filter(c=>c.judge_error).length,
         contextFailures:cases.filter(c=>c.diagnostics?.status==='context_limit_exceeded').length,
@@ -755,12 +834,26 @@ function drawUsageSummary(body){
     [['Average answer time',formatDuration(usage.meanAnswerTime)],['Average judge time',formatDuration(usage.meanJudgeTime)],['Average retrieval time',formatDuration(usage.meanRetrievalTime)],
      ['Average answer tokens',`${formatCount(usage.meanAnswerTokens)} (${usage.answerTokenCount} recorded)`],['Average judge tokens',`${formatCount(usage.meanJudgeTokens)} (${usage.judgeTokenCount} recorded)`],
      ['Reported API tokens',formatCount(usage.totalTokens)],['Memory API tokens',formatCount(usage.memoryTokens)],['Total ingestion time',formatDuration(usage.ingestionSeconds)],
-     ['Memory + answering tokens',formatCount(usage.totalMemoryAnswerTokens)],['Total runtime excluding judging',formatDuration(usage.totalRuntime)],
+     ['Memory + answering tokens',formatCount(usage.totalMemoryAnswerTokens)],
+     ['Known memory + answering tokens (lower bound)',formatCount(usage.knownMemoryAnswerTokens)],
+     ['Failed memory/answer requests missing usage',formatCount(usage.missingMemoryAnswerFailedRequests)],
+     ['Known lifecycle tokens (lower bound; includes judging)',formatCount(usage.knownTotalTokens)],
+     ['Failed requests missing usage (includes judging)',formatCount(usage.missingFailedRequests)],
+     ['All recorded requests missing usage',formatCount(usage.missingRequests)],
+     ['Phase records with incomplete usage',formatCount(usage.unknownUsageRecords)],
+     ['Phase records without request ledgers',formatCount(usage.phaseRecordsWithoutLedger)],
+     ['Recorded ingestion builds',formatCount(usage.buildCount)],['Total runtime excluding judging',formatDuration(usage.totalRuntime)],
      ['Recorded processing time',formatDuration(usage.recordedSeconds)]].forEach(([k,v])=>addField(grid,k,v));
-    section.append(grid);const note=document.createElement('p');note.className='summary-note';note.textContent='Reported API tokens and recorded processing time include recorded judging, failed attempts, and resumed work, matching Compare Runs lifecycle totals. Failed requests without reported tokens are ignored. Processing time excludes review pauses and unrecorded work; missing required measurements remain unavailable.';section.append(note);body.append(section);
+    section.append(grid);const note=document.createElement('p');note.className='summary-note';note.textContent='Reported API tokens and recorded processing time include recorded judging, failed attempts, and resumed work, matching Compare Runs lifecycle totals. Missing usage, including failed requests, makes complete token totals unavailable. Known recorded usage is a lower bound, not complete cost. The memory-plus-answering subtotal excludes judging; lifecycle usage includes it. Totals include recorded rebuilds and retries, and construction per question depends on the recorded query workload. Legacy ledgers may omit attempts. Currency costs are unknown. Processing time excludes review pauses and unrecorded work; missing required measurements remain unavailable.';section.append(note);body.append(section);
     const memory=reportDetails('Memory and retrieval');const memoryGrid=document.createElement('div');memoryGrid.className='config-grid';
     addField(memoryGrid,'Evidence recall',usage.meanEvidenceRecall==null?'Unavailable':`${(usage.meanEvidenceRecall*100).toFixed(1)}% (${usage.evidenceCount} questions)`);
     addField(memoryGrid,'Legacy context-byte proxy',usage.meanRetrievedBudget==null?'Unavailable':`${formatCount(usage.meanRetrievedBudget)} (conservative estimate)`);memory.append(memoryGrid);
+    const storage=benchmarkStorageUsage(benchmark);
+    addField(memoryGrid,'Current snapshot text bytes',formatCount(storage.currentBytes));
+    addField(memoryGrid,'Current snapshot conversation coverage',`${storage.currentConversations} / ${storage.expectedConversations}`);
+    addField(memoryGrid,'Latest successful-ingestion text bytes',formatCount(storage.successfulBytes));
+    addField(memoryGrid,'Successful-ingestion conversation coverage',`${storage.successfulConversations} / ${storage.expectedConversations}`);
+    const storageNote=document.createElement('p');storageNote.className='summary-note';storageNote.textContent='Current snapshot storage may cover only part of the selected conversation cohort. Latest successful-ingestion storage may use previous builds. Both exclude embeddings and runtime overhead; incomplete all-conversation storage remains unavailable.';memory.append(storageNote);
     if((benchmark.memories||[]).length){const table=document.createElement('table');table.className='report-table';table.innerHTML='<thead><tr><th>Conversation</th><th>Stored entries</th><th>Text size</th><th>Ingestion time</th></tr></thead>';const rows=document.createElement('tbody');for(const memory of benchmark.memories){const storage=memory.ingestion?.final_storage,entries=memory.memory?.entries;const bytes=storage?.stored_text_bytes;const tr=document.createElement('tr');[String(memory.sample_id??'Unavailable'),formatCount(storage?.stored_entries??entries?.length),bytes==null?'Unavailable':`${(bytes/1024).toFixed(1)} KB`,formatDuration(memory.ingestion?.total_seconds)].forEach(value=>{const td=document.createElement('td');td.textContent=value;tr.append(td);});rows.append(tr);}table.append(rows);memory.append(table);}
     body.append(memory);return memory;
 }
@@ -773,6 +866,11 @@ function drawBenchmark(){
         metricCard('Context tokens/question',formatCount(usage.meanContextTokens),`Conversation/memory context only; benchmark tokenizer; ${usage.contextTokenCount} of ${usage.caseCount} recorded`),
         metricCard('Memory + answering tokens/question',formatCount(usage.meanQuestionTokens),`Provider usage; excludes judging; ${usage.tokenQuestionCount} questions`));body.append(metrics);
     if(overall.selected_count!=null){const operational=document.createElement('div');operational.className='metric-grid headline-metrics';operational.append(metricCard('End-to-end success',`${(overall.end_to_end_success_rate*100).toFixed(1)}%`,`${overall.correct_count} / ${overall.selected_count} selected; ${benchmark.status==='completed'?'final':'provisional'}`),metricCard('Judge completion',`${(overall.completion_rate*100).toFixed(1)}%`,`${overall.judged_count} / ${overall.selected_count} selected`));body.append(operational);const accounting=reportDetails('Selected-question outcomes');for(const [state,count] of Object.entries(overall.failure_counts||{}))addField(accounting,state.replaceAll('_',' '),count);body.append(accounting);}
+    for(const warning of benchmarkArtifactWarnings(benchmark,importedBenchmark?importedFilename:'')){
+        const notice=document.createElement('p');notice.className='failure-notice';notice.textContent=warning;body.append(notice);
+    }
+    const ingestionFailures=ingestionFailureCount(benchmark);
+    if(ingestionFailures){const notice=document.createElement('p');notice.className='failure-notice';notice.textContent=`Ingestion failed for ${ingestionFailures} conversation(s). Their questions were blocked before answering; this run does not provide a complete accuracy evaluation.`;body.append(notice);}
     const failures=usage.answerFailures+usage.judgeFailures;
     if(failures||(benchmark.errors||[]).length){const notice=reportDetails(`${usage.answerFailures} answer failures, ${usage.judgeFailures} judge failures${usage.contextFailures?`, ${usage.contextFailures} context-limit cases`:''}`);notice.classList.add('failure-notice');
         (benchmark.errors||[]).forEach(error=>addCard(notice,'Run error',typeof error==='string'?error:[error.sample_id,error.phase,error.error].filter(Boolean).join(' - ')));

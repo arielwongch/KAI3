@@ -5,6 +5,7 @@ from pathlib import Path
 from copy import deepcopy
 from threading import RLock, Thread
 from uuid import uuid4
+from weakref import WeakValueDictionary
 from flask import Flask, abort, jsonify, render_template, request, send_file, send_from_directory
 from MemoryFactory import MemoryFactory
 from HybridMemory import HYBRIDS
@@ -30,6 +31,9 @@ app.config['MAX_CONTENT_LENGTH'] = 32 * 1024 * 1024
 AVAILABLE_MEMORY_MODULES = MODULES
 chat_memory_modules = {}
 registry_lock = RLock()
+# Model/tokenizer initialization can be slow. Serialize creation per chat so
+# unrelated chats and diagnostic requests never wait on the registry lock.
+chat_initialization_locks = WeakValueDictionary()
 jobs = {}
 RUN_STORE = os.path.join(app.instance_path, 'benchmark_runs')
 os.makedirs(RUN_STORE, exist_ok=True)
@@ -282,6 +286,7 @@ def import_result():
                 candidate = result_path(target)
                 if candidate is None:
                     return jsonify(error='The replacement file is unavailable. Refresh the library.'), 404
+                report = enrich_report(report, source_name=target)
                 atomic_json(candidate, report)
                 return jsonify(path=target, report=report, replaced=True), 200
             if action == 'duplicate':
@@ -293,6 +298,7 @@ def import_result():
                 return jsonify(error='The result filename is unavailable.'), 400
             if candidate.exists():
                 return jsonify(error='The result filename is already in use.'), 409
+            report = enrich_report(report, source_name=name)
             atomic_json(candidate, report)
             return jsonify(path=name, report=report), 201
     except (ValueError, TypeError, UnicodeError) as error:
@@ -312,7 +318,7 @@ def enrich_result():
         if candidate is None:
             return jsonify(error='Result file is unavailable.'), 404
         try:
-            report = enrich_report(json.loads(candidate.read_text(encoding='utf-8-sig')))
+            report = enrich_report(json.loads(candidate.read_text(encoding='utf-8-sig')), source_name=name)
             atomic_json(candidate, report)
             return jsonify(path=name, report=report)
         except (ValueError, TypeError) as error:
@@ -337,7 +343,7 @@ def result_library_file():
             return jsonify(error='This file is not a benchmark results export.'), 400
         if request.args.get('download') == '1':
             return send_file(candidate, as_attachment=True, download_name=result_display_name(name))
-        return jsonify(report=enrich_report(report) if request.args.get('analysis') == '1' else report)
+        return jsonify(report=enrich_report(report, source_name=name) if request.args.get('analysis') == '1' else report)
     except (OSError, ValueError):
         return jsonify(error='Could not read this results JSON file.'), 400
 
@@ -428,7 +434,10 @@ def get_reply():
         return jsonify(error='memory_options must contain supported settings for the selected module.'), 400
     chat_id = chat_id.strip()
     with registry_lock:
-        session = chat_memory_modules.get(chat_id)
+        initialization_lock = chat_initialization_locks.setdefault(chat_id, RLock())
+    with initialization_lock:
+        with registry_lock:
+            session = chat_memory_modules.get(chat_id)
         if session is None:
             # Restored browser histories must not silently recreate lost memory.
             if payload.get('requires_existing'):
@@ -437,7 +446,8 @@ def get_reply():
                 session = ChatSession(mode, memory_options, window_size)
             except (ValueError, TypeError) as error:
                 return jsonify(error=str(error)), 400
-            chat_memory_modules[chat_id] = session
+            with registry_lock:
+                chat_memory_modules[chat_id] = session
     with session.lock:
         if session.mode != mode:
             return jsonify(error='The memory module cannot be changed during a chat.'), 409
@@ -656,7 +666,7 @@ def main():
     # touches a source file. Benchmark jobs run in-process, so reloads interrupt
     # them. Keep the server stable during long runs; opt into the debugger only.
     app.run(host=os.environ.get('HOST', '127.0.0.1'), port=int(os.environ.get('PORT', '5000')),
-            debug=os.environ.get('KAI3_DEBUG') == '1', use_reloader=False)
+            debug=os.environ.get('KAI3_DEBUG') == '1', use_reloader=False, threaded=True)
 
 if __name__ == '__main__':
     main()
