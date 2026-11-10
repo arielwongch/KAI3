@@ -1,19 +1,12 @@
-import os
 import time
 import re
-from dotenv import load_dotenv
-from openai import OpenAI
 from MemoryEntry import MemoryEntry
 from MemoryModule import MemoryModule
 from MemoryContext import retrieval_k, format_context
 from Diagnostics import collector, entries_json
+import ExperimentRecording as Recording
 
-load_dotenv()
-
-client = OpenAI(
-    api_key=os.environ.get('DEEPSEEK_API_KEY'),
-    base_url="https://api.deepseek.com"
-)
+from ProviderClient import client
 
 ACTION_RESPONSE = re.compile(
     r"\AThought:\s*.+\nAction:\s*([^:\n]+):\s*(.+)\Z",
@@ -39,10 +32,12 @@ def _run_ReAct(
     retrieval_start = time.perf_counter()
     try:
         from HybridMemory import HybridMemory
-        if isinstance(memory_module, HybridMemory):
+        from Compaction import Compaction
+        if isinstance(memory_module, (HybridMemory, Compaction)):
             from MemoryContext import build_memory_context, get_benchmark_tokenizer
             packed = build_memory_context(memory_module, user_input, memory_module.memory_context_tokens,
-                                          memory_module.tokenizer or get_benchmark_tokenizer(), 5)
+                                          memory_module.tokenizer or get_benchmark_tokenizer(),
+                                          None if isinstance(memory_module, Compaction) else 5)
             memory_entries = packed.pop('entries')
             memory_text = packed.pop('text')
             diagnostics.update(packed)
@@ -73,6 +68,10 @@ def _run_ReAct(
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_input}
     ]
+    diagnostics['supplied_context'] = memory_text
+    diagnostics['context_artifact'] = Recording.capture('chat-context', dict(
+        memory_state_artifact=diagnostics.get('memory_state_artifact'),
+        supplied_context=memory_text, entries=diagnostics['retrieved'], messages=messages))
 
     result = []
     latency = 0.0
@@ -86,6 +85,13 @@ def _run_ReAct(
 
         call_start = time.perf_counter()
         diagnostics["agent_llm_calls"] += 1
+        request_ref = Recording.capture('chat-request', dict(model='deepseek-flash', messages=[
+            m if isinstance(m, dict) else m.model_dump(mode='json') if hasattr(m, 'model_dump')
+            else dict(role=getattr(m, 'role', 'assistant'), content=getattr(m, 'content', None)) for m in messages],
+            stream=False, reasoning_effort='high', extra_body={'thinking': {'type': 'enabled'}},
+            transport_policy='legacy SDK retry defaults; see benchmark request ledger for controlled runs'))
+        if request_ref:
+            diagnostics.setdefault('request_artifacts', []).append(request_ref)
         try:
             response = client.chat.completions.create(
                 model="deepseek-flash", messages=messages, stream=False,
@@ -175,6 +181,9 @@ def run_ReAct(user_input, max_iterations=10, memory_module=None, diagnostics=Non
     try:
         if valid:
             d["stored_before"] = len(memory_module.inspect()["entries"])
+            archive = Recording.active_archive.get()
+            if archive is not None:
+                d['memory_state_artifact'] = Recording.freeze(memory_module, archive)
         return _run_ReAct(user_input, max_iterations, memory_module, d, write_back)
     except Exception as error:
         d.update(status="error", error=str(error))

@@ -1,17 +1,8 @@
-import os
 import time
-from pathlib import Path
 from RequestPolicy import completion
 from Diagnostics import collector, memory_request_options, memory_response
-from dotenv import load_dotenv
-from openai import OpenAI
+from ProviderClient import client
 
-load_dotenv(Path(__file__).with_name('.env'))
-
-client = OpenAI(
-    api_key=os.environ.get('DEEPSEEK_API_KEY'),
-    base_url="https://api.deepseek.com"
-)
 
 def call_api(system_prompt: str, user_input: str):
 
@@ -40,6 +31,8 @@ def call_api(system_prompt: str, user_input: str):
         finish_reason=getattr(response.choices[0], 'finish_reason', None),
         prompt_tokens=getattr(usage, 'prompt_tokens', None),
         completion_tokens=getattr(usage, 'completion_tokens', None)))
+    if usage is not None and hasattr(usage, 'model_dump'):
+        memory_response.get()['usage_details'] = usage.model_dump(mode='json')
     metrics = collector.get()
     if metrics is not None:
         for field, usage_field in (('memory_prompt_tokens', 'prompt_tokens'), ('memory_completion_tokens', 'completion_tokens')):

@@ -102,7 +102,7 @@ async function refresh(){const result=await api('/api/results');filenames=result
 function rows(){
     const data=[...selected].flatMap(name=>{
         const report=loaded.get(name);return (report?.comparison?.rows||[]).map(row=>({
-            ...row,name,report,label:displayName(name).replace(/\.json$/i,'')+' · '+row.module,
+            ...row,name,report,label:displayName(name).replace(/\.json$/i,'')+' · '+row.module+(row.module==='compaction'?` (${report.config?.retain_percent}% ${report.config?.compaction_mode})`:''),
             metrics:el('category').value==='overall'?row.overall:row.categories[el('category').value]||{}
         }));
     });
@@ -150,6 +150,13 @@ function chartDetails(row,kind){
     return details;
 }
 const chartMetrics={
+    compressionFactor:{label:'Aggregate compression factor (one-shot)',unit:'×',value:r=>r.overall.compaction?.analysis?.final_one_shot_cohort?.aggregate_compression_factor,note:'Sum of source tokens / sum of output tokens across the complete selected one-shot conversation cohort. Repeated, missing or failed cohorts are unavailable.'},
+    weightedRetained:{label:'Weighted retained memory (one-shot)',unit:'%',value:r=>r.overall.compaction?.analysis?.final_one_shot_cohort?.weighted_retained_percent,note:'100 × sum(output tokens) / sum(source tokens). Includes the 100% no-op reference; unavailable for incomplete or repeated cohorts.'},
+    compactionP95:{label:'Compaction event latency p95',unit:'s',value:r=>r.overall.compaction?.analysis?.history?.event_latency?.p95_seconds,note:'95th percentile of measured deduplicated event times across all builds, including failed/uncommitted events and recording overhead. Coverage is in the exported analysis.'},
+    retained:{label:'Requested retained memory',unit:'%',value:r=>r.overall.compaction?.requested_retain_percent,note:'Configured percentage of current active memory. All question types; independent of the reader allowance.'},
+    actualRetained:{label:'Mean actual retained memory per event',unit:'%',value:r=>r.overall.compaction?.mean_actual_retain_percent,note:'Mean across committed nonempty compaction events in current memory snapshots. Repeated events use different source states; this is not a full-history retention rate.'},
+    compactionSeconds:{label:'Compaction time, all builds',unit:'s',value:r=>r.overall.compaction?.total_seconds,note:'Recorded compaction generation and validation time across ingestion builds, including failed attempts. All question types; reused artifacts incur no new compaction.'},
+    compactionCalls:{label:'Compaction attempts, all builds',unit:'calls',value:r=>r.overall.compaction?.attempt_count,note:'Logical summarizer attempts across ingestion builds, including validation retries. Transport attempts are recorded separately in request ledgers. All question types.'},
     tokens:{label:'Memory + answering tokens/question',unit:'tokens',value:r=>r.metrics.mean_question_tokens,note:'Total memory preparation + answering provider tokens divided by recorded questions. Excludes judging. Any missing request usage makes the complete total unavailable. Known recorded lower bounds and missing-failure counts appear in the coverage table. Includes recorded rebuilds and retries. Shared conversation memory is allocated across the recorded query workload before question-type filtering; averages depend on that workload. Currency costs are unknown.'},
     context:{label:'Context tokens/question',unit:'tokens',value:r=>r.metrics.mean_context_tokens,note:'Only the conversation/memory context supplied to the answering model. Fixed benchmark tokenizer; excludes the question, instructions, generated output, and memory preparation costs. These are context-size counts, not provider usage.'},
     accuracy:{label:'Judged accuracy',unit:'%',value:r=>r.metrics.accuracy_percent,note:'Correct / judged questions. Unjudged questions are excluded.'},

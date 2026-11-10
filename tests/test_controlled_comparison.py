@@ -175,7 +175,7 @@ class ControlledBenchmarkTests(unittest.TestCase):
                         dict(module='sliding_window', max_stored_entries=None),
                         dict(module='vector_store', retrieval_k=0),
                         dict(module='fact_store', max_stored_entries=1.5),
-                        dict(module='summarization', max_summary_tokens=3000)):
+                        dict(module='summarization', max_summary_tokens=9000)):
             with self.subTest(options=options), self.assertRaises(ValueError):
                 Benchmark.options_for(dataset(), options)
         options = Benchmark.options_for(dataset(), dict(module='no_memory', no_memory_context='question_only'))

@@ -130,6 +130,35 @@ def ingestion_builds(report, module):
     return builds, conflicts
 
 
+def construction_accounting(report, module, cases):
+    """Distinct construction work, reuse, and provider phases; no invented cost."""
+    builds, conflicts = ingestion_builds(report, module)
+    constructed = [(s, d) for s, d in builds if d.get('construction_action') != 'frozen_reuse']
+    unique = {}
+    for sample, d in constructed:
+        unique.setdefault(d.get('construction_id', d.get('ingestion_id')), (sample, d))
+    ledger_complete = not conflicts and all(d.get('memory_llm_calls') == 0 or
+        isinstance(d.get('provider_requests'), list) for _, d in builds)
+    requests = [r for _, d in builds for r in d.get('provider_requests', []) if r.get('phase') == 'memory']
+
+    def usage(records, complete=True):
+        return dict(tokens=(sum(r['tokens'] for r in records) if complete and all(number(r.get('tokens')) for r in records) else None),
+                    known_token_lower_bound=sum(r['tokens'] for r in records if number(r.get('tokens'))),
+                    request_count=len(records), missing_usage_count=sum(not number(r.get('tokens')) for r in records),
+                    ledger_complete=complete)
+
+    return dict(scope='this report plus retained resume history; not other campaign files',
+        unique_construction_count=len(unique), construction_attempt_count=len(constructed),
+        rebuild_count=max(0, len(constructed)-len({s for s, _ in constructed})),
+        frozen_reuse_count=sum(d.get('construction_action') == 'frozen_reuse' for _, d in builds),
+        unique_construction_usage=usage_coverage([phase_usage(d, 'memory') for _, d in unique.values()]),
+        formation=usage([r for r in requests if (r.get('operation') or {}).get('type') != 'compaction'], ledger_complete),
+        compaction=usage([r for r in requests if (r.get('operation') or {}).get('type') == 'compaction'], ledger_complete),
+        answering=usage_coverage([phase_usage(c.get('diagnostics', {}), 'answer') for c in cases]),
+        judging=usage_coverage([phase_usage(c.get('diagnostics', {}), 'judge') for c in cases]),
+        semantics='known usage is a lower bound; no monetary estimate; amortized campaign costs remain in token_usage/runtime')
+
+
 def token_records(report, module, cases):
     """Memory + answering cost; allocate shared memory before category filtering."""
     retained, conflicts = ingestion_builds(report, module)
@@ -267,6 +296,8 @@ def lifecycle_metrics(report, module, cases):
 def enrich_report(value, source_name=None):
     if not isinstance(value, dict) or not isinstance(value.get('cases'), list):
         raise ValueError('Upload a benchmark results object containing a cases array.')
+    from ExperimentRecording import validate
+    validate(value)
     report = deepcopy(value)
     for field in ('memories', 'question_manifest', 'previous_ingestions'):
         if field in report and not isinstance(report[field], list):
@@ -355,6 +386,8 @@ def enrich_report(value, source_name=None):
         metrics = group(cases, len(selected) if manifest else len(cases), runtimes, tokens)
         metrics.update(mean_question_tokens=token_totals['mean_tokens'], total_question_tokens=token_totals['total_tokens'],
                        token_count=token_totals['count'], token_usage=token_totals)
+        if report.get('recording') is not None:
+            metrics['construction'] = construction_accounting(report, module, cases)
         metrics['runtime'].update(formation)
         metrics['runtime']['recorded_total_seconds'] = complete_sum([
             formation['total_formation_seconds'], metrics['runtime']['retrieval_seconds'], metrics['runtime']['answer_seconds']])
@@ -397,6 +430,27 @@ def enrich_report(value, source_name=None):
             stored_text_bytes=complete_sum(measured),
             conversation_count=sum(number(v) for v in measured), expected_conversation_count=len(expected_samples))
         metrics['lifecycle'] = lifecycle_metrics(report, module, cases)
+        if module == 'compaction':
+            from CompactionAnalysis import compaction_summary
+            builds, conflicts = ingestion_builds(report, module)
+            events = [e for m in memories for e in m.get('memory', {}).get('compaction_events', [])]
+            ratios = [e['actual_retain_percent'] for e in events
+                      if e.get('committed') and number(e.get('actual_retain_percent'))]
+            attempts = [e for _, ingestion in builds for e in ingestion.get('compaction_events', [])]
+            complete = not conflicts and all('compaction_events' in ingestion or
+                        ingestion.get('reused_artifact_sha256') for _, ingestion in builds)
+            metrics['compaction'] = dict(
+                analysis=compaction_summary(report),
+                requested_retain_percent=report.get('config', {}).get('retain_percent'),
+                mode=report.get('config', {}).get('compaction_mode'),
+                mean_actual_retain_percent=sum(ratios)/len(ratios) if ratios else None,
+                event_count=len(events), ratio_event_count=len(ratios),
+                attempt_count=sum(len(e.get('attempts', [])) for e in attempts) if complete else None,
+                total_seconds=complete_sum([e.get('seconds') for e in attempts]) if complete else None,
+                failed_event_count=sum(e.get('status') == 'failed' or not e.get('committed') for e in attempts),
+                max_depth=max((m.get('memory', {}).get('config', {}).get('depth', 0) for m in memories), default=0),
+                overhead_scope='all recorded ingestion builds; excludes artifact reuse; all question types',
+                ratio_scope='committed events in current snapshots; not full-history information retention')
         rows.append(dict(module=module, overall=metrics, categories=categories))
     artifact_name = source_name if source_name is not None else (previous.get('source_name') if isinstance(previous, dict) else None)
     warnings = []

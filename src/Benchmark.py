@@ -9,7 +9,7 @@ import string
 import threading
 import time
 from uuid import uuid4
-from nltk.stem import PorterStemmer
+from functools import lru_cache
 from API import call_api, client
 from Diagnostics import collector, retrieval_collector
 from Embeddings import MODEL_NAME
@@ -22,19 +22,17 @@ from SlidingWindow import SlidingWindow
 from RequestPolicy import completion, fatal_provider_error, status_code, cancel_event
 from MemoryContext import build_memory_context, get_benchmark_tokenizer, positive_count, PACKING_POLICY, WINDOW_PACKING_POLICY, TOKENIZER_REVISION
 from AuditProvenance import code_identity, hardware_identity, memory_identity
+from Compaction import OPTION_KEYS as COMPACTION_KEYS, validate_options as compaction_options, POLICY as COMPACTION_POLICY, COMPACTION_PROMPT, digest as compaction_digest
 from ResultAnalysis import complete_sum, question_phase_seconds, context_tokens
+import ExperimentRecording as Recording
 
-BENCHMARK_MODULES = MODULES[:-1] + ['question_only', 'full_context']
-PROTOCOL_VERSION = 'locomo-controlled-v3'
-MODULE_CAPABILITIES = {
-    name: dict(records=name in ('sliding_window', 'vector_store', 'vector_store_reranker', 'fact_store') or name in (*HYBRIDS, 'beta', 'gamma', 'windowed_fact_store'),
-               reranker=name in RERANKED_MODULES,
-               summary=name == 'summarization' or name in ('delta', 'epsilon', 'alpha', 'windowed_summarization'),
-               facts=name in ('fact_store', 'epsilon', 'zeta', 'gamma', 'windowed_fact_store'),
-               hybrid=name in HYBRIDS, components=list(HYBRIDS.get(name, ())), memory=name in MODULES[:-1])
-    for name in BENCHMARK_MODULES
-}
-STEMMER = PorterStemmer()
+from BenchmarkConfig import BENCHMARK_MODULES, PROTOCOL_VERSION, MODULE_CAPABILITIES
+
+@lru_cache(maxsize=1)
+def get_stemmer():
+    from nltk.stem import PorterStemmer
+    return PorterStemmer()
+
 
 def normalize(text):
     text = str(text).lower().replace(',', '')
@@ -42,8 +40,8 @@ def normalize(text):
     return re.sub(r'\b(a|an|the|and)\b', ' ', text).split()
 
 def f1(prediction, answer):
-    p = [STEMMER.stem(t) for t in normalize(prediction)]
-    a = [STEMMER.stem(t) for t in normalize(answer)]
+    p = [get_stemmer().stem(t) for t in normalize(prediction)]
+    a = [get_stemmer().stem(t) for t in normalize(answer)]
     common = sum((Counter(p) & Counter(a)).values())
     return 2 * common / (len(p) + len(a)) if common else 0.0
 
@@ -112,6 +110,13 @@ def storage_metrics(module):
                 evicted_count=snapshot['config'].get('evicted_count', 0),
                 current_facts=sum(e.get('metadata', {}).get('status') == 'current' for e in snapshot['entries']),
                 historical_facts=sum(e.get('metadata', {}).get('status') in ('superseded', 'corrected', 'retracted') for e in snapshot['entries']))
+    records = getattr(module, '_records', getattr(module, '_facts', None))
+    vectors = ([record[1] for record in (records.values() if isinstance(records, dict) else records)]
+               if records is not None else [])
+    metrics['embedding_arrays_serialized_bytes'] = len(Recording.canonical(vectors)) if vectors else 0
+    metrics['storage_byte_definitions'] = dict(stored_text_bytes='active logical UTF-8 text; excludes metadata/vectors/audit',
+        snapshot_bytes='inspection JSON including metadata and event references; excludes embedding arrays and audit payloads',
+        embedding_arrays_serialized_bytes='JSON numeric arrays; not resident RAM, weights or ANN index size')
     if hasattr(module, 'components'):
         metrics['components'] = {name: storage_metrics(child) for name, child in module.components.items()}
         metrics['component_usage'] = deepcopy(snapshot['component_usage'])
@@ -178,12 +183,19 @@ def direct_answer(module, question, diagnostics, conversation_text=None,
     diagnostics['api_cost_usd'] = None
     messages = [{'role': 'system', 'content': ANSWER_SYSTEM},
                 {'role': 'user', 'content': f'Conversation:\n{context or "(No conversation supplied.)"}\n\nQuestion: {question}'}]
+    diagnostics['context_artifact'] = Recording.capture('answer-context', dict(
+        memory_state_artifact=diagnostics.get('memory_state_artifact'),
+        supplied_context=context, entries=diagnostics['retrieved'], messages=messages,
+        tokenizer=deepcopy(getattr(tokenizer, 'identity', None)),
+        token_count=diagnostics.get('memory_context_tokens'),
+        packing={k: deepcopy(diagnostics[k]) for k in ('packing_policy', 'candidate_count',
+            'included_count', 'omitted_count', 'context_truncated', 'components', 'candidate_artifact') if k in diagnostics}))
     # Conservative byte-based budget, not an exact provider tokenizer count.
     # One token per UTF-8 byte plus a generous framing allowance avoids truncation.
     budget = sum(len(m['content'].encode('utf-8')) for m in messages) + 1024
     diagnostics.update(input_token_budget=budget, token_count_method='utf8-byte-conservative-budget',
                        context_limit=context_limit, max_output_tokens=max_output_tokens,
-                       answer_llm_calls=0)
+                       answer_llm_calls=diagnostics.get('answer_llm_calls', 0))
     if budget + max_output_tokens > context_limit:
         raise ContextLimitExceeded('Full request exceeds the conservative context budget; no truncation applied.')
     started = time.perf_counter()
@@ -269,6 +281,8 @@ def validate_dataset(data):
                 raise ValueError('Evidence must be a list of dialogue ID strings')
 
 def options_for(data, options):
+    if 'seed' in options:
+        raise ValueError('This provider protocol does not support explicit seed control.')
     modules = options.get('modules', [options.get('module', MODULES[0])])
     if isinstance(modules, str):
         modules = [modules]
@@ -287,6 +301,8 @@ def options_for(data, options):
     if context_mode not in ('full', 'question_only'):
         raise ValueError('No-memory context must be full or question_only.')
     mode = modules[0]
+    if mode != 'compaction' and set(options) & set(COMPACTION_KEYS):
+        raise ValueError('Compaction controls only apply to compaction.')
     if mode == 'no_memory':
         mode = 'full_context' if context_mode == 'full' else 'question_only'
     elif 'no_memory_context' in options and mode in ('full_context', 'question_only'):
@@ -296,6 +312,8 @@ def options_for(data, options):
     context_mode = 'full' if mode == 'full_context' else 'question_only'
     caps = MODULE_CAPABILITIES[mode]
     memory_options = {}
+    if mode == 'compaction':
+        memory_options.update(compaction_options(options))
     window_size = window_size_for(mode, options, 100 if mode in WINDOW_HYBRIDS else 10)
     if 'window_size' in options or mode in WINDOW_HYBRIDS:
         memory_options['window_size'] = window_size
@@ -318,7 +336,7 @@ def options_for(data, options):
         if key in options and key not in allowed:
             raise ValueError(f'{key} does not apply to {mode}')
     if caps['memory']:
-        memory_options['memory_context_tokens'] = options.get('memory_context_tokens', 2000)
+        memory_options['memory_context_tokens'] = options.get('memory_context_tokens', 8000)
         positive_count(memory_options['memory_context_tokens'], 'memory_context_tokens')
     if caps['records']:
         memory_options['retrieval_k'] = options.get('retrieval_k')
@@ -390,6 +408,20 @@ class BenchmarkJob:
                            answer_model='deepseek-flash', judge_model='deepseek-flash', judge_prompt_version=JUDGE_PROMPT_VERSION, scoring='binary-semantic-correctness',
                            progress={'completed': 0, 'total': 0}, cases=[], memories=[], errors=[])
         self.result['config_hash'] = hashlib.sha256(json.dumps(self.options, sort_keys=True).encode()).hexdigest()
+        self.result['recording'] = Recording.new_archive()
+        self.result['dataset_artifact'] = Recording.put(self.result['recording'], 'dataset', data)
+        self.result['recording_contract'] = dict(version=Recording.VERSION,
+            configuration_owner='config; module inspect records effective component settings',
+            explicitly_supplied_options=sorted(k for k in (options or {}) if k in self.options),
+            selection_policy='dataset sample order; numeric session order; original turn order; category filter then prefix',
+            category_coverage=dict(Counter(str(q['category']) for q in manifest)),
+            seed_control='unsupported; provider default',
+            timing_scope='application wall time includes recording/checkpoint overhead; request provider_seconds isolates SDK transport',
+            replay_guarantee='recorded local state and supplied requests; remote stochastic outputs are not guaranteed')
+        if mode == 'compaction':
+            self.result.update(packing_policy=COMPACTION_POLICY, memory_model='deepseek-flash',
+                memory_model_settings=dict(thinking='enabled', reasoning_effort='high', max_tokens=16384),
+                protocol='whole-window-compaction-v1; complete-state-no-secondary-packing; no-qa-writeback')
         self.result['provenance_version'] = 1
         self.result['code_identity'] = code_identity()
         self.result['hardware'] = hardware_identity()
@@ -413,6 +445,8 @@ class BenchmarkJob:
             self.result['memory_prompt_hash'] = hashlib.sha256(prompt.encode()).hexdigest()
         else:
             self.result['memory_prompt_hash'] = None
+        if mode == 'compaction':
+            self.result['memory_prompt_hash'] = compaction_digest(COMPACTION_PROMPT)
         if mode in HYBRIDS:
             from Summarization import SUMMARY_PROMPT
             from TemporalFactStore import TEMPORAL_FACT_PROMPT
@@ -425,7 +459,8 @@ class BenchmarkJob:
             self.result['hybrid_components'] = list(HYBRIDS[mode])
         from importlib.metadata import version, PackageNotFoundError
         self.result['dependency_versions'] = {}
-        for package in ('openai', 'transformers', 'sentence-transformers', 'nltk'):
+        for package in ('openai', 'transformers', 'sentence-transformers', 'tokenizers',
+                        'torch', 'numpy', 'huggingface-hub', 'nltk', 'flask', 'python-dotenv'):
             try:
                 self.result['dependency_versions'][package] = version(package)
             except PackageNotFoundError:
@@ -461,6 +496,35 @@ class BenchmarkJob:
         if config.get('modules') == ['no_memory'] and 'no_memory_context' not in config:
             config['no_memory_context'] = 'full' if 'full-context' in previous.get('protocol', '') else 'question_only'
         job = cls(data, config)
+        Recording.validate(previous)
+        if previous.get('recording') is not None:
+            Recording.check_compatibility(previous, job.result)
+            if Recording.get(previous['recording'], previous.get('dataset_artifact'), 'dataset') != data:
+                raise ValueError('Recorded dataset artifact does not match resume data.')
+            job.result['recording'] = deepcopy(previous['recording'])
+            job.result['dataset_artifact'] = deepcopy(previous['dataset_artifact'])
+            job.result['recording_contract'] = deepcopy(previous['recording_contract'])
+            job._frozen_cache = {str(m['sample_id']): deepcopy(m) for m in
+                                 [*previous.get('previous_ingestions', []), *previous.get('memories', [])]
+                                 if m.get('formation_complete') and not m.get('error') and m.get('memory_state_artifact')}
+            for case in previous.get('cases', []):
+                if case.get('prediction') is not None and (not case.get('diagnostics', {}).get('context_artifact')
+                        or not case.get('diagnostics', {}).get('memory_state_artifact')):
+                    raise ValueError('Recorded prediction is missing its original memory/context identity.')
+                if case.get('prediction') is not None:
+                    d = case['diagnostics']
+                    frozen = job._frozen_cache.get(str(case['sample_id']))
+                    if not frozen or frozen['memory_state_artifact'] != d['memory_state_artifact']:
+                        raise ValueError('Recorded prediction has no compatible frozen memory; rebuilding is forbidden.')
+                    context = Recording.get(previous['recording'], d['context_artifact'], 'answer-context')
+                    if context.get('memory_state_artifact') != d['memory_state_artifact']:
+                        raise ValueError('Prediction context and frozen memory identity disagree.')
+        else:
+            # Do not pretend a legacy reconstruction retroactively archived old requests.
+            job.result.pop('recording', None)
+            job.result.pop('dataset_artifact', None)
+            job.result['recording_contract'] = dict(version=0, legacy_resume=True,
+                replay_guarantee='legacy rebuilding; original state/context may be unavailable')
         if job.options['modules'][0] in RERANKED_MODULES and (
                 previous.get('reranker') != job.result['reranker'] or
                 (job.options['modules'][0] != 'vector_store_reranker' and
@@ -477,12 +541,22 @@ class BenchmarkJob:
         for field in ('answer_model', 'judge_model'):
             if previous.get(field, 'deepseek-flash') != job.result[field]:
                 raise ValueError('Saved run uses a different model.')
+        if job.options['modules'] == ['compaction']:
+            for field in ('memory_model', 'memory_model_settings'):
+                if previous.get(field) != job.result.get(field):
+                    raise ValueError('Resume requires matching ' + field)
+            if previous.get('recording') is None:
+                job._compaction_cache = {str(m['sample_id']): deepcopy(m) for m in previous.get('memories', [])
+                                         if m.get('error') is None and m.get('compaction_artifact')}
         job.result['run_id'] = previous['run_id']
         job.result['cases'] = deepcopy(previous.get('cases', []))
         job.result['resume_count'] = previous.get('resume_count', 0) + 1
         job.result['previous_ingestions'] = deepcopy(previous.get('previous_ingestions', [])) + deepcopy(previous.get('memories', []))
         job.result['previous_code_identities'] = deepcopy(previous.get('previous_code_identities', [])) + [deepcopy(previous.get('code_identity'))]
         job.result['resumed_from_status'] = previous.get('status')
+        for field in ('compaction_campaign',):
+            if field in previous:
+                job.result[field] = deepcopy(previous[field])
         return job
 
     @classmethod
@@ -501,9 +575,12 @@ class BenchmarkJob:
     def set_persistence_callback(self, callback):
         self._persistence_callback = callback
     def persist(self):
-        callback = self._persistence_callback
-        if callback:
-            callback(self.snapshot())
+        # Include the callback in serialization: an older snapshot cannot finish
+        # writing after a later one in another thread.
+        with self.lock:
+            callback = self._persistence_callback
+            if callback:
+                callback(self.snapshot())
     def snapshot(self):
         with self.lock:
             return deepcopy(self.result)
@@ -531,7 +608,38 @@ class BenchmarkJob:
         now = time.monotonic()
         if phase or force or now - getattr(self, '_last_progress_persist', 0) > .4:
             self._last_progress_persist = now
+            if getattr(self, '_formation_checkpoint', None):
+                self._formation_checkpoint()
             self.persist()
+
+    def record_memory(self, module, sample, mode, ingestion, error=None, complete=False):
+        """Update one construction checkpoint; its immutable objects remain archived."""
+        with self.lock:
+            saved = dict(sample_id=sample['sample_id'], module=mode, memory=module.inspect(),
+                         identity=memory_identity(module), ingestion=deepcopy(ingestion),
+                         error=error, formation_complete=complete)
+            archive = self.result.get('recording')
+            if archive is not None:
+                saved['memory_state_artifact'] = Recording.freeze(module, archive)
+                saved['state_storage'] = Recording.state_storage(archive, saved['memory_state_artifact'])
+                saved['source_artifact'] = Recording.put(archive, 'ordered-source',
+                    [dict(text=e.text, metadata=e.metadata) for e in conversation_entries(sample['conversation'])])
+                saved['archive_storage'] = Recording.archive_metrics(archive)
+            if mode == 'compaction':
+                artifact = module.export_state()
+                # The run archive owns payloads. Retain the existing compact-state
+                # envelope for older analysis consumers without a second archive.
+                if archive is not None:
+                    artifact.pop('recording', None)
+                saved.update(compaction_artifact=artifact,
+                             compaction_source_sha256=compaction_digest(sample['conversation']))
+            for i, old in enumerate(self.result['memories']):
+                if old['ingestion']['ingestion_id'] == ingestion['ingestion_id']:
+                    self.result['memories'][i] = saved
+                    break
+            else:
+                self.result['memories'].append(saved)
+            return saved
 
     def wait_for_review(self, sample_id, module, full_context):
         self.review_continue.clear()
@@ -565,11 +673,16 @@ class BenchmarkJob:
 
     def run(self):
         request_token = cancel_event.set(self.cancel)
+        archive_token = Recording.active_archive.set(self.result.get('recording'))
+        checkpoint_token = Recording.checkpoint.set(lambda: self.live_progress(force=True))
         try:
             self._run()
         finally:
             # Initial checkpoints can fail before the evaluation try/finally.
             cancel_event.reset(request_token)
+            Recording.active_archive.reset(archive_token)
+            Recording.checkpoint.reset(checkpoint_token)
+            self._formation_checkpoint = None
 
     def _run(self):
         self.update(status='running')
@@ -604,50 +717,80 @@ class BenchmarkJob:
                     self.live_progress('ingestion', sample_id=sample['sample_id'], conversation_index=conversation_index, conversation_total=len(question_sets), turn_completed=0, turn_total=turns_total)
                     preparation_started = time.perf_counter()
                     factory_options = {key: self.options[key] for key in ('max_stored_entries', 'max_summary_tokens', 'fact_history_mode', 'candidate_k') if key in self.options}
+                    if mode == 'compaction':
+                        factory_options.update({key: self.options[key] for key in (*COMPACTION_KEYS, 'memory_context_tokens')})
                     if mode in WINDOW_HYBRIDS:
                         factory_options['max_items'] = self.options['window_size']
                     if mode in HYBRIDS:
                         factory_options.update({key: self.options[key] for key in ('hybrid_shares', 'component_options', 'memory_context_tokens')})
                     module = NoMemory() if mode in ('full_context', 'question_only') else MemoryFactory.create_memory_module(mode, extractor=benchmark_extractor, tokenizer=self.tokenizer, **factory_options)
                     ingestion = dict(ingestion_id=str(uuid4()), memory_llm_calls=0, memory_tokens=0, memory_prompt_tokens=0, memory_completion_tokens=0, write_seconds=0.0, ingested_turns=0, api_cost_usd=None, storage_growth=[dict(session=None, ingested_turns=0, **storage_metrics(module))])
+                    if mode == 'compaction':
+                        ingestion['compaction_events'] = []
                     start = time.perf_counter()
                     token = collector.set(ingestion)
                     ingestion_error = None
+                    self._formation_checkpoint = lambda: self.record_memory(module, sample, mode, ingestion)
                     try:
                         full_context = None
                         if mode in ('full_context', 'question_only'):
                             full_context = ''
                             if mode == 'full_context':
                                 full_context = '\n\n'.join(e.text for e in conversation_entries(sample['conversation']))
+                            ingestion['ingested_turns'] = turns_total
                             self.live_progress(ingestion_completed=self.result['progress']['ingestion_completed'] + turns_total, turn_completed=turns_total)
                         else:
-                            current_session = None
-                            batch_size = self.options['summary_batch_size'] if MODULE_CAPABILITIES[mode]['summary'] and mode not in PERIODIC_MODULES else 1
-                            for batch in ingestion_batches(sample['conversation'], batch_size):
-                                entry = batch[0]
-                                if self.cancel.is_set():
-                                    return
-                                if current_session is not None and entry.metadata['session'] != current_session:
+                            frozen = getattr(self, '_frozen_cache', {}).get(str(sample['sample_id']))
+                            cached = getattr(self, '_compaction_cache', {}).get(str(sample['sample_id'])) if mode == 'compaction' else None
+                            if frozen:
+                                Recording.restore(module, self.result['recording'], frozen['memory_state_artifact'])
+                                ingestion.update(ingested_turns=turns_total,
+                                    reused_artifact_sha256=frozen['memory_state_artifact']['artifact_sha256'],
+                                    construction_id=frozen['ingestion'].get('construction_id', frozen['ingestion']['ingestion_id']),
+                                    construction_action='frozen_reuse')
+                                self.live_progress(ingestion_completed=self.result['progress']['ingestion_completed'] + turns_total,
+                                                   turn_completed=turns_total)
+                            elif cached:
+                                if cached.get('compaction_source_sha256') != compaction_digest(sample['conversation']):
+                                    raise ValueError('Frozen compaction source does not match this conversation.')
+                                module.restore_state(cached['compaction_artifact'])
+                                ingestion.update(ingested_turns=turns_total, reused_artifact_sha256=cached['compaction_artifact']['sha256'])
+                                self.live_progress(ingestion_completed=self.result['progress']['ingestion_completed'] + turns_total,
+                                                   turn_completed=turns_total)
+                            else:
+                                current_session = None
+                                batch_size = self.options['summary_batch_size'] if MODULE_CAPABILITIES[mode]['summary'] and mode not in PERIODIC_MODULES else 1
+                                for batch in ingestion_batches(sample['conversation'], batch_size):
+                                    entry = batch[0]
+                                    if self.cancel.is_set():
+                                        return
+                                    if current_session is not None and entry.metadata['session'] != current_session:
+                                        ingestion['storage_growth'].append(dict(session=current_session, ingested_turns=ingestion['ingested_turns'], **storage_metrics(module)))
+                                    current_session = entry.metadata['session']
+                                    write_started = time.perf_counter()
+                                    try:
+                                        if mode in HYBRIDS or mode == 'alpha':
+                                            module.write_batch(batch)
+                                        else:
+                                            module.write(MemoryEntry('\n\n'.join(e.text for e in batch), entry.metadata) if len(batch) > 1 else entry)
+                                    finally:
+                                        ingestion['write_seconds'] += time.perf_counter() - write_started
+                                    ingestion['ingested_turns'] += len(batch)
+                                    self.live_progress(ingestion_completed=self.result['progress']['ingestion_completed'] + len(batch), turn_completed=ingestion['ingested_turns'])
+                                if mode in PERIODIC_MODULES and not self.cancel.is_set():
+                                    write_started = time.perf_counter()
+                                    try:
+                                        module.flush()
+                                    finally:
+                                        ingestion['write_seconds'] += time.perf_counter() - write_started
+                                if mode == 'compaction' and self.options['compaction_mode'] == 'one_shot' and not self.cancel.is_set():
+                                    write_started = time.perf_counter()
+                                    try:
+                                        module.compact(reason='before_qa')
+                                    finally:
+                                        ingestion['write_seconds'] += time.perf_counter() - write_started
+                                if current_session is not None:
                                     ingestion['storage_growth'].append(dict(session=current_session, ingested_turns=ingestion['ingested_turns'], **storage_metrics(module)))
-                                current_session = entry.metadata['session']
-                                write_started = time.perf_counter()
-                                try:
-                                    if mode in HYBRIDS or mode == 'alpha':
-                                        module.write_batch(batch)
-                                    else:
-                                        module.write(MemoryEntry('\n\n'.join(e.text for e in batch), entry.metadata) if len(batch) > 1 else entry)
-                                finally:
-                                    ingestion['write_seconds'] += time.perf_counter() - write_started
-                                ingestion['ingested_turns'] += len(batch)
-                                self.live_progress(ingestion_completed=self.result['progress']['ingestion_completed'] + len(batch), turn_completed=ingestion['ingested_turns'])
-                            if mode in PERIODIC_MODULES and not self.cancel.is_set():
-                                write_started = time.perf_counter()
-                                try:
-                                    module.flush()
-                                finally:
-                                    ingestion['write_seconds'] += time.perf_counter() - write_started
-                            if current_session is not None:
-                                ingestion['storage_growth'].append(dict(session=current_session, ingested_turns=ingestion['ingested_turns'], **storage_metrics(module)))
                     except Exception as error:
                         ingestion_error = str(error)
                         self.mark_ingestion_blocked(mode, sample, questions, ingestion_error, existing)
@@ -655,12 +798,15 @@ class BenchmarkJob:
                             self.update(status='failed', error=str(error), failure_status_code=status_code(error))
                             return
                     finally:
+                        self._formation_checkpoint = None
                         collector.reset(token)
                         ingestion['total_seconds'] = time.perf_counter() - start
                         ingestion['preparation_seconds'] = time.perf_counter() - preparation_started
                         ingestion['final_storage'] = storage_metrics(module)
-                        with self.lock:
-                            self.result['memories'].append(dict(sample_id=sample['sample_id'], module=mode, memory=module.inspect(), identity=memory_identity(module), ingestion=ingestion, error=ingestion_error))
+                        ingestion.setdefault('construction_id', ingestion['ingestion_id'])
+                        ingestion.setdefault('construction_action', 'build')
+                        saved_memory = self.record_memory(module, sample, mode, ingestion, ingestion_error,
+                            complete=ingestion_error is None and not self.cancel.is_set())
                         self.persist()
                     if ingestion_error:
                         with self.lock:
@@ -678,26 +824,38 @@ class BenchmarkJob:
                         stop_error = None
                         d = {}
                         previous_diagnostics = (previous_case or {}).get('diagnostics', {})
+                        previous_judge_seconds = question_phase_seconds(previous_diagnostics, 'judge') if previous_case else 0.0
                         previous_phases = {phase: question_phase_seconds(previous_diagnostics, phase) if previous_case else 0.0
                                            for phase in ('retrieval', 'answer')}
                         d.update({'execution_' + phase + '_seconds': seconds for phase, seconds in previous_phases.items()})
                         previous_execution_seconds = (previous_case or {}).get('diagnostics', {}).get('execution_total_seconds',
                             (previous_case or {}).get('diagnostics', {}).get('total_seconds', 0))
                         case = dict(sample_id=sample['sample_id'], module=mode, question_index=index, question=qa['question'], category=qa['category'], answer=qa.get('answer'), evidence=qa.get('evidence', []), diagnostics=d, score=None, exact_match=None, token_f1=None, judge=None, correct=None, evidence_recall=None)
+                        if previous_case and self.result.get('recording') is not None:
+                            case['previous_attempt_artifact'] = Recording.capture('case-attempt', previous_case)
+                        attempt_checkpoint = Recording.checkpoint.set(lambda: self.save_case(case))
                         try:
                             case_started = time.perf_counter()
                             d.update(status='running', query=qa['question'], answer_tokens=0, judge_tokens=0,
-                                     judge_seconds=0.0, judge_llm_calls=0)
+                                     judge_seconds=0.0, judge_llm_calls=0,
+                                     execution_judge_seconds=previous_judge_seconds)
                             d['stored_before'] = len(module.inspect()['entries'])
                             d['ingestion_id'] = ingestion['ingestion_id']
+                            d['memory_state_artifact'] = deepcopy(saved_memory.get('memory_state_artifact'))
                             if previous_case and previous_case.get('prediction') is not None:
                                 d.update(deepcopy(previous_case['diagnostics']))
-                                d.update(judge_llm_calls=0, judge_seconds=0.0, judge_retries=[], prediction_reused=True)
+                                d.update(judge_seconds=0.0, prediction_reused=True)
+                                # Preserve failed judge transport work and original
+                                # prediction/context links across judge-only resume.
+                                d.setdefault('judge_llm_calls', 0)
                                 d.pop('judge_status', None)
                                 d['final_answer'] = previous_case['prediction']
                                 d.update({'execution_' + phase + '_seconds': seconds for phase, seconds in previous_phases.items()})
                             else:
                                 d.update(retrieval_seconds=0.0, answer_seconds=0.0)
+                                for key in ('provider_requests', 'answer_retries', 'answer_llm_calls'):
+                                    if key in previous_diagnostics:
+                                        d[key] = deepcopy(previous_diagnostics[key])
                                 try:
                                     d['final_answer'] = direct_answer(module, qa['question'], d, conversation_text=full_context, context_limit=self.options['context_limit'], max_output_tokens=self.options['max_output_tokens'], memory_context_tokens=self.options.get('memory_context_tokens'), retrieval_k=self.options.get('retrieval_k'), tokenizer=self.tokenizer)
                                 finally:
@@ -713,6 +871,14 @@ class BenchmarkJob:
                                 trace['evidence_recall'] = len(evidence & ids)/len(evidence) if evidence else None
                                 trace['evidence_basis'] = 'fact_source_provenance' if any(r.get('fact_id') for r in trace['records']) else 'original_turn'
                             case['prediction'] = d['final_answer']
+                            requests = [r for r in d.get('provider_requests', [])
+                                        if r.get('phase') == 'answer' and r.get('status') == 'completed']
+                            final_request = requests[-1] if requests else {}
+                            case['prediction_artifact'] = Recording.capture('prediction', dict(
+                                text=case['prediction'], context_artifact=d.get('context_artifact'),
+                                memory_state_artifact=d.get('memory_state_artifact'),
+                                request_artifact=final_request.get('request_artifact'),
+                                response_artifact=final_request.get('response_artifact')))
                             case['score'] = score(d['final_answer'], qa.get('answer', ''), qa['category'])
                             case['exact_match'] = exact_match(d['final_answer'], qa.get('answer', ''), qa['category'])
                             case['token_f1'] = token_f1(d['final_answer'], qa.get('answer', ''), qa['category'])
@@ -720,7 +886,7 @@ class BenchmarkJob:
                             self.save_case(case)
                             self.live_progress('judge')
                             try:
-                                judge, elapsed, tokens = judge_answer(qa['question'], None if qa['category'] == 5 else qa.get('answer'), d['final_answer'], [full_context] if full_context is not None else [e['text'] for e in d['retrieved']], diagnostics=d)
+                                judge, elapsed, tokens = judge_answer(qa['question'], None if qa['category'] == 5 else qa.get('answer'), d['final_answer'], [d['supplied_context']] if full_context is not None else [e['text'] for e in d['retrieved']], diagnostics=d)
                                 d['judge_seconds'] = elapsed; d['judge_tokens'] = tokens
                                 case['judge'] = judge
                                 case['correct'] = judge['correct']
@@ -730,6 +896,8 @@ class BenchmarkJob:
                                 d['judge_tokens'] = None
                                 if fatal_provider_error(judge_error):
                                     stop_error = judge_error
+                            finally:
+                                d['execution_judge_seconds'] = complete_sum([previous_judge_seconds, d.get('judge_seconds')])
                             d['total_seconds'] = time.perf_counter() - case_started
                             d['stored_after'] = len(module.inspect()['entries'])
                             if mode in ('sliding_window', 'vector_store', 'vector_store_reranker', 'fact_store', 'beta', 'full_context') and qa.get('evidence'):
@@ -760,6 +928,8 @@ class BenchmarkJob:
                             if fatal_provider_error(error):
                                 stop_error = error
                             d.update(status='context_limit_exceeded' if isinstance(error, ContextLimitExceeded) else 'error', error=str(error), total_seconds=time.perf_counter() - case_started)
+                        finally:
+                            Recording.checkpoint.reset(attempt_checkpoint)
                         elapsed = time.perf_counter() - case_started
                         d['execution_total_seconds'] = (previous_execution_seconds + elapsed
                             if isinstance(previous_execution_seconds, (int, float)) else None)
@@ -891,6 +1061,11 @@ class BenchmarkJob:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--retain-percent', type=float, default=argparse.SUPPRESS)
+    parser.add_argument('--compaction-mode', choices=['one_shot', 'repeated'], default=argparse.SUPPRESS)
+    parser.add_argument('--compaction-trigger-tokens', type=int, default=argparse.SUPPRESS)
+    parser.add_argument('--compaction-source-entries', type=int, default=argparse.SUPPRESS,
+                        help='One-shot only: last N source entries; omit for the complete conversation.')
     parser.add_argument('--window-size', type=int, default=argparse.SUPPRESS, help='Recent turns retained by window architectures; defaults: hybrids 100, sliding window 10.')
     parser.add_argument('--dataset', required=True)
     parser.add_argument('--output', required=True)
@@ -922,11 +1097,17 @@ def main():
     parser.add_argument('--review-memory', action='store_true', help='Review pauses are controlled by the web worker.')
     parser.add_argument('--resume', help='Saved results JSON; reuse successful answers and retry failed/pending work.')
     args = parser.parse_args()
+    from pathlib import Path
+    target = Path(args.output)
+    if target.exists() and (not args.resume or target.resolve() != Path(args.resume).resolve()):
+        parser.error('Output already exists. Choose a new path, or explicitly resume that same report.')
     if args.review_memory:
         parser.error('Use Test Benchmark for interactive memory review.')
-    with open(args.dataset) as f:
+    with open(args.dataset, encoding='utf-8-sig') as f:
         data = json.load(f)
     if args.resume:
+        if set(vars(args)) & set(COMPACTION_KEYS):
+            parser.error('Resume uses saved compaction settings; start a new run to change them.')
         if any(key in vars(args) for key in ('retrieval_k', 'max_stored_entries', 'memory_context_tokens', 'max_summary_tokens', 'no_memory_context', 'hybrid_shares', 'component_options', 'candidate_k', 'window_size')):
             parser.error('Resume uses saved memory settings; start a new run to change them.')
         with open(args.resume, encoding='utf-8') as source:
@@ -934,11 +1115,13 @@ def main():
     else:
         job = BenchmarkJob(data, vars(args))
     def checkpoint(snapshot):
-        from pathlib import Path
-        target = Path(args.output)
-        temporary = target.with_suffix(target.suffix + '.tmp')
-        temporary.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding='utf-8')
-        temporary.replace(target)
+        from BenchmarkStore import atomic_json
+        atomic_json(target, snapshot)
+    if not target.exists():
+        target.parent.mkdir(parents=True, exist_ok=True)
+        # Exclusive creation prevents racing new runs from claiming the same output.
+        with target.open('x', encoding='utf-8') as output:
+            json.dump(job.snapshot(), output, ensure_ascii=False)
     job.set_persistence_callback(checkpoint)
     try:
         job.run()

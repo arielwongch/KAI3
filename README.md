@@ -95,11 +95,29 @@ Then open http://localhost:5001. The default remains port 5000.
 
 ### Startup messages and saved-run recovery
 
+Pages start without loading provider clients, scoring libraries, or full saved
+reports. The first chat initializes its provider client; the first scoring call
+loads NLTK. Model/tokenizer loading still happens on first use of the relevant
+memory mode. These first operations can take longer than subsequent requests.
+
+Saved-run history uses small `.summary.json` cache files beside its snapshots.
+Older reports are indexed when the history panel opens, with loading feedback
+while larger reports are processed in the background. Full reports load when
+opened or exported. Cache files can be rebuilt from the original snapshots;
+they are excluded from the run list and removed when deleting their run.
+
+To measure startup without opening a port or making provider requests:
+
+```powershell
+.\venv\Scripts\python.exe tools/profile_startup.py --repeat 3
+.\venv\Scripts\python.exe tools/profile_startup.py --empty-store --repeat 3
+```
+
 `Requirement already satisfied` and pip update notices are informational. Flask's
 development-server warning is expected when running this app locally.
 
-A `Skipping unreadable benchmark snapshot` warning means one saved run could
-not be restored. Other valid runs still load, and the unreadable file is left
+A `Skipping unreadable benchmark snapshot` warning during history loading means
+one saved run could not be restored. Other valid runs still load, and the unreadable file is left
 unchanged. Inspect the named file in `instance/benchmark_runs/`, restore a valid
 JSON backup, or move it into a recovery subdirectory to exclude it from loading.
 Git conflict markers such as `<<<<<<< HEAD` make a file invalid JSON; preserve
@@ -213,6 +231,14 @@ configure finite capacity with oldest-record eviction.
 
 ### Periodic window modes
 
+Select **Compaction** for a configurable retained percentage of the complete
+active memory, either once before benchmark QA or repeatedly at a separate token
+threshold. Chat also supports manual compaction. Requested/actual percentages,
+attempts, latency, and usage are recorded, and successful frozen states are reused
+on resume. See the [compaction specification](spec/memory/compaction.md) for CLI
+examples, reader-budget rules, and the sweep preparation tool. No optimal or
+adaptive percentage has been established.
+
 Select **Windowed Summary** or **Windowed Fact Store** to retain the latest k
 entries and update long-term memory every k entries, using one shared window
 setting. Defaults are 10 user/assistant exchanges in chat and 100 speaker messages
@@ -289,7 +315,7 @@ summarization and facts; **Zeta** combines vector memory and facts. Both compone
 independently ingest original conversation turns. They are available in chat and
 benchmark selectors, the API, factory, and benchmark CLI.
 
-Hybrids share one context allowance (default 2,000 pinned benchmark tokens), with
+Hybrids share one context allowance (default 8,000 pinned benchmark tokens), with
 configurable shares defaulting to 50/50. Unused space can be used by the other
 component. Turns and facts remain whole; summaries can be shortened for context
 with explicit truncation tracking. Live hybrid chat also uses the pinned tokenizer,
@@ -354,7 +380,7 @@ Live-chat modes retain their existing behavior.
 
 Record-based modules (window/vector/facts) expose retrieval `k` and stored-record
 capacity. Summarization exposes only its summary-size limit. All eleven memory
-conditions share a configurable context-token allowance (default 2,000). These
+conditions share a configurable context-token allowance (default 8,000). These
 are fixed, pinned MiniLM tokenizer counts, not exact DeepSeek tokens. The first
 memory benchmark downloads the tokenizer if it is not cached; tokenizer failure
 stops preparation before paid calls. Actual provider token usage is separate.
@@ -597,3 +623,19 @@ or save a named copy with Export to Compare Runs; refresh the dropdown to see
 external changes. Selecting a file opens the same read-only report view without
 model calls. [Result-library rules](spec/frontend/compare_runs.md#library-upload-and-save-flow)
 also define filename preservation, duplicate handling, and the folder boundary.
+
+New benchmark exports contain a self-contained, hash-checked experiment archive:
+frozen memory (including vectors/pending state), compaction sources and every
+returned candidate, exact answering contexts, requests and prediction links.
+Resume reuses compatible frozen memory and preserves original prediction identity.
+Use Export results for portability; normal polling omits the archive payloads.
+Inspect locally with `python tools/inspect_recording.py path/to/results.json`.
+See the [recording contract and workflow](spec/benchmark/experiment_recording.md)
+and [research/gap audit](plans/experiment_recording_2026-11-10.md).
+
+For compaction comparison, Compare Runs includes aggregate compression factor,
+weighted retained percentage and event latency p95. The offline
+`tools/compaction_evaluate.py` workflow prepares/scores evidence-survival annotations
+and compares paired campaigns with conversation-clustered confidence intervals.
+It never invokes a model or overwrites existing reports. See
+[compaction evaluation instructions](spec/benchmark/compaction_evaluation.md).

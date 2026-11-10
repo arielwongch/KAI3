@@ -25,9 +25,27 @@ def run_worker(root, run_id):
         from Benchmark import BenchmarkJob, PROTOCOL_VERSION
         payload = read_json(path_for(root, run_id, '.input.json'))
         snapshot = payload['snapshot']
+        from ExperimentRecording import validate, check_compatibility
+        validate(snapshot)
         job = BenchmarkJob(payload['dataset'], snapshot['config'])
+        execution_identity = job.result
         job.result = snapshot
-        job.set_persistence_callback(lambda value: atomic_json(path_for(root, run_id), value))
+        if snapshot.get('recording') is not None:
+            job._frozen_cache = {str(m['sample_id']): m for m in
+                [*snapshot.get('previous_ingestions', []), *snapshot.get('memories', [])]
+                if m.get('formation_complete') and not m.get('error') and m.get('memory_state_artifact')}
+        elif snapshot.get('config', {}).get('modules') == ['compaction']:
+            job._compaction_cache = {str(m['sample_id']): m for m in
+                [*snapshot.get('previous_ingestions', []), *snapshot.get('memories', [])]
+                if not m.get('error') and m.get('compaction_artifact')}
+        from BenchmarkHistory import cache_summary
+        def persist(value):
+            path = path_for(root, run_id)
+            atomic_json(path, value)
+            cache_summary(path, value)
+        job.set_persistence_callback(persist)
+        if snapshot.get('recording') is not None:
+            check_compatibility(snapshot, execution_identity)
         job._resume_tokenizer = snapshot.get('tokenizer')
         if snapshot.get('protocol_version') != PROTOCOL_VERSION:
             job.update(status='failed', error='Legacy benchmark protocol cannot run in this worker. Start a new run.')

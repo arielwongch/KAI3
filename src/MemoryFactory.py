@@ -1,19 +1,23 @@
 from MemoryModule import MemoryModule
-from NoMemory import NoMemory
-from SlidingWindow import SlidingWindow
-from Summarization import Summarization
-from VectorStore import VectorStore
-from FactStore import FactStore
+from MemoryConfig import HYBRIDS, COMPACTION_OPTION_KEYS
 
 class MemoryFactory:
     @staticmethod
     def create_memory_module(module_type: str, **kwargs) -> MemoryModule:
+        if module_type == 'compaction':
+            from Compaction import Compaction, OPTION_KEYS
+            allowed = {*OPTION_KEYS, 'tokenizer', 'compressor', 'memory_context_tokens', 'extractor', 'embedder'}
+            if kwargs.keys() - allowed:
+                raise ValueError('Unsupported compaction option: ' + sorted(kwargs.keys() - allowed)[0])
+            return Compaction(**{k: v for k, v in kwargs.items() if k not in ('extractor', 'embedder')})
+        if kwargs.keys() & set(COMPACTION_OPTION_KEYS):
+            raise ValueError('Compaction controls only apply to compaction.')
         if module_type == 'no_memory':
+            from NoMemory import NoMemory
             return NoMemory()
 
-        from HybridMemory import HYBRIDS, HybridMemory, hybrid_settings, Alpha, Beta, Gamma
-        from WindowHybridMemory import WindowedSummarization, WindowedFactStore
         if module_type in ('alpha', 'beta', 'gamma', 'windowed_summarization', 'windowed_fact_store'):
+            from WindowHybridMemory import Alpha, Beta, Gamma, WindowedSummarization, WindowedFactStore
             allowed = {'max_items', 'tokenizer', 'embedder', 'extractor'}
             allowed |= {'summary_limit', 'max_summary_tokens'} if module_type in ('alpha', 'windowed_summarization') else {'max_stored_entries', 'candidate_k', 'reranker'}
             if module_type in ('gamma', 'windowed_fact_store'):
@@ -35,6 +39,7 @@ class MemoryFactory:
             fact_class = Gamma if module_type == 'gamma' else WindowedFactStore
             return fact_class(**common, extractor=kwargs.get('extractor'), fact_history_mode=kwargs.get('fact_history_mode', 'current'))
         if module_type in HYBRIDS:
+            from HybridMemory import HybridMemory, hybrid_settings
             names = HYBRIDS[module_type]
             allowed = {'hybrid_shares', 'component_options', 'memory_context_tokens', 'retrieval_k',
                        'max_stored_entries', 'embedder', 'tokenizer', 'extractor', 'candidate_k', 'reranker'}
@@ -61,7 +66,7 @@ class MemoryFactory:
                 child_type = 'vector_store_reranker' if name == 'vector_store' else name
                 components[name] = MemoryFactory.create_memory_module(child_type, **child_options)
             return HybridMemory(module_type, components, shares, options,
-                                kwargs.get('memory_context_tokens', 2000), kwargs.get('tokenizer'))
+                                kwargs.get('memory_context_tokens', 8000), kwargs.get('tokenizer'))
         controls = {'max_items', 'max_stored_entries', 'summary_limit', 'max_summary_tokens', 'fact_history_mode',
                     'hybrid_shares', 'component_options', 'memory_context_tokens', 'retrieval_k', 'candidate_k', 'reranker'}
         supported = {
@@ -79,22 +84,26 @@ class MemoryFactory:
         if 'fact_history_mode' in kwargs and kwargs['fact_history_mode'] not in ('current', 'versioned'):
             raise ValueError('Unknown fact history mode')
         if module_type == "sliding_window":
+            from SlidingWindow import SlidingWindow
             max_items = kwargs.get("max_stored_entries", kwargs.get("max_items", 10))
             if type(max_items) is not int or max_items < 1:
                 raise ValueError("max_items must be a positive integer")
             return SlidingWindow(max_items=max_items)
         elif module_type == "summarization":
+            from Summarization import Summarization
             summary_limit = kwargs.get("summary_limit", 10000)
             if type(summary_limit) is not int or summary_limit < 1:
                 raise ValueError("summary_limit must be a positive integer")
             return Summarization(summary_limit=summary_limit, max_summary_tokens=kwargs.get('max_summary_tokens'), tokenizer=kwargs.get('tokenizer'))
         elif module_type == "vector_store":
+            from VectorStore import VectorStore
             return VectorStore(embedder=kwargs.get("embedder"), max_stored_entries=kwargs.get('max_stored_entries'))
         elif module_type == "vector_store_reranker":
             from VectorStoreReranker import VectorStoreReranker
             return VectorStoreReranker(embedder=kwargs.get('embedder'), reranker=kwargs.get('reranker'),
                                        max_stored_entries=kwargs.get('max_stored_entries'), candidate_k=kwargs.get('candidate_k', 50))
         elif module_type == "fact_store":
+            from FactStore import FactStore
             fact_class = FactStore
             if kwargs.get('fact_history_mode') == 'versioned':
                 from TemporalFactStore import TemporalFactStore

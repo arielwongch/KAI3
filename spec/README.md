@@ -1,5 +1,8 @@
 # Component and feature specifications
 
+- [Experiment recording and portable archives](benchmark/experiment_recording.md)
+- [Compaction metrics, fidelity annotations and paired statistics](benchmark/compaction_evaluation.md)
+
 This directory describes implemented behavior, organized by ownership. Last
 source review: 2026-10-08. Check dates are not implementation/release dates.
 The shared shell, Compare Runs, benchmark export/result-library integration, local
@@ -30,6 +33,7 @@ See [updates](../UPDATES.md), [progress](../PROGRESS.md), and the
 | [Shared interface](memory/interface.md) | Entries, factory, agent integration, snapshots, shared lifecycle |
 | [Sliding window](memory/sliding_window.md) | Recent-turn storage, eviction, chronological context |
 | [Rolling summary](memory/summarization.md) | Summary updates, batching input, size enforcement |
+| [Compaction](memory/compaction.md) | Variable retained percentage, whole-window replacement, repeated operation, frozen artifacts, and event accounting |
 | [Vector memory](memory/vector_store.md) | Chunk embeddings, original-turn retrieval, similarity ordering |
 | [Vector Store + Reranker](memory/vector_store_reranker.md) | Vector shortlist, pinned cross-encoder, whole-turn reranking |
 | [Current facts](memory/fact_store.md) | Live-chat assertions, replacement, removal, current-fact retrieval |

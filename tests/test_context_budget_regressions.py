@@ -158,7 +158,7 @@ class ContextBudgetRegressionTests(unittest.TestCase):
                 job = Benchmark.BenchmarkJob(dataset(), dict(module=mode, window_size=2))
                 client = FakeOpenAIClient(['cat', judgment(1)])
                 with patch.object(Benchmark, 'get_benchmark_tokenizer', return_value=self.tokenizer), \
-                     patch.object(Summarization, 'call_api', return_value=('S' * 2000, 0, 3)), \
+                     patch.object(Summarization, 'call_api', return_value=('S' * 8000, 0, 3)), \
                      patch.object(Benchmark, 'client', client):
                     job.run()
                 report = job.snapshot()
@@ -166,7 +166,7 @@ class ContextBudgetRegressionTests(unittest.TestCase):
                 self.assertEqual(report['status'], 'completed')
                 self.assertEqual(diagnostics['tiers']['long_term']['included_count'], 1)
                 self.assertIn('Earlier conversation summary', diagnostics['supplied_context'])
-                self.assertLessEqual(diagnostics['memory_context_tokens'], 2000)
+                self.assertLessEqual(diagnostics['memory_context_tokens'], 8000)
                 self.assertIn('[Summary truncated]', client.calls[0]['messages'][1]['content'])
                 self.assertIn('[Summary truncated]', client.calls[1]['messages'][1]['content'])
 

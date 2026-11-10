@@ -1,6 +1,6 @@
 # Project progress
 
-Original phase review: 2026-10-08. Latest implementation/status update: 2026-11-04.
+Original phase review: 2026-10-08. Latest implementation/status update: 2026-11-10.
 The original five-item Phase 1 outline is preserved in
 [the development-plan archive](plans/archive/initial_phase.md), first recorded
 on 2026-09-15 in commit `df2e17f`.
@@ -307,3 +307,94 @@ new backend deletion tests and 20 Node frontend-state tests. Chrome smoke checks
 at 1440px/390px used synthetic runs only and verified confirm/cancel, active-run
 guards, file removal, report/selection reset, and preserved exported data. Changes
 remain local and uncommitted.
+# 2026-11-10 - Compaction memory
+
+Implemented the approved standalone `compaction` architecture with configurable
+retained percentage, one-shot/repeated operation, independent token triggers,
+explicit reader-budget enforcement, and transactional failure/cancellation.
+Chat includes manual compaction; benchmark/terminal CLIs and Compare Runs expose
+the new controls and measurements. Frozen successful states are reused on resume;
+attempt costs remain separate from reuse and unknown usage stays unknown.
+The sweep helper prepares independent conditions and frozen sources without
+provider calls by default. See the [specification](spec/memory/compaction.md) and
+[research decision record](plans/compaction_research_2026-11-10.md).
+
+Final offline verification: **267 Python tests passed** (including the frontend
+runner with **33 Node cases**); the expanded comparison UI checks also passed.
+Headless Chrome checks at 1440px and 390px verified Chat/Benchmark controls and a
+synthetic compaction scatter plot, with no document overflow or JavaScript
+exceptions. All six screenshots were visually inspected. Preview artifacts/logs
+are under ignored `instance/`; existing results were not changed. No paid
+provider experiments, model training, or adaptive-policy effectiveness claims.
+Changes remain local and uncommitted. Restart the server to load the new module.
+
+# 2026-11-10 - Startup performance
+
+Implemented lazy execution imports, a shared provider client initialized under a
+lock, lazy Porter stemming, summary-based saved-run history, background legacy
+indexing, lazy full reports, and incremental refresh. Existing in-process job
+authority, worker leases, report isolation, and recovery/deletion guards remain.
+First-chat/history loading feedback and a bounded entry-point probe were added.
+
+Measured script initialization fell from 12.806-13.308 s to 0.776-0.836 s in
+repeated populated-store runs. Startup performs no snapshot reads or heavy
+library imports. Temporary copies of all 21 reports (108.1 MiB) verified 15 ms
+initial history listing, 6 ms repeated polling without full-report rereads, and
+on-demand selected-report loading. Original reports were preserved. Provider
+construction and scoring retain measured first-use costs of 2.775 s and 4.739 s.
+
+Final checks: 281 offline Python tests and 36 combined Node tests passed. No
+provider requests were made. See the [implementation evidence](plans/startup_performance_2026-11-10.md).
+Changes remain local and uncommitted; restart the server to apply them.
+## 2026-11-10 - Benchmark architecture scroll fix
+
+Anchored hidden architecture radios to their cards with `position:relative`.
+This fixes native focus scrolling the outer document and moving the entire
+application upward after selecting lower cards such as Epsilon or Compaction.
+The [diagnosis and resolution](plans/benchmark_module_scroll_fix_2026-11-10.md)
+record the cause and evidence.
+
+The reusable isolated Chromium regression passed 140 real clicks, 112 keyboard
+selections, and 266 geometry checks across four desktop/phone viewports and
+expanded/collapsed desktop sidebars. Wheel scrolling reaches both ends without
+refreshing; root/header/sidebar displacement stays zero. A temporary browser-only
+reversion reproduced a regression failure. All 34 Node frontend cases and the
+comparison UI checks passed. Focused CSS validation only; no full Python-suite
+rerun, provider calls, or user-result modifications. Local/uncommitted.
+## 2026-11-10 - Default reader allowance
+
+Raised the new-run memory context allowance from 2,000 to 8,000 benchmark tokens
+across benchmark configuration, chat hybrid/compaction defaults, constructors,
+CLI, and sweep preparation. Benchmark summary caps follow the reader allowance
+when unspecified; explicit settings and saved runs remain authoritative.
+Compaction trigger tokens remain independently configurable. Updated current
+documentation and existing default-dependent regression expectations. No saved
+results or provider experiments were changed.
+
+Validation: all 281 offline Python tests passed, including the frontend runner;
+all 34 Node frontend cases passed. `git diff --check` passed. Local/uncommitted.
+
+## Experiment recording - 2026-11-10
+
+Follow-up: the three paper-audit priorities are implemented in the separate
+[compaction evaluation workflow](spec/benchmark/compaction_evaluation.md): aggregate
+compression factor/weighted retention, frozen-output evidence annotations with
+human/imported-judge provenance and calibration, and paired conversation-clustered
+campaign intervals. Full offline suite: 317 passed; the subsequently expanded
+evaluation suite: 18 passed. Frontend syntax/whitespace checks passed. No existing
+results, paid experiments, commits or pushes. See the
+[implementation evidence](plans/compaction_evaluation_implementation_2026-11-10.md).
+
+Completed primary-source research, a gap audit and concrete design before local
+implementation. Added run-owned hash-checked archives, frozen logical state across
+architectures, exact compaction attempts/rollback artifacts, prediction-context
+identity, compatible resume (including detached workers), portable exports and
+offline inspection. Existing work and results were preserved; no paid experiments,
+commits or pushes. See the [audit and file inventory](plans/experiment_recording_2026-11-10.md)
+and [recording workflow](spec/benchmark/experiment_recording.md).
+
+Validation: 301 offline tests passed, including 19 recording acceptance tests and
+existing frontend runners. Both frontend JavaScript syntax checks, whitespace
+checks and inspector CLI help passed. Exact local reconstruction is distinct from
+identical stochastic provider output; growth, weights, legacy and upload limits
+are documented.

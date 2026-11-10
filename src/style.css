@@ -191,7 +191,8 @@ button:disabled { opacity: .5; cursor: default; }
 .upload-symbol { display:grid; place-items:center; width:36px; height:36px; border-radius:9px; color:#dced81; background:#292d20; font-size:21px; }
 .dataset-drop strong,.dataset-drop small { display:block; }.dataset-drop strong { font-size:12px; }.dataset-drop small { margin-top:4px; color:var(--muted); font-size:12px; }
 .architecture-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:9px; }
-.architecture-option { display:flex!important; align-items:flex-start; gap:10px; min-height:70px; margin:0!important; padding:12px; border:1px solid #323539; border-radius:9px; background:#191b1d; cursor:pointer; }
+/* Keep the native radio's focus rectangle inside the scrolling card. */
+.architecture-option { position:relative; display:flex!important; align-items:flex-start; gap:10px; min-height:70px; margin:0!important; padding:12px; border:1px solid #323539; border-radius:9px; background:#191b1d; cursor:pointer; }
 .architecture-option:has(input:checked) { border-color:#a8b94e; background:#202319; }
 .architecture-option input { position:absolute; opacity:0; }
 .architecture-radio { width:15px; height:15px; flex:0 0 auto; margin-top:2px; border:1px solid #64676d; border-radius:50%; }
@@ -267,6 +268,12 @@ button:disabled { opacity: .5; cursor: default; }
 .saved-run-open strong, .saved-run-open small { display: block; }
 .saved-run-open strong { font-size: 12px; font-weight: 500; }
 .saved-run-open small { color: var(--muted); font-size: 12px; margin-top: 5px; }
+.saved-run-open .saved-run-config-summary { color: #cbd0bc; line-height: 1.5; overflow-wrap: anywhere; }
+.saved-run-config { padding: 4px 5px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.saved-run-config summary { cursor: pointer; }
+.saved-run-config dl { margin: 8px 0; }
+.saved-run-config dt { color: #cbd0bc; margin-top: 7px; text-transform: capitalize; }
+.saved-run-config dd { margin: 2px 0 0; white-space: pre-wrap; }
 .saved-run.selected { border-radius: 8px; background: #d8e98a10; box-shadow: inset 3px 0 #d8e98a; }
 .saved-run.selected .saved-run-open strong { color: #d8e98a; }
 .saved-run-open:focus-visible { outline: 2px solid #d8e98a; outline-offset: 2px; border-radius: 5px; }

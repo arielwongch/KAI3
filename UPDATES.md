@@ -1,5 +1,22 @@
 # Updates
 
+## Reduce application startup latency - 2026-11-10
+
+Pages now use dependency-light metadata. Provider client construction, selected
+memory implementations, and NLTK scoring initialize on demand. Saved runs use
+advisory summary sidecars, background legacy indexing, lazy report loads, and
+incremental refresh with worker-lease checks. Loading feedback covers first chat
+initialization and pending history. Run deletion includes its summary cache.
+
+Repeated actual-entry probes reached Flask.run in 0.776-0.836 seconds, down from
+12.806-13.308 seconds, with zero snapshot reads and no heavy library imports.
+Temporary copies of the 108 MiB history returned their initial list in 15 ms and
+repeated polls in 6 ms; original reports remained unchanged. Deferred first-use
+costs remain: provider construction 2.775 s and Porter scoring 4.739 s in separate
+local probes. No provider requests were sent. All 281 offline Python tests and
+36 combined Node tests passed. See the [plan and evidence](plans/startup_performance_2026-11-10.md)
+and `tools/profile_startup.py`. Changes remain local and uncommitted.
+
 ## Align ingestion accounting and release unused initialization resources - 2026-11-04
 
 Headline and lifecycle token accounting now share ingestion deduplication rules
@@ -466,3 +483,68 @@ and unaffected memory/protocol contracts were retained. This follow-up changes
 Markdown only; application tests were not rerun for the prose changes.
 Before the push, the 10-test result-analysis suite passed again with the added
 reports, and result parsing and credential-pattern checks passed.
+# Local compaction implementation - 2026-11-10
+
+Added variable-percentage whole-window text compaction after the user's approval.
+One-shot benchmarks build once before QA; repeated compaction uses a separate
+token threshold and prior compacted state plus new raw turns. 100% is a no-op.
+Generation is measured and validated with one bounded regeneration; invalid
+output never silently truncates or replaces committed state. Reader overflow
+also fails explicitly instead of adding an unreported packing intervention.
+
+Chat/manual actions, benchmark and terminal CLI controls, source-window scope,
+event lineage/usage/timing, frozen artifact reuse on resume, and comparison axes
+are implemented. `tools/compaction_sweep.py` freezes a dataset and independent
+percentage conditions; provider execution requires `--execute` and a new output
+directory. Research and usage are linked from [the spec](spec/memory/compaction.md).
+
+Validation: 267 offline Python tests passed, including 33 Node frontend cases;
+expanded comparison UI checks passed. Isolated headless Chrome verified desktop
+and phone layouts at 1440px/390px with synthetic data, no JavaScript exceptions
+or document overflow, and visual inspection of six screenshots. No user results
+were modified. Real-provider behavior, optimal percentages, and adaptive policy
+quality remain experimental work. No paid sweeps were run. Local/uncommitted.
+## Benchmark module selection scroll repair - 2026-11-10
+
+Implemented the approved containing-block correction in `src/style.css`:
+architecture labels now anchor their hidden native radio inputs. The browser
+can focus the selected radio without scrolling the outer document and clipping
+the application shell. Native focus, keyboard selection, module settings, and
+normal benchmark-pane scrolling are preserved.
+
+Added `tests/test_benchmark_scroll_browser.js` and a synthetic fixture server.
+The test passed 140 pointer selections, 112 keyboard selections, and 266 geometry
+checks across 1440x700, 1440x1000, 2048x950, and 390x844 layouts, including desktop
+sidebar collapse. Reverting the positioning in a temporary browser stylesheet
+caused the test to fail as expected. The 34 Node frontend cases and comparison
+checks passed. No provider calls or saved-result changes; local/uncommitted.
+## Default context allowance - 2026-11-10
+
+New memory runs now default to 8,000 pinned benchmark tokens in the UI, API,
+constructors, CLI, and sweep helper. Unspecified benchmark summary caps also
+follow the new allowance. Explicit lower budgets and saved configurations are
+preserved; the compaction trigger remains a separate control. Full-conversation
+percentage sweeps should explicitly use 40,000 for the bundled dataset.
+
+## Experiment recording - 2026-11-10
+
+Follow-up: Compare Runs now exposes aggregate one-shot compression factor,
+weighted retention and compaction-event p95 latency. The offline
+`tools/compaction_evaluate.py` supports prepare/score/calibrate evidence annotations
+and paired campaign comparisons with conversation-clustered intervals. It creates
+new files only and never calls a provider. See the
+[workflow and limits](spec/benchmark/compaction_evaluation.md). Full suite: 317
+passed; expanded focused evaluation suite: 18 passed. Existing results remain
+unchanged; local and uncommitted.
+
+New result exports carry a self-contained content-addressed audit archive: frozen
+memory, exact compaction inputs/candidates/commits, supplied answering contexts and
+request/prediction links. Resume retains compatible frozen states and original
+successful identities, including in background workers. Polling omits archive
+payloads; imports/exports/resume validate integrity. Separate construction/reuse
+and phase accounting preserves unknown usage and known lower bounds.
+
+Use `python tools/inspect_recording.py path/to/results.json` for offline verification.
+See the [contract and portability instructions](spec/benchmark/experiment_recording.md)
+and [research/gap audit](plans/experiment_recording_2026-11-10.md). All 301 offline
+tests passed; no paid experiments or existing-result changes, commits or pushes.

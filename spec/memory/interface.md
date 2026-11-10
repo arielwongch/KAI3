@@ -63,6 +63,12 @@ All embedded stores except standalone Vector Store use the shared
 `candidate_k` and an injected reranker; final k is supplied at retrieval time.
 The default fact mode is `current`; benchmark v3 requires `versioned`.
 
+[Compaction](compaction.md) supports variable `retain_percent`, one-shot/repeated
+mode, an independent token trigger, optional one-shot source-entry cap, reader
+allowance, and injected tokenizer/compressor. It supplies its complete active
+state without secondary packing. Its frozen artifacts can be restored explicitly
+for benchmark resume; ordinary chat sessions remain process-local.
+
 The application and benchmark construct `NoMemory()` directly for their no-memory
 paths. Importing `NoMemory` also installs support for `no_memory` on the factory;
 do not assume that alias exists before that import. The factory rejects known

@@ -85,6 +85,9 @@ def build_memory_context(module, query, token_budget, tokenizer, retrieval_k=Non
     if retrieval_k is not None:
         validate_k(retrieval_k)
     from HybridMemory import HybridMemory
+    from Compaction import Compaction
+    if isinstance(module, Compaction):
+        return module.build_context(query, token_budget, tokenizer, retrieval_k)
     if isinstance(module, HybridMemory):
         return module.build_context(query, token_budget, tokenizer, retrieval_k)
     candidates = list(module.iter_context_candidates(query, retrieval_k))
@@ -159,7 +162,12 @@ def build_memory_context(module, query, token_budget, tokenizer, retrieval_k=Non
             admit(entry)
     text = render(selected)
     entries = ordered(selected)
+    from ExperimentRecording import capture
+    from Diagnostics import entries_json
+    candidate_artifact = capture('context-candidates', dict(
+        ordering='packing admission order', entries=entries_json(candidates)))
     result = dict(text=text, entries=entries, memory_context_tokens=tokenizer.count(text),
+                candidate_artifact=candidate_artifact,
                 memory_context_token_budget=token_budget,
                 memory_context_bytes=len(text.encode('utf-8')),
                 candidate_count=len(candidates), included_count=len(entries),

@@ -9,6 +9,32 @@ Protocol `locomo-controlled-v3` compares memory architectures on the same select
 conversations/questions. One job evaluates one condition. Equal answer-context
 allowance controls supplied context size, not ingestion cost or stored information.
 
+## Startup and saved-run history
+
+Implemented 2026-11-10. Web startup does not restore full reports or import the
+provider SDK, NLTK, or local model libraries. Shared provider-client construction
+is serialized on first use; scoring retains NLTK Porter stemming with lazy
+initialization. MemoryFactory loads the selected implementation on demand.
+
+`GET /api/benchmarks` returns `runs` plus a `loading` flag. Each snapshot can have
+an advisory `.summary.json` sidecar containing a versioned summary and its source
+file's modification time, change time, and size. Unchanged summaries serve list
+requests without reading full reports. Missing summaries for larger legacy
+reports are built in a background thread; small reports are indexed inline.
+`?refresh=1` explicitly rebuilds summaries. Detail, export, review, and control
+requests reconcile their selected report; creation/resumption reconcile all run
+statuses before enforcing the single-active-run rule.
+
+Full reports load under a per-job lock and exported snapshots remain isolated
+copies. Source changes invalidate cached reports; deleted files disappear from
+the list. Background indexing rechecks source identity and in-process ownership
+before installing a result. In-process execution remains authoritative. Detached
+worker leases are checked even when a snapshot is unchanged, preserving active
+reviews and detecting exited workers. Malformed reports are left untouched and
+warned about during indexing; unchanged failures are not reparsed on every poll.
+Both server and detached-worker persistence update advisory summaries. Deletion
+includes the selected run's summary, with existing thread/lease guards retained.
+
 ## Conditions and configuration
 
 | Condition ID | Implementation | Stored representation | Selection for a question |
@@ -23,7 +49,7 @@ allowance controls supplied context size, not ingestion cost or stored informati
 
 | Control | Window | Summary | Vector | Temporal facts |
 | --- | --- | --- | --- | --- |
-| `memory_context_tokens` | 2,000 | 2,000 | 2,000 | 2,000 |
+| `memory_context_tokens` | 8,000 | 8,000 | 8,000 | 8,000 |
 | `retrieval_k` | `null` (all) | Unsupported | `null` (all) | `null` (all) |
 | `max_stored_entries` | 10; must be finite | Unsupported | `null` (unlimited) | `null` (unlimited) |
 | `max_summary_tokens` | Unsupported | Defaults to context allowance | Unsupported | Unsupported |
@@ -45,6 +71,12 @@ For example, a vector store can retain 100 turns, consider only its first eight
 ranked turns, and supply fewer than eight because of the token allowance.
 
 The [memory component specs](../README.md) own each storage/retrieval algorithm.
+
+The [compaction condition](../memory/compaction.md) independently controls retained
+percentage and trigger tokens. One-shot mode compacts a declared raw source
+window before QA; repeated mode compacts the active state during ingestion and
+does not force a final flush. Its reader allowance is enforced without a second
+lossy packing step, and successful frozen compaction states are reused on resume.
 [Baselines](baselines.md) define reference behavior and legacy aliases.
 The default question limit is 10 per selected conversation; zero selects all
 questions matching the selected categories. Selected conversations are fully

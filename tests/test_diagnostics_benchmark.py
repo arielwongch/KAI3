@@ -35,7 +35,7 @@ def fixture():
 class DiagnosticsTests(unittest.TestCase):
     def test_snapshots_detached_and_no_model_calls(self):
         for mode in Benchmark.MODULES[:-1]:
-            module = MemoryFactory.create_memory_module(mode, embedder=Embedder(), extractor=lambda *a: ('{"operations":[{"op":"add","text":"Rome"}]}', 0, 3))
+            module = MemoryFactory.create_memory_module(mode, tokenizer=FakeTokenizer(), embedder=Embedder(), extractor=lambda *a: ('{"operations":[{"op":"add","text":"Rome"}]}', 0, 3))
             with patch.object(summary_module, 'call_api', return_value=('Rome', 0, 2)):
                 module.write(MemoryEntry('Rome', {'nested': {'key': 'value'}}))
             with patch.object(module, 'retrieve', side_effect=AssertionError('retrieve used')), patch.object(ReAct.client.chat.completions, 'create', side_effect=AssertionError('API used')):
@@ -144,7 +144,9 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(result['cases'][0]['score'], 1)
         self.assertEqual(result['status'], 'completed')
         export = self.client.get('/api/benchmarks/' + run_id + '/export')
-        self.assertEqual(export.json, result)
+        from ExperimentRecording import polling_view, validate
+        self.assertEqual(polling_view(export.json), result)
+        validate(export.json)
         self.assertIn('attachment', export.headers['Content-Disposition'])
         self.assertEqual(self.client.post('/api/benchmarks/' + run_id + '/cancel').status_code, 200)
 

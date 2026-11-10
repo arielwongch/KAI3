@@ -16,7 +16,8 @@ def digest(value):
 def code_identity():
     root = Path(__file__).resolve().parents[1]
     files = {str(p.relative_to(root)).replace('\\', '/'): hashlib.sha256(p.read_bytes()).hexdigest()
-             for p in sorted((root / 'src').glob('*.py'))}
+             for p in sorted([*(root / 'src').glob('*.py'), *(root / 'tools').glob('*.py'),
+                              *root.glob('requirements*.txt')])}
     revision = None
     dirty = None
     try:
@@ -28,7 +29,7 @@ def code_identity():
         pass
     return dict(revision=revision, working_tree_dirty=dirty,
                 source_sha256=digest(files), source_files=files,
-                source_scope='src/*.py; hashes of actual working files')
+                source_scope='src/*.py; tools/*.py; requirements*.txt; hashes of actual working files')
 
 
 def hardware_identity():

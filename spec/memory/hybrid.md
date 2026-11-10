@@ -18,7 +18,7 @@ fact memory independently extracts assertions. Embedding services can be shared,
 but their stored records are separate.
 
 `hybrid_shares` maps both component names to positive fractions summing to 1;
-defaults are 0.5/0.5. `memory_context_tokens` defaults to 2,000. The benchmark
+defaults are 0.5/0.5. `memory_context_tokens` defaults to 8,000. The benchmark
 uses its existing pinned tokenizer; live hybrid chat now uses that tokenizer too
 (including its first-use download). `component_options` may map either record
 component to `retrieval_k`, `candidate_k`, and/or `max_stored_entries`. Each accepts a positive

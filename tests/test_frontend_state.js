@@ -47,6 +47,67 @@ async function harness(seed={},pathname='/chat'){
     return {run,async act(code){await run(code);await new Promise(setImmediate);}};
 }
 
+test('saved-run sidebar identifies configurations without opening reports',async()=>{
+    const {run,act}=await harness({},'/benchmark');
+    run('requests=[]');
+    run(`responseHandler=()=>({status:200,data:{runs:[
+        {run_id:'first',module:'delta',status:'completed',config:{modules:['delta'],retrieval_k:20,candidate_k:null,memory_context_tokens:4096,question_limit:0,component_options:{vector_store:{retrieval_k:7}}}},
+        {run_id:'second',module:'compaction',status:'completed',config:{modules:['compaction'],retain_percent:33.3,compaction_mode:'one_shot'}},
+        {run_id:'legacy',module:'vector_store',status:'completed'}
+    ]}})`);
+    await act('refreshSavedRuns()');
+    assert.match(run("text(byClass($('savedRuns'),'saved-run-open')[0])"),/k: 20 · Candidates: All · Context: 4096/);
+    assert.match(run("text(byClass($('savedRuns'),'saved-run-config')[0])"),/question limit 0/);
+    assert.match(run("text(byClass($('savedRuns'),'saved-run-config')[0])"),/"retrieval_k":7/);
+    assert.match(run("text(byClass($('savedRuns'),'saved-run-open')[1])"),/Compaction \| 33.3% \| one_shot/);
+    assert.match(run("text(byClass($('savedRuns'),'saved-run-config')[2])"),/Configuration unavailable/);
+    assert.equal(run("requests.filter(r=>r.url.startsWith('/api/benchmarks/')).length"),0);
+    run("byClass($('savedRuns'),'saved-run-config')[0].open=true");
+    await act('refreshSavedRuns(false)');
+    assert.equal(run("byClass($('savedRuns'),'saved-run-config')[0].open"),true);
+});
+
+test('legacy history indexing shows loading and clears it when summaries arrive',async()=>{
+    const {run,act}=await harness({},'/benchmark');
+    run("responseHandler=()=>({status:200,data:{runs:[],loading:true}})");
+    await act('refreshSavedRuns()');
+    assert.match(run("text($('savedRuns'))"),/Loading saved benchmark history/);
+    assert.match(run("$('savedRunStatus').textContent"),/Loading saved benchmark history/);
+    assert.equal(run('savedRunsTimer'),1);
+    run("responseHandler=()=>({status:200,data:{runs:[],loading:false}})");
+    await act('refreshSavedRuns(false)');
+    assert.equal(run("$('savedRunStatus').textContent"),'');
+    assert.match(run("text($('savedRuns'))"),/Your benchmark runs will appear here/);
+});
+
+test('compaction benchmark accepts variable ratios and separates source, trigger and reader budgets',async()=>{
+    const {run}=await harness();
+    run("$('compactMode').value='one_shot';$('compactPercent').value='33.3';$('compactTrigger').value='1000';$('compactSourceEntries').value='50';updateMemorySettings('compaction')");
+    assert.equal(run("$('compactionSettings').hidden"),false);
+    assert.equal(run("$('summaryTokensField').hidden"),true);
+    assert.equal(run("$('retrievalKField').hidden"),true);
+    assert.equal(run("benchmarkMemoryOptions('compaction').retain_percent"),33.3);
+    assert.equal(run("benchmarkMemoryOptions('compaction').compaction_source_entries"),50);
+    run("$('compactMode').value='repeated';updateMemorySettings('compaction')");
+    assert.equal(run("'compaction_source_entries' in benchmarkMemoryOptions('compaction')"),false);
+    assert.equal(run("benchmarkMemoryOptions('compaction').compaction_trigger_tokens"),1000);
+    run("$('compactPercent').value='0'");
+    assert.throws(()=>run("benchmarkMemoryOptions('compaction')"));
+});
+
+test('compaction chat sends fixed settings and manual action uses an independent percentage',async()=>{
+    const {run,act}=await harness();
+    run("active().module='compaction';render();$('chatCompactPercent').value='35';$('chatCompactTrigger').value='500';$('chatCompactBudget').value='800';$('userInput').value='remember this';responseHandler=()=>({status:200,data:{reply:'ok'}})");
+    await act("$('chatForm').onsubmit({preventDefault(){}})");
+    assert.equal(run("JSON.parse(requests.find(r=>r.url==='/get').options.body).memory_options.retain_percent"),35);
+    assert.equal(run("$('chatCompactPercent').disabled"),true);
+    run("unavailable=false;$('chatManualPercent').value='12.5';responseHandler=url=>url.endsWith('/compact')?{status:200,data:{event:{before_tokens:100,after_tokens:10,actual_retain_percent:10}}}:{status:200,data:{memory:{entries:[]},turns:[]}}");
+    await act("$('compactChat').onclick()");
+    assert.equal(run("JSON.parse(requests.find(r=>r.url.endsWith('/compact')).options.body).retain_percent"),12.5);
+    assert.equal(run("active().memory_options.retain_percent"),35);
+    assert.match(run("$('chatCompactionStatus').textContent"),/100.*10 tokens/);
+});
+
 test('each workspace bundles the shared helper without relying on a template script tag',()=>{
     const helper=fs.readFileSync('src/loading.js','utf8').replace(/\r\n/g,'\n').trim();
     for(const name of ['workspace.js','compare.js']){
@@ -235,7 +296,7 @@ test('window hybrid benchmark settings coexist with the existing hybrid controls
     assert.equal(run("benchmarkMemoryOptions('beta').max_stored_entries"),null);
     run("updateMemorySettings('alpha')");
     assert.equal(run("'max_stored_entries' in benchmarkMemoryOptions('alpha')"),false);
-    assert.equal(run("benchmarkMemoryOptions('alpha').max_summary_tokens"),2000);
+    assert.equal(run("benchmarkMemoryOptions('alpha').max_summary_tokens"),8000);
     run("updateMemorySettings('delta')");
     assert.equal(run("$('benchmarkWindowControl').hidden"),true);
     assert.equal(run("'window_size' in benchmarkMemoryOptions('delta')"),false);

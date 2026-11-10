@@ -8,14 +8,15 @@ from uuid import uuid4
 from weakref import WeakValueDictionary
 from flask import Flask, abort, jsonify, render_template, request, send_file, send_from_directory
 from MemoryFactory import MemoryFactory
-from HybridMemory import HYBRIDS
-from MemoryConfig import window_size_for, retrieval_policy, RERANKED_MODULES
+from MemoryConfig import window_size_for, retrieval_policy, RERANKED_MODULES, HYBRIDS, MODULES
 from MemoryContext import retrieval_k
-from ReAct import run_ReAct
 from Diagnostics import totals
-from Benchmark import BenchmarkJob, MODULES, BENCHMARK_MODULES, MODULE_CAPABILITIES, PROTOCOL_VERSION
+from BenchmarkConfig import BENCHMARK_MODULES, MODULE_CAPABILITIES, PROTOCOL_VERSION
 from BenchmarkStore import ACTIVE, atomic_json, path_for, read_json, launch, worker_active, delete_run_files
 from ResultAnalysis import enrich_report
+from BenchmarkHistory import HistoryIndex, cache_summary
+from ExperimentRecording import validate as validate_recording, polling_view, get as get_artifact
+import ExperimentRecording as Recording
 
 app = Flask(__name__, template_folder='.', static_folder=None)
 # Keep the existing asset URLs without exposing the source/configuration directory.
@@ -42,7 +43,9 @@ def persist_benchmark(snapshot):
     run_id = snapshot.get('run_id')
     if not isinstance(run_id, str) or not run_id.replace('-', '').isalnum():
         return
-    atomic_json(path_for(RUN_STORE, run_id), snapshot)
+    path = path_for(RUN_STORE, run_id)
+    atomic_json(path, snapshot)
+    cache_summary(path, snapshot)
 
 def read_benchmark_snapshot(path):
     path = Path(path)
@@ -55,41 +58,29 @@ def read_benchmark_snapshot(path):
     return snapshot
 
 
-def restore_benchmarks():
-    for filename in os.listdir(RUN_STORE):
-        if not filename.endswith('.json') or filename.endswith(('.input.json', '.continue.json')):
-            continue
-        try:
-            snapshot = read_benchmark_snapshot(os.path.join(RUN_STORE, filename))
-            job = BenchmarkJob.restore(snapshot)
-            if worker_active(RUN_STORE, snapshot):
-                job.result = snapshot
-            jobs[job.result['run_id']] = job
-        except (OSError, ValueError, KeyError, TypeError) as error:
-            app.logger.warning(
-                'Skipping unreadable benchmark snapshot %s (%s). File left unchanged; '
-                'restore a valid JSON backup or move it out of %s.',
-                filename, error, RUN_STORE)
+_history_index = None
 
-def refresh_jobs():
-    # Active in-process jobs are authoritative; disk is authoritative for detached workers.
-    for filename in os.listdir(RUN_STORE):
-        if not filename.endswith('.json') or filename.endswith(('.input.json', '.continue.json')):
-            continue
-        try:
-            snapshot = read_benchmark_snapshot(os.path.join(RUN_STORE, filename))
-            run_id = snapshot['run_id']
-            existing = jobs.get(run_id)
-            if existing is not None and not existing.result.get('worker'):
-                continue
-            if snapshot.get('worker') and snapshot.get('status') in ACTIVE and not worker_active(RUN_STORE, snapshot):
-                snapshot.update(status='interrupted', error='Background worker stopped. Resume the saved run to continue.')
-                persist_benchmark(snapshot)
-            job = BenchmarkJob.restore(snapshot)
-            job.result = snapshot
-            jobs[run_id] = job
-        except (OSError, ValueError, KeyError, TypeError):
-            continue
+
+def history_index():
+    global _history_index
+    if (_history_index is None or _history_index.root != Path(RUN_STORE)
+            or _history_index.jobs is not jobs):
+        _history_index = HistoryIndex(RUN_STORE, jobs, registry_lock,
+                                     read_benchmark_snapshot, persist_benchmark, app.logger)
+    return _history_index
+
+
+def restore_benchmarks():
+    # Explicit recovery remains available to tools/tests. Normal startup does no
+    # snapshot I/O; the history panel reconciles legacy reports on first access.
+    with registry_lock:
+        history_index().refresh(force=True, warn=True)
+
+
+def refresh_jobs(run_id=None, background=False, force=False):
+    with registry_lock:
+        history_index().refresh(background=background, force=force, target_id=run_id)
+
 
 def fail_benchmark(job, error):
     # The in-memory terminal state must survive even if saving it also fails.
@@ -128,7 +119,10 @@ def start_benchmark(job):
         raise
 
 
-restore_benchmarks()
+def run_ReAct(*args, **kwargs):
+    from ReAct import run_ReAct as run
+    return run(*args, **kwargs)
+
 
 class ChatSession:
     def __init__(self, mode, memory_options=None, window_size=None):
@@ -138,12 +132,13 @@ class ChatSession:
         self.window_size = window_size_for(mode, {} if window_size is None else {"window_size": window_size}, 10)
         if self.window_size is not None:
             options["max_items"] = self.window_size
-        if 'max_summary_tokens' in options:
+        if 'max_summary_tokens' in options or mode == 'compaction':
             from MemoryContext import get_benchmark_tokenizer
             options['tokenizer'] = get_benchmark_tokenizer()
         self.module = MemoryFactory.create_memory_module(mode, **options)
         self.lock = RLock()
         self.turns = []
+        self.recording = Recording.new_archive()
     def snapshot(self, chat_id):
         with self.lock:
             return dict(schema_version=1, chat_id=chat_id, memory_module=self.mode,
@@ -342,6 +337,7 @@ def result_library_file():
         if not isinstance(report, dict) or not isinstance(report.get('cases'), list):
             return jsonify(error='This file is not a benchmark results export.'), 400
         if request.args.get('download') == '1':
+            validate_recording(report)
             return send_file(candidate, as_attachment=True, download_name=result_display_name(name))
         return jsonify(report=enrich_report(report, source_name=name) if request.args.get('analysis') == '1' else report)
     except (OSError, ValueError):
@@ -428,6 +424,9 @@ def get_reply():
         allowed = {'candidate_k', 'max_stored_entries'}
     elif mode == 'windowed_summarization':
         allowed = {'summary_limit', 'max_summary_tokens'}
+    elif mode == 'compaction':
+        from Compaction import OPTION_KEYS
+        allowed = {*OPTION_KEYS, 'memory_context_tokens'}
     else:
         allowed = set()
     if not isinstance(memory_options, dict) or memory_options.keys() - allowed:
@@ -456,6 +455,7 @@ def get_reply():
         if 'memory_options' in payload and session.memory_options != memory_options:
             return jsonify(error='Memory settings cannot be changed during a chat.'), 409
         d = {'turn_id': str(uuid4())}
+        archive_token = Recording.active_archive.set(session.recording)
         try:
             result, latency, tokens = run_ReAct(message.strip(), memory_module=session.module, diagnostics=d)
             return jsonify(reply=result, latency=round(latency, 2), tokens=tokens,
@@ -464,6 +464,7 @@ def get_reply():
             app.logger.exception('Chat request failed')
             return jsonify(error=str(error), turn_id=d['turn_id']), 503
         finally:
+            Recording.active_archive.reset(archive_token)
             session.turns.append(d)
 
 @app.get('/api/chats/<chat_id>')
@@ -474,10 +475,59 @@ def chat_diagnostics(chat_id):
         session = chat_memory_modules.get(chat_id)
     if session is None:
         return jsonify(error='Server memory is unavailable.'), 404
-    response = jsonify(session.snapshot(chat_id))
+    with session.lock:
+        snapshot = session.snapshot(chat_id)
+        if request.path.endswith('/export'):
+            if hasattr(session.module, 'audit_archive'):
+                session.recording['artifacts'].update(deepcopy(session.module.audit_archive['artifacts']))
+            snapshot['recording'] = deepcopy(session.recording)
+            validate_recording(snapshot)
+    response = jsonify(snapshot)
     if request.path.endswith('/export'):
         response.headers['Content-Disposition'] = 'attachment; filename="chat-diagnostics.json"'
     return response
+
+
+@app.post('/api/chats/<chat_id>/compact')
+def compact_chat(chat_id):
+    from Compaction import Compaction
+    from Diagnostics import collector
+    import time
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict) or payload.keys() - {'retain_percent'}:
+        return jsonify(error='Expected an optional retain_percent in a JSON object.'), 400
+    with registry_lock:
+        session = chat_memory_modules.get(chat_id)
+    if session is None:
+        return jsonify(error='Server memory is unavailable.'), 404
+    if not isinstance(session.module, Compaction):
+        return jsonify(error='Manual compaction requires a Compaction chat.'), 400
+    if 'retain_percent' in payload:
+        from Compaction import validate_options
+        try:
+            validate_options(payload)
+        except ValueError as error:
+            return jsonify(error=str(error)), 400
+    with session.lock:
+        d = dict(turn_id=str(uuid4()), operation='manual_compaction', memory_llm_calls=0,
+                 memory_tokens=0, memory_prompt_tokens=0, memory_completion_tokens=0,
+                 agent_llm_calls=0, agent_tokens=0, retrieval_seconds=0, agent_seconds=0,
+                 retrieved=[], status='running')
+        token = collector.set(d)
+        archive_token = Recording.active_archive.set(session.recording)
+        started = time.perf_counter()
+        try:
+            event = session.module.compact(payload.get('retain_percent'))
+            d['status'] = 'completed'
+            return jsonify(event=event)
+        except Exception as error:
+            d.update(status='error', error=str(error))
+            return jsonify(error=str(error)), 503
+        finally:
+            d['write_seconds'] = d['total_seconds'] = time.perf_counter() - started
+            session.turns.append(d)
+            collector.reset(token)
+            Recording.active_archive.reset(archive_token)
 
 @app.post('/api/benchmarks')
 def create_benchmark():
@@ -487,12 +537,13 @@ def create_benchmark():
     try:
         if not isinstance(payload.get('options', {}), dict):
             raise ValueError('Options must be an object.')
+        from Benchmark import BenchmarkJob
         job = BenchmarkJob(payload.get('dataset'), payload.get('options', {}))
     except (ValueError, TypeError) as error:
         return jsonify(error=str(error)), 400
     with registry_lock:
         refresh_jobs()
-        if any(j.snapshot()['status'] in ACTIVE for j in jobs.values()):
+        if history_index().has_active():
             return jsonify(error='A benchmark is already running. Cancel it or wait for completion.'), 409
         jobs[job.result['run_id']] = job
         try:
@@ -504,11 +555,11 @@ def create_benchmark():
 @app.get('/api/benchmarks')
 def list_benchmarks():
     with registry_lock:
-        refresh_jobs()
-        runs = [dict(run_id=j.result['run_id'], status=j.result['status'], progress=j.result.get('progress', {}), deletable=benchmark_stopped(j),
-                     module=j.result.get('config', {}).get('modules', [None])[0], condition=j.result.get('condition'), no_memory_context=j.result.get('config', {}).get('no_memory_context'), protocol=j.result.get('protocol'), updated_at=j.result.get('updated_at'),
-                     background=bool(j.result.get('worker')), resumable=j.result.get('protocol_version') == PROTOCOL_VERSION and (len(j.result.get('cases', [])) < len(j.result.get('question_manifest', [])) or any(c.get('correct') is None and c.get('diagnostics', {}).get('status') != 'context_limit_exceeded' for c in j.result.get('cases', [])))) for j in jobs.values()]
-    return jsonify(runs=sorted(runs, key=lambda r: r.get('updated_at') or 0, reverse=True))
+        refresh_jobs(background=True, force=request.args.get('refresh') == '1')
+        index = history_index()
+        runs, loading = index.rows(), bool(index.pending)
+    return jsonify(runs=runs, loading=loading)
+
 
 @app.delete('/api/benchmarks/<run_id>')
 def delete_benchmark(run_id):
@@ -517,7 +568,7 @@ def delete_benchmark(run_id):
     except ValueError as error:
         return jsonify(error=str(error)), 400
     with registry_lock:
-        refresh_jobs()
+        refresh_jobs(run_id=run_id)
         job = jobs.get(run_id)
         if job is None:
             return jsonify(error='Benchmark run is unavailable.'), 404
@@ -537,7 +588,7 @@ def delete_benchmark(run_id):
 def continue_benchmark(run_id):
     payload = request.get_json(silent=True) or {}
     with registry_lock:
-        refresh_jobs()
+        refresh_jobs(run_id=run_id)
         job = jobs.get(run_id)
         if job is None:
             return jsonify(error='Benchmark run is unavailable.'), 404
@@ -554,16 +605,45 @@ def continue_benchmark(run_id):
 @app.get('/api/benchmarks/<run_id>/export')
 def benchmark_status(run_id):
     with registry_lock:
-        refresh_jobs()
+        refresh_jobs(run_id=run_id)
         job = jobs.get(run_id)
     if job is None:
         return jsonify(error='Benchmark run is unavailable.'), 404
     snapshot = job.snapshot()
     if request.args.get('analysis') == '1' and snapshot.get('status') not in ACTIVE:
         snapshot = enrich_report(snapshot)
+    if request.path.endswith('/export'):
+        try:
+            validate_recording(snapshot)
+        except (ValueError, TypeError) as error:
+            return jsonify(error=str(error)), 409
+    else:
+        snapshot = polling_view(snapshot)
     response = jsonify(snapshot)
     if request.path.endswith('/export'):
         response.headers['Content-Disposition'] = 'attachment; filename="locomo-results.json"'
+    return response
+
+
+@app.get('/api/benchmarks/<run_id>/artifacts/<identity>')
+def benchmark_artifact(run_id, identity):
+    if not re.fullmatch(r'[0-9a-f]{64}', identity):
+        return jsonify(error='Invalid artifact identity.'), 400
+    with registry_lock:
+        refresh_jobs(run_id=run_id)
+        job = jobs.get(run_id)
+    if job is None:
+        return jsonify(error='Benchmark run is unavailable.'), 404
+    with job.lock:
+        archive = job.result.get('recording')
+        try:
+            value = get_artifact(archive, {'artifact_sha256': identity})
+            kind = archive['artifacts'][identity]['kind']
+        except (ValueError, TypeError) as error:
+            return jsonify(error=str(error)), 409
+    # JSON data only; no HTML interpretation of archived conversation text.
+    response = jsonify(artifact_sha256=identity, kind=kind, value=value)
+    response.headers['X-Content-Type-Options'] = 'nosniff'
     return response
 
 @app.post('/api/benchmarks/<run_id>/resume')
@@ -577,7 +657,7 @@ def resume_benchmark(run_id):
         if previous is None:
             return jsonify(error='Benchmark run is unavailable.'), 404
         refresh_jobs()
-        if any(j.snapshot()['status'] in ACTIVE for j in jobs.values()):
+        if history_index().has_active():
             return jsonify(error='A benchmark is already running.'), 409
         try:
             # Saved input is authoritative; the browser may currently show an
@@ -590,6 +670,7 @@ def resume_benchmark(run_id):
                 data = payload.get('dataset')
             if data is None or data == []:
                 return jsonify(code='dataset_required', error='The original dataset is unavailable. Upload it to resume this run.'), 409
+            from Benchmark import BenchmarkJob
             job = BenchmarkJob.resume(data, previous.snapshot())
         except (OSError, ValueError, TypeError, KeyError) as error:
             return jsonify(error=str(error)), 400
@@ -603,7 +684,7 @@ def resume_benchmark(run_id):
 @app.post('/api/benchmarks/<run_id>/cancel')
 def cancel_benchmark(run_id):
     with registry_lock:
-        refresh_jobs()
+        refresh_jobs(run_id=run_id)
         job = jobs.get(run_id)
         if job is None:
             return jsonify(error='Benchmark run is unavailable.'), 404
@@ -616,7 +697,7 @@ def cancel_benchmark(run_id):
 @app.get('/api/benchmarks/<run_id>/review')
 def benchmark_review_export(run_id):
     with registry_lock:
-        refresh_jobs()
+        refresh_jobs(run_id=run_id)
         job = jobs.get(run_id)
     if job is None:
         return jsonify(error='Benchmark run is unavailable.'), 404
@@ -632,7 +713,7 @@ def benchmark_review_export(run_id):
 @app.post('/api/benchmarks/<run_id>/review')
 def benchmark_review_import(run_id):
     with registry_lock:
-        refresh_jobs()
+        refresh_jobs(run_id=run_id)
         job = jobs.get(run_id)
         if job is None:
             return jsonify(error='Benchmark run is unavailable.'), 404

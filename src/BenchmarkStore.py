@@ -22,7 +22,10 @@ def atomic_json(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + '.' + str(uuid4()) + '.tmp')
     try:
-        temporary.write_text(json.dumps(value, ensure_ascii=False), encoding='utf-8')
+        with temporary.open('w', encoding='utf-8') as output:
+            json.dump(value, output, ensure_ascii=False, allow_nan=False)
+            output.flush()
+            os.fsync(output.fileno())
         for attempt in range(5):
             try:
                 temporary.replace(path)
@@ -77,7 +80,7 @@ def worker_active(root, snapshot):
 def delete_run_files(root, run_id):
     """Remove only this run's files; return False while its worker owns a lease."""
     paths = [path_for(root, run_id, suffix) for suffix in
-             ('.input.json', '.log', '.cancel', '.continue.json', '.lease', '.json')]
+             ('.input.json', '.log', '.cancel', '.continue.json', '.summary.json', '.lease', '.json')]
     for path in paths:
         if path.is_symlink() or (path.exists() and not path.is_file()):
             raise OSError('Run files must be regular files inside the run store.')
@@ -106,7 +109,11 @@ def launch(root, job):
     atomic_json(path_for(root, run_id, '.input.json'), dict(dataset=job.data, snapshot=job.snapshot()))
     job.result['worker'] = dict(mode='detached')
     job.result['updated_at'] = time.time()
-    atomic_json(path_for(root, run_id), job.snapshot())
+    snapshot = job.snapshot()
+    path = path_for(root, run_id)
+    atomic_json(path, snapshot)
+    from BenchmarkHistory import cache_summary
+    cache_summary(path, snapshot)
     args = [sys.executable, str(Path(__file__).with_name('BenchmarkWorker.py')), '--store', str(Path(root).resolve()), '--run-id', run_id]
     options = dict(stdin=subprocess.DEVNULL, close_fds=True, cwd=str(Path(__file__).resolve().parents[1]))
     if os.name == 'nt':

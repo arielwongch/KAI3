@@ -43,6 +43,14 @@ imports, exports, and pending actions use the shared
 
 ## Delete saved runs
 
+Each sidebar entry shows its saved memory settings (including retrieval k,
+candidate pool, context allowance, and window/capacity where recorded). Expand
+**Run configuration** to inspect all saved options, including question filters
+and component overrides, without opening the report. Missing historical settings
+are marked unavailable rather than replaced with the current setup values.
+The history summary cache includes the recorded configuration; older cache versions
+are rebuilt from their authoritative saved report.
+
 Each Saved runs entry has a Delete action. It is disabled while the run is active
 or its server thread is finishing. The confirmation identifies the architecture
 and full run ID and explains permanent deletion of the saved result, dataset,
@@ -193,3 +201,26 @@ confirmation/cancel, report reset, and duplicate submission. Isolated Chrome at
 actions, and report/selection reset. Disk assertions verified removal of selected
 fixture files and preservation of the active fixture and exported copy. Dialog
 screenshots were visually inspected. No user runs or provider calls were used.
+# Architecture selection focus and scrolling
+
+Architecture-card labels establish a positioning context for their invisible
+native radio inputs. This keeps focus inside the visible card when the benchmark
+pane scrolls; the outer document must stay anchored to the viewport. Native
+label clicks, Tab navigation, arrow-key selection, and card focus styling remain
+available.
+
+The isolated Chromium regression uses the real UI with synthetic read-only
+endpoints and never starts a benchmark or accesses the result library:
+
+```powershell
+$env:PYTHON = '.\venv\Scripts\python.exe'
+$env:BROWSER_ARTIFACT_DIR = 'instance/benchmark-scroll-fixed'
+node tests/test_benchmark_scroll_browser.js
+```
+
+Node.js 22+, Python test dependencies, and Chrome/Chromium are required. Set
+`CHROME_BIN` to override the executable; on Linux, the defaults are `python3`
+and `google-chrome`. The test verifies real mouse/keyboard selection, settings
+visibility, root/header/sidebar geometry, and scrolling to both ends at desktop
+and phone widths, including collapsed desktop sidebars. DOM-only change events
+do not exercise the native focus path responsible for the original defect.

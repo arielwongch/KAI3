@@ -75,7 +75,7 @@ let inspection = null, inspectionTab = 'contents', inspectionSource = 'chat', se
 let importedBenchmark = false, importedOriginal = null, importedFilename = '';
 let compareExportSource = null, compareExportBusy = false;
 let benchmark = null, runId = null, pollTimer = null, inspectionRequest = 0, previewDataset = null;
-let savedRunsRequest=0, benchmarkDeleteTarget=null, benchmarkDeleteBusy=false;
+let savedRunsRequest=0, savedRunsTimer=null, benchmarkDeleteTarget=null, benchmarkDeleteBusy=false;
 let benchmarkRequest=0, selectedRunId=null, loadingRunId=null, resultFileRequest=0;
 const page = typeof location !== 'undefined' && location.pathname === '/benchmark' ? 'benchmark' : 'chat';
 $('chatWorkspace').hidden = page !== 'chat';
@@ -94,6 +94,15 @@ function controlState() {
     $('chatWindowSize').value=String(session.window_size??10);
     $('chatWindowSize').disabled=session.started||busy||checking;
     $('chatWindowDescription').textContent=periodicWindow(session.module)?'Keep k recent entries and update long-term memory every k completed entries.':isWindowHybrid(session.module)?'Keep recent turns alongside long-term memory. Configure before the first message.':'Use the full recent window in chat.';
+    $('chatCompactionSettings').hidden=session.module!=='compaction';
+    if(session.module==='compaction'){
+        const options=session.memory_options||{};
+        for(const [id,value] of Object.entries({chatCompactPercent:options.retain_percent??50,chatCompactMode:options.compaction_mode??'repeated',chatCompactTrigger:options.compaction_trigger_tokens??2000,chatCompactBudget:options.memory_context_tokens??8000})){
+            $(id).value=String(value);$(id).disabled=session.started||busy||checking;
+        }
+        $('chatManualPercent').disabled=busy||checking;
+        $('compactChat').disabled=!session.started||busy||checking||unavailable;
+    }
     $('moduleStatus').textContent = unavailable ? 'Memory unavailable · start a new chat' : checking ? 'Checking memory…' : labelMode(session.module);
     document.querySelectorAll('.memory-choice').forEach(button => {
         const selected = button.dataset.module === session.module;
@@ -113,7 +122,7 @@ function controlState() {
     if(components){
         $('chatHybridDescription').textContent=`${components.map(labelMode).join(' + ')}. Configure before the first message.`;
         $('chatHybridShare').value=String((session.memory_options?.hybrid_shares?.[components[0]]??0.5)*100);
-        $('chatHybridBudget').value=String(session.memory_options?.memory_context_tokens??2000);
+        $('chatHybridBudget').value=String(session.memory_options?.memory_context_tokens??8000);
         $('chatComponentOptions').value=JSON.stringify(session.memory_options?.component_options||{});
     }
 }
@@ -256,12 +265,39 @@ $('chatForm').onsubmit = async event => {
         try{session.memory_options={...(session.memory_options||{}),candidate_k:parseMemoryCount($('chatCandidateK').value,'all'),max_stored_entries:parseMemoryCount($('chatRerankerCapacity').value,'unlimited')};$('chatRerankerError').textContent='';}
         catch(error){$('chatRerankerError').textContent=error.message;return;}
     }
+    if(session.module==='compaction'&&!session.started){
+        try{session.memory_options={...compactionFormOptions('chat'),memory_context_tokens:parseMemoryCount($('chatCompactBudget').value,null)};}
+        catch(error){$('chatCompactionStatus').textContent=error.message;return;}
+    }
     const requiresExisting=session.started; session.messages.push({role:'user',content:message});
     session.title=session.messages.find(m=>m.role==='user').content.slice(0,60); $('userInput').value=''; busy=true; save(); render();
-    const loading=document.createElement('div'); loading.className='chat-loading'; loading.textContent='KAI3 is thinking…'; $('chatMessages').append(loading);
+    const loading=document.createElement('div'); loading.className='chat-loading'; loading.textContent=requiresExisting?'KAI3 is thinking…':'Preparing memory and generating your first reply…'; $('chatMessages').append(loading);
     try { const data=await jsonRequest('/get',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message,chat_id:session.id,memory_module:session.module,memory_options:session.memory_options,requires_existing:requiresExisting,...(hasWindow(session.module)?{window_size:session.window_size??10}:{})})}); session.started=true; session.messages.push({role:'assistant',content:data.reply,turn_id:data.turn_id}); }
     catch(error) { session.started=true; session.messages.push({role:'assistant',content:`Request failed: ${error.message}`}); }
     finally { busy=false; save(); render(); inspectionSource='chat'; await refreshInspection(); $('userInput').focus(); }
+};
+function retainedPercent(value){const number=Number(value);if(!Number.isFinite(number)||number<=0||number>100)throw new Error('Retained percentage must be greater than 0 and at most 100.');return number;}
+function compactionFormOptions(surface){
+    const chat=surface==='chat';
+    const options={retain_percent:retainedPercent($(chat?'chatCompactPercent':'compactPercent').value),compaction_mode:$(chat?'chatCompactMode':'compactMode').value,compaction_trigger_tokens:parseMemoryCount($(chat?'chatCompactTrigger':'compactTrigger').value,null)};
+    if(!['one_shot','repeated'].includes(options.compaction_mode))throw new Error('Choose a compaction mode.');
+    if(!chat&&options.compaction_mode==='one_shot')options.compaction_source_entries=parseMemoryCount($('compactSourceEntries').value,'all');
+    return options;
+}
+$('compactChat').onclick=async()=>{
+    if(busy||checking||unavailable||!active().started)return;
+    const session=active();let percent;
+    try{percent=retainedPercent($('chatManualPercent').value);}catch(error){$('chatCompactionStatus').textContent=error.message;return;}
+    busy=true;controlState();$('chatCompactionStatus').textContent='Compacting memory...';
+    try{
+        const result=await jsonRequest(`/api/chats/${encodeURIComponent(session.id)}/compact`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({retain_percent:percent})});
+        const event=result.event;$('chatCompactionStatus').textContent=`${event.before_tokens} -> ${event.after_tokens} tokens | requested ${percent}% | actual ${event.actual_retain_percent==null?'empty':event.actual_retain_percent.toFixed(1)+'%'}`;
+    }catch(error){$('chatCompactionStatus').textContent=error.message;}
+    finally{busy=false;controlState();await refreshInspection();}
+};
+for(const id of ['chatCompactPercent','chatCompactMode','chatCompactTrigger','chatCompactBudget'])$(id).onchange=()=>{
+    if(active().started||busy||checking)return;
+    try{active().memory_options={...compactionFormOptions('chat'),memory_context_tokens:parseMemoryCount($('chatCompactBudget').value,null)};save();$('chatCompactionStatus').textContent='';}catch(error){$('chatCompactionStatus').textContent=error.message;}
 };
 $('chatWindowSize').oninput=()=>{if(active().started||busy||checking)return;active().window_size=Number($('chatWindowSize').value);save();$('sendButton').disabled=$('userInput').disabled||!validWindow(active().window_size);};
 $('userInput').onkeydown = event => { if (event.key==='Enter'&&!event.shiftKey) { event.preventDefault(); $('chatForm').requestSubmit(); } };
@@ -444,15 +480,18 @@ function selectedSamples(){return [...$('sampleIds').selectedOptions].map(option
 function selectedQuestionCount(data){const ids=$('allConversations').checked?data.map(s=>String(s.sample_id)):selectedSamples();const categories=selectedCategories(),limit=Number($('questionLimit').value);const samples=data.filter(s=>ids.includes(String(s.sample_id)));return samples.reduce((n,s)=>{const count=s.qa.filter(q=>categories.includes(q.category)).length;return n+(limit?Math.min(count,limit):count);},0);}
 const memorySettingDrafts={};
 let memorySettingMode=null;
-function memoryCapabilities(mode){return globalThis.KAI3_MEMORY_CAPABILITIES?.[mode]||{reranker:usesReranker(mode),records:['sliding_window','vector_store','vector_store_reranker','fact_store','beta','gamma','windowed_fact_store'].includes(mode)||!!HYBRID_COMPONENTS[mode],summary:['summarization','delta','epsilon','alpha','windowed_summarization'].includes(mode),hybrid:!!HYBRID_COMPONENTS[mode],memory:['sliding_window','vector_store','vector_store_reranker','fact_store','summarization','alpha','beta','gamma','windowed_summarization','windowed_fact_store'].includes(mode)||!!HYBRID_COMPONENTS[mode]};}
+function memoryCapabilities(mode){return globalThis.KAI3_MEMORY_CAPABILITIES?.[mode]||{reranker:usesReranker(mode),records:['sliding_window','vector_store','vector_store_reranker','fact_store','beta','gamma','windowed_fact_store'].includes(mode)||!!HYBRID_COMPONENTS[mode],summary:['summarization','delta','epsilon','alpha','windowed_summarization'].includes(mode),hybrid:!!HYBRID_COMPONENTS[mode],memory:['sliding_window','vector_store','vector_store_reranker','fact_store','summarization','alpha','beta','gamma','windowed_summarization','windowed_fact_store','compaction'].includes(mode)||!!HYBRID_COMPONENTS[mode]};}
 function updateMemorySettings(mode){
     const caps=memoryCapabilities(mode);
     if(memorySettingMode!==mode){
         if(memorySettingMode)memorySettingDrafts[memorySettingMode]={candidate:$('candidateK').value,k:$('retrievalK').value,capacity:$('storageCapacity').value,summary:$('summaryTokens').value,budget:$('memoryContextTokens').value,share:$('hybridShare').value,components:$('componentOptions').value};
-        const draft=memorySettingDrafts[mode]||{candidate:'50',k:'all',capacity:mode==='sliding_window'?'10':'unlimited',summary:'2000',budget:'2000',share:'50',components:'{}'};
+        const draft=memorySettingDrafts[mode]||{candidate:'50',k:'all',capacity:mode==='sliding_window'?'10':'unlimited',summary:'8000',budget:'8000',share:'50',components:'{}'};
         $('candidateK').value=draft.candidate||'50';$('retrievalK').value=draft.k;$('storageCapacity').value=draft.capacity;$('summaryTokens').value=draft.summary;$('memoryContextTokens').value=draft.budget;memorySettingMode=mode;
         $('hybridShare').value=draft.share||'50';$('componentOptions').value=draft.components||'{}';
     }
+    $('compactionSettings').hidden=mode!=='compaction';
+    $('compactTrigger').disabled=mode!=='compaction'||$('compactMode').value!=='repeated';
+    $('compactSourceEntries').disabled=mode!=='compaction'||$('compactMode').value==='repeated';
     $('memorySettings').hidden=!caps.memory;$('retrievalKField').hidden=!caps.records;$('storageCapacityField').hidden=!caps.records;$('summaryTokensField').hidden=!caps.summary;
     $('retrievalK').disabled=!caps.records;$('storageCapacity').disabled=!caps.records;$('summaryTokens').disabled=!caps.summary;$('memoryContextTokens').disabled=!caps.memory;
     $('candidateKField').hidden=!caps.reranker;$('candidateK').disabled=!caps.reranker;
@@ -479,6 +518,7 @@ function parseMemoryCount(value,unlimited){
 }
 function benchmarkMemoryOptions(mode){
     const caps=memoryCapabilities(mode),options={};
+    if(mode==='compaction')Object.assign(options,compactionFormOptions('benchmark'));
     if(caps.memory)options.memory_context_tokens=parseMemoryCount($('memoryContextTokens').value,null);
     if(caps.records){options.retrieval_k=parseMemoryCount($('retrievalK').value,'all');options.max_stored_entries=parseMemoryCount($('storageCapacity').value,mode==='sliding_window'?null:'unlimited');}
     if(isWindowHybrid(mode))options.window_size=parseMemoryCount($('benchmarkWindowSize').value,null);
@@ -486,6 +526,26 @@ function benchmarkMemoryOptions(mode){
     if(caps.summary){options.max_summary_tokens=parseMemoryCount($('summaryTokens').value,null);if(options.max_summary_tokens>options.memory_context_tokens)throw new Error('Summary size cannot exceed the context-token allowance.');}
     if(caps.hybrid)Object.assign(options,hybridFormOptions(mode,$('hybridShare').value,$('componentOptions').value));
     return options;
+}
+function savedRunConfigSummary(config){
+    const fields=[['window_size','Window'],['retrieval_k','k','All'],['candidate_k','Candidates','All'],['memory_context_tokens','Context'],['max_summary_tokens','Summary'],['max_stored_entries','Capacity','Unlimited'],['retain_percent','Retain'],['compaction_mode','Mode']];
+    return fields.filter(([key])=>Object.hasOwn(config,key)).map(([key,label,unlimited])=>`${label}: ${config[key]===null?(unlimited||'Unavailable'):config[key]}${key==='retain_percent'?'%':''}`).join(' · ');
+}
+function appendSavedRunConfig(row,config){
+    const details=document.createElement('details');details.className='saved-run-config';
+    const summary=document.createElement('summary');summary.textContent='Run configuration';details.append(summary);
+    if(!config||!Object.keys(config).length){
+        const empty=document.createElement('p');empty.textContent='Configuration unavailable for this run.';details.append(empty);
+    }else{
+        const fields=document.createElement('dl');
+        for(const [key,value] of Object.entries(config)){
+            const label=document.createElement('dt');label.textContent=key.replaceAll('_',' ');
+            const content=document.createElement('dd');content.textContent=value===null?({retrieval_k:'All available',candidate_k:'All stored records',max_stored_entries:'Unlimited'}[key]||'Unavailable'):typeof value==='object'?JSON.stringify(value):String(value);
+            fields.append(label,content);
+        }
+        details.append(fields);
+    }
+    row.append(details);
 }
 function ingestionFailureCount(report){
     if(Number.isInteger(report.ingestion_outcome?.failed_conversations))return report.ingestion_outcome.failed_conversations;
@@ -495,7 +555,7 @@ function benchmarkStatusLabel(report){
     return report.status==='completed'&&ingestionFailureCount(report)>0?'Completed with ingestion errors':report.status||'Saved report';
 }
 function benchmarkConditionLabel(report){
-    const mode=report.config?.modules?.[0];if(mode!=='no_memory')return labelMode(mode||'Unknown');
+    const mode=report.config?.modules?.[0];if(mode==='compaction')return `Compaction | ${report.config.retain_percent}% | ${report.config.compaction_mode}`;if(mode!=='no_memory')return labelMode(mode||'Unknown');
     const condition=report.condition||report.config?.no_memory_context;
     if(condition==='full_context'||condition==='full'||report.protocol?.includes('full-context'))return 'Full Context';
     if(condition==='question_only'||report.protocol?.includes('question-only'))return 'Question Only';
@@ -527,6 +587,7 @@ async function loadDefaultDataset(){
     try{const result=await jsonRequest('/api/benchmarks/dataset');previewDataset=result.dataset;$('datasetFileName').textContent=result.filename;$('datasetInfo').textContent=`${previewDataset.length} conversations · bundled dataset`;$('allConversations').checked=true;updateConversationChoices();updateRunSummary();}
     catch(error){$('datasetFileName').textContent='Bundled dataset unavailable';$('datasetInfo').textContent='Upload a LoCoMo JSON file to continue.';updateRunSummary();}
 }
+$('compactMode').onchange=updateRunSummary;
 $('allConversations').onchange=()=>{updateConversationChoices();updateRunSummary();};
 $('sampleIds').onchange=updateRunSummary;$('questionLimit').oninput=updateRunSummary;
 document.querySelectorAll('[name=category],[name=benchmarkModule]').forEach(input=>input.onchange=updateRunSummary);
@@ -566,17 +627,23 @@ function updateSavedRunSelection(){
 }
 async function refreshSavedRuns(showLoading=true){
     if(page!=='benchmark')return;
+    clearTimeout(savedRunsTimer);
     const requested=++savedRunsRequest;
     try{
-        const {runs}=await jsonRequest('/api/benchmarks',undefined,showLoading?[$('refreshRuns')]:[]);if(requested!==savedRunsRequest)return;
-        const list=$('savedRuns');list.replaceChildren();
+        const {runs,loading}=await jsonRequest('/api/benchmarks',undefined,showLoading?[$('refreshRuns')]:[]);if(requested!==savedRunsRequest)return;
+        const list=$('savedRuns');
+        const expanded=new Set([...list.children].filter(row=>row.querySelector('.saved-run-config')?.open).map(row=>row.dataset.runId));
+        list.replaceChildren();
         for(const saved of runs){
             const row=document.createElement('div');row.className='saved-run';row.dataset.runId=saved.run_id;
             const open=document.createElement('button');open.className='saved-run-open';
-            const name=document.createElement('strong');name.textContent=benchmarkConditionLabel({config:{modules:[saved.module],no_memory_context:saved.no_memory_context},condition:saved.condition,protocol:saved.protocol});
-            const detail=document.createElement('small');detail.textContent=`${saved.status} · ${(saved.progress?.percent??(saved.status==='completed'?100:0)).toFixed(1)}% · ${saved.run_id.slice(0,8)}`;
+            const name=document.createElement('strong');name.textContent=benchmarkConditionLabel({config:saved.config||{modules:[saved.module],no_memory_context:saved.no_memory_context},condition:saved.condition,protocol:saved.protocol});
+            const detail=document.createElement('small');detail.textContent=`${saved.status} · ${(saved.progress?.percent??(saved.status==='completed'?100:0)).toFixed(1)}%`;
             const state=document.createElement('span');state.className='saved-run-state';state.hidden=true;
-            open.append(name,detail,state);open.onclick=()=>openSavedRun(saved.run_id);row.append(open);
+            const configSummary=document.createElement('small');configSummary.className='saved-run-config-summary';configSummary.textContent=savedRunConfigSummary(saved.config||{});configSummary.hidden=!configSummary.textContent;
+            open.append(name,detail,configSummary,state);open.onclick=()=>openSavedRun(saved.run_id);row.append(open);
+            appendSavedRunConfig(row,saved.config);
+            row.querySelector('.saved-run-config').open=expanded.has(saved.run_id);
             const actions=document.createElement('div');actions.className='saved-run-actions';
             const exportButton=document.createElement('button');exportButton.textContent='Export';exportButton.onclick=()=>download(`/api/benchmarks/${encodeURIComponent(saved.run_id)}/export`,exportButton);actions.append(exportButton);
             if(saved.resumable&&['failed','cancelled','interrupted','completed'].includes(saved.status)){
@@ -591,7 +658,13 @@ async function refreshSavedRuns(showLoading=true){
             };
             actions.append(remove);row.append(actions);list.append(row);
         }
-        if(!runs.length){const empty=document.createElement('p');empty.textContent='Your benchmark runs will appear here.';list.append(empty);}
+        if(!runs.length){const empty=document.createElement('p');empty.textContent=loading?'Loading saved benchmark history...':'Your benchmark runs will appear here.';list.append(empty);}
+        if(loading){
+            $('savedRunStatus').textContent='Loading saved benchmark history...';
+            savedRunsTimer=setTimeout(()=>refreshSavedRuns(false),500);
+        }else if($('savedRunStatus').textContent==='Loading saved benchmark history...'){
+            $('savedRunStatus').textContent='';
+        }
         updateSavedRunSelection();
     }catch(error){if(requested===savedRunsRequest)$('savedRuns').textContent=error.message;}
 }

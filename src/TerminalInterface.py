@@ -1,5 +1,7 @@
 import os
 import time
+import argparse
+import json
 from dataclasses import dataclass
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -68,7 +70,25 @@ def print_performance_metrics_summary(metrics: list[PerformanceMetric]):
     print(f"  Number of Requests: {len(metrics)}")
     print("===============================================")
 
+parser = argparse.ArgumentParser(description='Interactive chat, optionally with measured compaction memory.')
+parser.add_argument('--memory-module', choices=['raw', 'compaction'], default='raw')
+parser.add_argument('--retain-percent', type=float, default=50)
+parser.add_argument('--compaction-mode', choices=['one_shot', 'repeated'], default='repeated',
+                    help='one_shot uses manual /compact commands in terminal chat.')
+parser.add_argument('--compaction-trigger-tokens', type=int, default=2000)
+parser.add_argument('--memory-context-tokens', type=int, default=8000)
+args = parser.parse_args()
+compaction_memory = None
+if args.memory_module == 'compaction':
+    from Compaction import Compaction
+    from ReAct import run_ReAct
+    from Diagnostics import collector
+    compaction_memory = Compaction(retain_percent=args.retain_percent, compaction_mode=args.compaction_mode,
+        compaction_trigger_tokens=args.compaction_trigger_tokens, memory_context_tokens=args.memory_context_tokens)
+
 print_header()
+if compaction_memory is not None:
+    print('Compaction enabled. Use /compact [retained percent] to compact the current memory.')
 
 init_message = [
     {"role": "system", "content": "You are a helpful assistant"},
@@ -79,6 +99,7 @@ memory = []
 utc_8 = timezone(timedelta(hours=8))
 
 PerformanceMetrics: list[PerformanceMetric] = []
+compaction_metrics = []
 
 while True:
     try:
@@ -90,6 +111,10 @@ while True:
             print("Please enter a message.")
             continue
         if user_input.lower() == "metrics":
+            if compaction_memory is not None:
+                print(json.dumps(dict(memory=compaction_memory.inspect(), operations=compaction_metrics),
+                                 ensure_ascii=False, indent=2))
+                continue
             print_performance_metrics(PerformanceMetrics)
             print_next_line()
             continue
@@ -99,6 +124,32 @@ while True:
         break
     
     user_input_time = datetime.now(utc_8)
+    if compaction_memory is not None:
+        if user_input == '/compact' or user_input.startswith('/compact '):
+            try:
+                percent = float(user_input.split(maxsplit=1)[1]) if ' ' in user_input else None
+                metrics = dict(memory_llm_calls=0, memory_tokens=0)
+                token = collector.set(metrics)
+                try:
+                    event = compaction_memory.compact(percent)
+                finally:
+                    compaction_metrics.append(dict(operation='manual_compaction', **metrics))
+                    collector.reset(token)
+                print(f"Memory: {event['before_tokens']} -> {event['after_tokens']} tokens; actual retained {event.get('actual_retain_percent')}%")
+                print(f"Compaction provider tokens: {metrics['memory_tokens']}; attempts: {metrics['memory_llm_calls']}")
+            except (ValueError, RuntimeError) as error:
+                print(str(error))
+        else:
+            diagnostics = {}
+            try:
+                result, latency, tokens = run_ReAct(user_input, memory_module=compaction_memory, diagnostics=diagnostics)
+                print(result)
+                print(f"Answer tokens: {diagnostics['agent_tokens']}; compaction tokens: {diagnostics['memory_tokens']}; seconds: {diagnostics['total_seconds']:.3f}")
+            except Exception as error:
+                print(str(error))
+            finally:
+                compaction_metrics.append(diagnostics)
+        continue
     print(f"{user_input_time.strftime('%Y-%m-%d %H:%M:%S')} (UTC+8)")
     print()
 

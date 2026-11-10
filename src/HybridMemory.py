@@ -10,11 +10,7 @@ from MemoryEntry import MemoryEntry
 from MemoryModule import MemoryModule
 from MemoryContext import positive_count, fit_summary_entry
 
-HYBRIDS = {
-    'delta': ('summarization', 'vector_store'),
-    'epsilon': ('summarization', 'fact_store'),
-    'zeta': ('vector_store', 'fact_store'),
-}
+from MemoryConfig import HYBRIDS
 HYBRID_PACKING_POLICY = 'hybrid-record-spillover-summary-fit-v2'
 
 
@@ -40,7 +36,7 @@ def hybrid_settings(mode, shares=None, component_options=None):
 
 class HybridMemory(MemoryModule):
     def __init__(self, mode, components, hybrid_shares=None, component_options=None,
-                 memory_context_tokens=2000, tokenizer=None):
+                 memory_context_tokens=8000, tokenizer=None):
         self.mode = mode
         self.hybrid_shares, self.component_options = hybrid_settings(mode, hybrid_shares, component_options)
         positive_count(memory_context_tokens, 'memory_context_tokens')
@@ -145,6 +141,10 @@ class HybridMemory(MemoryModule):
         positive_count(token_budget, 'memory_context_tokens')
         with self._lock:
             groups = self._candidates(query, retrieval_k)
+        from ExperimentRecording import capture
+        from Diagnostics import entries_json
+        candidate_artifact = capture('context-candidates', {
+            name: entries_json(entries) for name, entries in groups.items()})
         names = list(groups)
         first_budget = int(token_budget * self.hybrid_shares[names[0]])
         budgets = dict(zip(names, (first_budget, token_budget - first_budget)))
@@ -188,7 +188,7 @@ class HybridMemory(MemoryModule):
         entries = flattened()
         context = render(entries)
         count = sum(len(group) for group in groups.values())
-        return dict(text=context, entries=entries, memory_context_tokens=tokenizer.count(context),
+        return dict(text=context, entries=entries, candidate_artifact=candidate_artifact, memory_context_tokens=tokenizer.count(context),
                     memory_context_token_budget=token_budget, memory_context_bytes=len(context.encode('utf-8')),
                     candidate_count=count, included_count=len(entries), omitted_count=count-len(entries),
                     all_candidates_over_budget=bool(count) and not entries,
@@ -202,4 +202,8 @@ class HybridMemory(MemoryModule):
                                 for name in names})
 
 # Recent-window architectures are kept separate from independent paired stores.
-from WindowHybridMemory import Alpha, Beta, Gamma
+def __getattr__(name):
+    if name in ('Alpha', 'Beta', 'Gamma'):
+        import WindowHybridMemory
+        return getattr(WindowHybridMemory, name)
+    raise AttributeError(name)

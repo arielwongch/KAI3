@@ -240,7 +240,7 @@ class TerminalStartupTests(unittest.TestCase):
         output = io.StringIO()
         with patch('dotenv.load_dotenv'), patch('openai.OpenAI') as client, \
              patch('builtins.input', side_effect=['', 'metrics', 'quit']), \
-             patch('sys.stdout', output):
+             patch('sys.stdout', output), patch('sys.argv', ['src/TerminalInterface.py']):
             runpy.run_path('src/TerminalInterface.py', run_name='__main__')
         client.return_value.chat.completions.create.assert_not_called()
         self.assertIn('No performance metrics to display.', output.getvalue())

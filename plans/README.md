@@ -16,8 +16,14 @@ a tagged release, deployment, or fresh application test run.
 
 ## Plan register
 
+- [Compaction evaluation implementation (2026-11-10)](compaction_evaluation_implementation_2026-11-10.md)
+
+- [Experiment recording research, gap audit and design (2026-11-10)](experiment_recording_2026-11-10.md)
+
 | Plan | First recorded in Git | Status as of review | Next work and timing |
 | --- | --- | --- | --- |
+| [Startup performance](startup_performance_2026-11-10.md) | 2026-11-10 | Implemented locally; startup below 1 second in repeated entry-point probes | First-use initialization remains lazy; cold-cache timing not established |
+| [Compaction research and implementation](compaction_research_2026-11-10.md) | 2026-11-10 | User approved local implementation; validation recorded in progress/updates | Provider-backed ratio study and adaptive controller remain future work |
 | [Product experience](product_experience.md) | 2026-10-05 (`acb7a6f`) | Shared workspaces, managed result library, and named benchmark-to-Compare export implemented; calibration/study acceptance incomplete | Evaluator audit, human calibration, and remaining acceptance; unscheduled |
 | [UI refinement](ui_refinement.md) | 2026-10-05 (`acb7a6f`) | Shared shell and Compare refinements implemented; scoped desktop/phone browser checks passed | Comprehensive keyboard/screen-reader/cross-browser and unreviewed states; unscheduled |
 | [Controlled comparison](controlled_comparison.md) | 2026-10-06 (`c84cb77`) | Protocol implemented; completion of a matched study not established | Choose matched configuration, validate, then run study; unscheduled |

@@ -157,7 +157,10 @@ class RuntimeRecordingTests(unittest.TestCase):
         return [dict(sample_id='one', conversation={}, qa=[dict(question='Where?', answer='Rome', category=4)])]
 
     def answer(self, module, question, diagnostics, **kwargs):
-        diagnostics.update(retrieval_seconds=2, answer_seconds=3, retrieved=[])
+        from ExperimentRecording import capture
+        diagnostics.update(retrieval_seconds=2, answer_seconds=3, retrieved=[], supplied_context='',
+            context_artifact=capture('answer-context', dict(synthetic_fixture=True,
+                memory_state_artifact=diagnostics.get('memory_state_artifact'), supplied_context='')))
         return 'Rome'
 
     def judge(self):

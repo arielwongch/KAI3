@@ -62,13 +62,20 @@ over-limit request fails without silent truncation.
 
 ## Configuration and stored result
 
-`memory_context_tokens` defaults to 2,000. `retrieval_k=null` considers all retained
+`memory_context_tokens` defaults to 8,000. `retrieval_k=null` considers all retained
 records; finite k is positive. Summary has no finite k or record-capacity option.
 `max_summary_tokens` must not exceed the answer allowance. Defaults and supported
 controls are listed in [lifecycle](lifecycle.md); unsupported explicit settings
 are rejected, including null values for inapplicable controls. The CLI represents
 all candidates as `--retrieval-k all` and unlimited supported storage as
 `--max-stored-entries unlimited`.
+
+The new-run allowance changed from 2,000 to 8,000 on 2026-11-10. Explicit
+settings and saved-run configurations remain authoritative. When no summary cap
+is supplied, the benchmark summary cap follows the allowance. Compaction trigger
+tokens are an independent control. For a full-conversation compaction percentage
+sweep that includes the uncompressed reference, explicitly use 40,000 with the
+current bundled dataset; 8,000 is the general memory-comparison starting point.
 
 The builder returns `text`, `entries`, `memory_context_tokens`,
 `memory_context_token_budget`, `memory_context_bytes`, `candidate_count`,
