@@ -4,7 +4,7 @@ from pathlib import Path
 from threading import Event, RLock, Thread
 
 from BenchmarkConfig import PROTOCOL_VERSION
-from BenchmarkStore import ACTIVE, atomic_json, path_for, read_json, worker_active
+from BenchmarkStore import ACTIVE, atomic_json, path_for, read_json, worker_active, lease_held
 
 
 def fingerprint(path):
@@ -107,24 +107,34 @@ class HistoryIndex:
         # identity before publishing so deletion/writes cannot resurrect old data.
         with self.lock:
             if fingerprint(path) != signature:
-                return
+                return False
             existing = self.jobs.get(snapshot['run_id'])
             if existing is not None and not isinstance(existing, DiskJob) and not existing.result.get('worker'):
-                return
+                return True
             cache_summary(path, snapshot, signature)
             summary = summarize(self.effective(snapshot))
             self.jobs[snapshot['run_id']] = DiskJob(self, path, signature, summary)
+            self.failed.pop(str(path), None)
+            return True
 
     def _load(self, path, signature, warn):
         try:
             snapshot = self.read_snapshot(path)
-            self._install(path, signature, snapshot)
+            return self._install(path, signature, snapshot)
         except (OSError, ValueError, KeyError, TypeError) as error:
+            if isinstance(error, OSError):
+                # A locked/cloud-synced file or busy artifact database is not
+                # corrupt. Never memoize temporary I/O failures as corruption.
+                self.failed.pop(str(path), None)
+                if warn:
+                    self.logger.warning('Temporarily unable to read benchmark snapshot %s (%s). '
+                                        'File left unchanged; retrying on the next request.', path.name, error)
+                return False
             missing = False
             with self.lock:
                 try:
                     if fingerprint(path) != signature:
-                        return
+                        return False
                 except FileNotFoundError:
                     missing = True
                 self.failed[str(path)] = signature
@@ -133,6 +143,7 @@ class HistoryIndex:
                     del self.jobs[path.stem]
             if warn and not missing:
                 self._warn(path, error)
+            return True
 
     def _build(self, work):
         try:
@@ -147,9 +158,25 @@ class HistoryIndex:
         self.root.mkdir(parents=True, exist_ok=True)
         paths = {path.stem: path for path in self.root.glob('*.json')
                  if not path.name.endswith(('.input.json', '.continue.json', '.summary.json'))}
+        if target_id is not None:
+            # Directory enumeration can miss a Windows replacement in flight.
+            # Detail requests probe their exact path instead of trusting a scan.
+            target = path_for(self.root, target_id)
+            try:
+                target.stat()
+                paths[target_id] = target
+            except FileNotFoundError:
+                pass
         for run_id, job in list(self.jobs.items()):
             if isinstance(job, DiskJob) and run_id not in paths:
-                del self.jobs[run_id]
+                try:
+                    job.path.stat()
+                    paths[run_id] = job.path
+                except FileNotFoundError:
+                    if not lease_held(path_for(self.root, run_id, '.lease')):
+                        del self.jobs[run_id]
+                except OSError:
+                    pass  # An unreadable file is not evidence of deletion.
         work = []
         for run_id, path in paths.items():
             if target_id is not None and run_id != target_id:
@@ -204,7 +231,14 @@ class HistoryIndex:
             self.thread.start()
         else:
             for path, signature in work:
-                self._load(path, signature, warn)
+                stable = self._load(path, signature, warn)
+                if not stable and target_id is not None:
+                    # Retry one changed checkpoint, without publishing a stale
+                    # read or looping indefinitely behind a busy writer.
+                    try:
+                        self._load(path, fingerprint(path), warn)
+                    except OSError:
+                        pass
 
     def rows(self):
         rows = []
@@ -218,4 +252,6 @@ class HistoryIndex:
 
     def has_active(self):
         return any((job.summary if isinstance(job, DiskJob) else job.result)['status'] in ACTIVE
-                   for job in self.jobs.values())
+                   or (getattr(job, '_thread', None) is not None and
+                       getattr(job._thread, 'is_alive', lambda: False)())
+                   for job in self.jobs.values()) or lease_held(path_for(self.root, 'worker-global', '.lease'))

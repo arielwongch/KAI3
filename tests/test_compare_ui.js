@@ -360,5 +360,27 @@ const evaluate = code => vm.runInContext(code,context);
     evaluate("loaded.get('Alpha.json').comparison.rows[0].overall.compaction.analysis.final_one_shot_cohort.aggregate_compression_factor=null;");
     get('chartX').onchange();
     assert.equal(dots(get('charts').children[0]).length,0,'Unavailable or incomplete ratios never become zero');
-    console.log('Comparison UI: compaction axes, in-chart legend, table copy formats/errors, scatter plot, sorting, stable identities, filters/zero/missing/ties, downloads, tooltips, rename, deletion, and duplicates passed.');
+    // Explicit refresh fetches selected content and drops unselected cache.
+    let fresh={comparison:{rows:[{module:'vector_store',overall:{...overall,accuracy_percent:11},categories:{}}]}};
+    let refreshFail=false,delayOld=false,finishOld;
+    context.fetch=async url=>{
+        if(url==='/api/results')return {ok:true,json:async()=>({files:['refresh.json','unselected.json']})};
+        if(delayOld){delayOld=false;return new Promise(resolve=>finishOld=resolve);}
+        return {ok:!refreshFail,status:refreshFail?503:200,json:async()=>refreshFail?{error:'locked'}:{report:fresh}};
+    };
+    evaluate("selected.clear();loaded.clear();selected.add('refresh.json');loaded.set('refresh.json',{old:true});loaded.set('unselected.json',{old:true})");
+    await evaluate('refresh()');
+    assert.equal(evaluate("loaded.get('refresh.json').comparison.rows[0].overall.accuracy_percent"),11);
+    assert.equal(evaluate("loaded.has('unselected.json')"),false);
+    evaluate("loaded.delete('refresh.json')");delayOld=true;
+    const old=evaluate("loadRun('refresh.json')");await tick();
+    fresh={comparison:{rows:[{module:'vector_store',overall:{...overall,accuracy_percent:22},categories:{}}]}};
+    await evaluate('refresh()');
+    finishOld({ok:true,json:async()=>({report:{old:true}})});await old;
+    assert.equal(evaluate("loaded.get('refresh.json').comparison.rows[0].overall.accuracy_percent"),22,'An old request cannot overwrite refreshed content');
+    refreshFail=true;
+    await assert.rejects(evaluate('refresh()'),/could not be refreshed/);
+    assert.equal(evaluate("selected.has('refresh.json')"),true);
+    assert.equal(evaluate("loaded.has('refresh.json')"),false,'Failed reload never displays stale metrics');
+    console.log('Comparison UI: charts, tables, library actions, fresh content, failed reloads, and stale-response protection passed.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

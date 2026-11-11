@@ -135,9 +135,10 @@ class BenchmarkRegressionTests(unittest.TestCase):
                         if failure == 'snapshot' or (failure == 'input' and str(path).endswith('.input.json')):
                             raise PermissionError('test disk failure')
                         atomic_json(path, value)
-                    with patch.object(app, 'atomic_json', side_effect=write), \
+                    with patch.object(app, 'write_snapshot', side_effect=write), \
                          patch.object(app, 'launch', side_effect=OSError('test launch failure')), \
                          patch.object(app, 'Thread') as thread:
+                        thread.return_value.is_alive.return_value = False
                         thread.return_value.start.side_effect = RuntimeError('test thread failure')
                         response = self.client.post('/api/benchmarks', json={
                             'dataset': dataset(), 'options': {'module': 'full_context', 'background': background}})
@@ -147,10 +148,12 @@ class BenchmarkRegressionTests(unittest.TestCase):
                     self.assertFalse(any(j.result['status'] in ('queued', 'running') for j in app.jobs.values()))
                     # A real subsequent job can finish, even if a stale queued
                     # snapshot remains on disk from the failed startup.
-                    empty = dataset(); empty[0]['qa'] = []
+                    # Exercise a selected question whose conservative guard
+                    # rejects the request locally, without any provider call.
+                    empty = dataset()
                     with patch.object(app, 'Thread', InlineWorker):
                         retry = self.client.post('/api/benchmarks', json={
-                            'dataset': empty, 'options': {'module': 'full_context'}})
+                            'dataset': empty, 'options': {'module': 'full_context', 'context_limit': 100, 'max_output_tokens': 1}})
                     self.assertEqual(retry.status_code, 202)
                     self.assertEqual(app.jobs[retry.json['run_id']].result['status'], 'completed')
 
@@ -188,8 +191,8 @@ class BenchmarkRegressionTests(unittest.TestCase):
             Benchmark.BenchmarkJob(duplicate)
 
     def saved_run(self, persist_input=True):
-        data = dataset(); data[0]['qa'] = []
-        job = Benchmark.BenchmarkJob(data, {'module': 'full_context'})
+        data = dataset()
+        job = Benchmark.BenchmarkJob(data, {'module': 'full_context', 'context_limit': 100, 'max_output_tokens': 1})
         job.result['status'] = 'interrupted'
         if persist_input:
             atomic_json(path_for(self.root, job.result['run_id'], '.input.json'), {'dataset': data, 'snapshot': job.snapshot()})
@@ -219,7 +222,7 @@ class BenchmarkRegressionTests(unittest.TestCase):
     def test_resume_start_failure_is_terminal_and_retryable(self):
         job, _ = self.saved_run()
         url = '/api/benchmarks/' + job.result['run_id'] + '/resume'
-        with patch.object(app, 'atomic_json', side_effect=PermissionError('disk unavailable')):
+        with patch.object(app, 'write_snapshot', side_effect=PermissionError('disk unavailable')):
             response = self.client.post(url, json={})
         self.assertEqual(response.status_code, 503)
         self.assertEqual(app.jobs[job.result['run_id']].result['status'], 'failed')

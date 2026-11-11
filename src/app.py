@@ -12,7 +12,7 @@ from MemoryConfig import window_size_for, retrieval_policy, RERANKED_MODULES, HY
 from MemoryContext import retrieval_k
 from Diagnostics import totals
 from BenchmarkConfig import BENCHMARK_MODULES, MODULE_CAPABILITIES, PROTOCOL_VERSION
-from BenchmarkStore import ACTIVE, atomic_json, path_for, read_json, launch, worker_active, delete_run_files
+from BenchmarkStore import ACTIVE, atomic_json, write_snapshot, path_for, read_json, launch, worker_active, delete_run_files, lease_held
 from ResultAnalysis import enrich_report
 from BenchmarkHistory import HistoryIndex, cache_summary
 from ExperimentRecording import validate as validate_recording, polling_view, get as get_artifact
@@ -29,6 +29,15 @@ def public_asset(filename):
     return send_from_directory(app.root_path, filename)
 
 app.config['MAX_CONTENT_LENGTH'] = 32 * 1024 * 1024
+
+
+@app.errorhandler(413)
+def upload_too_large(error):
+    return jsonify(code='upload_too_large', error=(
+        'Upload exceeds the server request-size limit (32 MiB by default). '
+        'For larger result exports, place the JSON file in data/result and refresh saved results.')), 413
+
+
 AVAILABLE_MEMORY_MODULES = MODULES
 chat_memory_modules = {}
 registry_lock = RLock()
@@ -44,7 +53,7 @@ def persist_benchmark(snapshot):
     if not isinstance(run_id, str) or not run_id.replace('-', '').isalnum():
         return
     path = path_for(RUN_STORE, run_id)
-    atomic_json(path, snapshot)
+    write_snapshot(path, snapshot)
     cache_summary(path, snapshot)
 
 def read_benchmark_snapshot(path):
@@ -82,6 +91,41 @@ def refresh_jobs(run_id=None, background=False, force=False):
         history_index().refresh(background=background, force=force, target_id=run_id)
 
 
+def benchmark_lookup_error(run_id, error=None):
+    """An absent index entry is not proof that a checkpoint was deleted."""
+    try:
+        path = path_for(RUN_STORE, run_id)
+    except ValueError:
+        response = jsonify(code='benchmark_not_found', error='Invalid benchmark run ID.', retryable=False)
+        response.status_code = 404
+    else:
+        index = history_index()
+        try:
+            exists = path.exists()
+            known = exists or str(path) in index.pending or lease_held(path_for(RUN_STORE, run_id, '.lease'))
+        except OSError:
+            exists, known = False, True
+        unreadable = ((error is not None and not isinstance(error, OSError)) or
+                      (exists and str(path) in index.failed))
+        if unreadable:
+            response = jsonify(code='benchmark_snapshot_unreadable', retryable=False,
+                error='The saved checkpoint could not be read. Its files were left unchanged; inspect the server log or restore a valid backup.')
+            response.status_code = 409
+        elif known or error is not None:
+            response = jsonify(code='benchmark_temporarily_unavailable', retryable=True,
+                error='The saved checkpoint is temporarily unavailable or changing. Retrying will not restart the benchmark.')
+            response.status_code = 503
+            response.headers['Retry-After'] = '2'
+        else:
+            response = jsonify(code='benchmark_not_found', retryable=False,
+                error='The saved run could not be found. Choose another saved run or New benchmark.')
+            response.status_code = 404
+        if error is not None:
+            app.logger.warning('Could not load benchmark %s (%s): %s', run_id, response.status_code, error)
+    response.headers['Cache-Control'] = 'no-store'
+    return response
+
+
 def fail_benchmark(job, error):
     # The in-memory terminal state must survive even if saving it also fails.
     # Clearing worker makes it authoritative over any stale queued disk snapshot.
@@ -108,7 +152,7 @@ def start_benchmark(job):
     try:
         job.set_persistence_callback(persist_benchmark)
         persist_benchmark(job.snapshot())
-        atomic_json(path_for(RUN_STORE, job.result['run_id'], '.input.json'), dict(dataset=job.data, snapshot=job.snapshot()))
+        write_snapshot(path_for(RUN_STORE, job.result['run_id'], '.input.json'), dict(dataset=job.data, snapshot=job.snapshot()))
         if job.options.get('background'):
             launch(RUN_STORE, job)
         else:
@@ -138,6 +182,7 @@ class ChatSession:
         self.module = MemoryFactory.create_memory_module(mode, **options)
         self.lock = RLock()
         self.turns = []
+        self.requests = {}
         self.recording = Recording.new_archive()
     def snapshot(self, chat_id):
         with self.lock:
@@ -406,6 +451,9 @@ def get_reply():
     message = payload.get('message')
     chat_id = payload.get('chat_id')
     mode = payload.get('memory_module')
+    request_id = payload.get('request_id')
+    if request_id is not None and (not isinstance(request_id, str) or not request_id.strip() or len(request_id) > 200):
+        return jsonify(error='request_id must be a nonblank string up to 200 characters.'), 400
     if not isinstance(message, str) or not message.strip():
         return jsonify(error='Message is required.'), 400
     if not isinstance(chat_id, str) or not chat_id.strip() or len(chat_id) > 200:
@@ -454,18 +502,75 @@ def get_reply():
             return jsonify(error='The window size cannot be changed during a chat.'), 409
         if 'memory_options' in payload and session.memory_options != memory_options:
             return jsonify(error='Memory settings cannot be changed during a chat.'), 409
-        d = {'turn_id': str(uuid4())}
+        if request_id in session.requests:
+            saved = session.requests[request_id]
+            if saved['message'] != message.strip():
+                return jsonify(error='This request ID belongs to another message.'), 409
+            return jsonify(deepcopy(saved['body'])), saved['status']
+        pending = next((t for t in session.turns if t.get('pending_write')), None)
+        if pending is not None:
+            return jsonify(error='Retry the pending memory update before sending another message.',
+                           code='memory_write_pending', turn_id=pending['turn_id']), 409
+        d = {'turn_id': str(uuid4()), 'request_id': request_id}
         archive_token = Recording.active_archive.set(session.recording)
         try:
             result, latency, tokens = run_ReAct(message.strip(), memory_module=session.module, diagnostics=d)
-            return jsonify(reply=result, latency=round(latency, 2), tokens=tokens,
-                           memory_module=session.module.__class__.__name__, turn_id=d['turn_id'])
+            body = dict(reply=result, latency=round(latency, 2), tokens=tokens,
+                        memory_module=session.module.__class__.__name__, turn_id=d['turn_id'],
+                        memory_write_status=d.get('memory_write_status'), warning=d.get('warning'))
+            status = 200
         except Exception as error:
             app.logger.exception('Chat request failed')
-            return jsonify(error=str(error), turn_id=d['turn_id']), 503
+            body, status = dict(error=str(error), turn_id=d['turn_id']), 503
         finally:
             Recording.active_archive.reset(archive_token)
             session.turns.append(d)
+        if request_id is not None:
+            session.requests[request_id] = dict(message=message.strip(), body=deepcopy(body), status=status)
+        return jsonify(body), status
+
+
+@app.post('/api/chats/<chat_id>/turns/<turn_id>/retry-memory')
+def retry_chat_memory(chat_id, turn_id):
+    from Diagnostics import collector
+    from MemoryEntry import MemoryEntry
+    from ReAct import _write
+    import time
+    with registry_lock:
+        session = chat_memory_modules.get(chat_id)
+    if session is None:
+        return jsonify(error='Server memory is unavailable.'), 404
+    with session.lock:
+        turn = next((t for t in session.turns if t.get('turn_id') == turn_id), None)
+        if turn is None:
+            return jsonify(error='Chat turn is unavailable.'), 404
+        if not turn.get('pending_write'):
+            return jsonify(turn_id=turn_id, memory_write_status=turn.get('memory_write_status'))
+        retry = dict(turn_id=str(uuid4()), operation='retry_memory', original_turn_id=turn_id,
+                     agent_tokens=0, agent_llm_calls=0, agent_seconds=0., retrieval_seconds=0.,
+                     memory_tokens=0, memory_llm_calls=0, write_seconds=0.)
+        token = collector.set(retry)
+        archive_token = Recording.active_archive.set(session.recording)
+        started = time.perf_counter()
+        try:
+            _write(session.module, retry, MemoryEntry(**deepcopy(turn['pending_write'])))
+        finally:
+            retry['total_seconds'] = time.perf_counter() - started
+            # The original turn owns the retry payload, not the operation record.
+            retry.pop('pending_write', None)
+            retry['status'] = 'completed' if retry.get('memory_write_status') == 'completed' else 'error'
+            session.turns.append(retry)
+            collector.reset(token)
+            Recording.active_archive.reset(archive_token)
+        turn['memory_write_status'] = retry['memory_write_status']
+        if retry['status'] == 'completed':
+            for key in ('pending_write', 'warning', 'memory_write_error'):
+                turn.pop(key, None)
+            for saved in session.requests.values():
+                if saved['body'].get('turn_id') == turn_id:
+                    saved['body'].update(memory_write_status='completed', warning=None)
+        return jsonify(turn_id=turn_id, memory_write_status=turn['memory_write_status'],
+                       warning=retry.get('warning'), error=retry.get('memory_write_error')), 200 if retry['status'] == 'completed' else 503
 
 @app.get('/api/chats/<chat_id>')
 @app.get('/api/chats/<chat_id>/diagnostics')
@@ -509,6 +614,8 @@ def compact_chat(chat_id):
         except ValueError as error:
             return jsonify(error=str(error)), 400
     with session.lock:
+        if any(t.get('pending_write') for t in session.turns):
+            return jsonify(error='Retry the pending memory update before compacting.'), 409
         d = dict(turn_id=str(uuid4()), operation='manual_compaction', memory_llm_calls=0,
                  memory_tokens=0, memory_prompt_tokens=0, memory_completion_tokens=0,
                  agent_llm_calls=0, agent_tokens=0, retrieval_seconds=0, agent_seconds=0,
@@ -537,14 +644,14 @@ def create_benchmark():
     try:
         if not isinstance(payload.get('options', {}), dict):
             raise ValueError('Options must be an object.')
-        from Benchmark import BenchmarkJob
-        job = BenchmarkJob(payload.get('dataset'), payload.get('options', {}))
+        from Benchmark import BenchmarkJob, MAX_QUESTION_WORKERS
+        job = BenchmarkJob(payload.get('dataset'), {**payload.get('options', {}), 'question_workers': MAX_QUESTION_WORKERS})
     except (ValueError, TypeError) as error:
         return jsonify(error=str(error)), 400
     with registry_lock:
         refresh_jobs()
         if history_index().has_active():
-            return jsonify(error='A benchmark is already running. Cancel it or wait for completion.'), 409
+            return jsonify(error='A benchmark is running or still finishing. Cancel it or wait for completion.'), 409
         jobs[job.result['run_id']] = job
         try:
             start_benchmark(job)
@@ -571,7 +678,7 @@ def delete_benchmark(run_id):
         refresh_jobs(run_id=run_id)
         job = jobs.get(run_id)
         if job is None:
-            return jsonify(error='Benchmark run is unavailable.'), 404
+            return benchmark_lookup_error(run_id)
         with job.lock:
             if not benchmark_stopped(job):
                 return jsonify(error='Cancel the run and wait until it stops before deleting it.'), 409
@@ -591,7 +698,7 @@ def continue_benchmark(run_id):
         refresh_jobs(run_id=run_id)
         job = jobs.get(run_id)
         if job is None:
-            return jsonify(error='Benchmark run is unavailable.'), 404
+            return benchmark_lookup_error(run_id)
         review = job.result.get('review') or {}
         if not isinstance(payload, dict) or job.result['status'] != 'waiting_review' or payload.get('token') != review.get('token'):
             return jsonify(error='This memory review is no longer pending. Refresh the run.'), 409
@@ -604,12 +711,21 @@ def continue_benchmark(run_id):
 @app.get('/api/benchmarks/<run_id>')
 @app.get('/api/benchmarks/<run_id>/export')
 def benchmark_status(run_id):
-    with registry_lock:
-        refresh_jobs(run_id=run_id)
-        job = jobs.get(run_id)
-    if job is None:
-        return jsonify(error='Benchmark run is unavailable.'), 404
-    snapshot = job.snapshot()
+    try:
+        with registry_lock:
+            refresh_jobs(run_id=run_id)
+            job = jobs.get(run_id)
+        if job is None:
+            return benchmark_lookup_error(run_id)
+        if hasattr(job, 'lock') and hasattr(job, 'result'):
+            with job.lock:
+                snapshot = (job.snapshot() if request.path.endswith('/export') or (
+                    request.args.get('analysis') == '1' and job.result.get('status') not in ACTIVE)
+                    else polling_view(job.result))
+        else:
+            snapshot = job.snapshot()
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        return benchmark_lookup_error(run_id, error)
     if request.args.get('analysis') == '1' and snapshot.get('status') not in ACTIVE:
         snapshot = enrich_report(snapshot)
     if request.path.endswith('/export'):
@@ -617,7 +733,7 @@ def benchmark_status(run_id):
             validate_recording(snapshot)
         except (ValueError, TypeError) as error:
             return jsonify(error=str(error)), 409
-    else:
+    elif not (snapshot.get('recording') or {}).get('payloads_omitted'):
         snapshot = polling_view(snapshot)
     response = jsonify(snapshot)
     if request.path.endswith('/export'):
@@ -633,7 +749,7 @@ def benchmark_artifact(run_id, identity):
         refresh_jobs(run_id=run_id)
         job = jobs.get(run_id)
     if job is None:
-        return jsonify(error='Benchmark run is unavailable.'), 404
+        return benchmark_lookup_error(run_id)
     with job.lock:
         archive = job.result.get('recording')
         try:
@@ -653,12 +769,23 @@ def resume_benchmark(run_id):
         return jsonify(error='Expected the original dataset.'), 400
     with registry_lock:
         refresh_jobs()
+        refresh_jobs(run_id=run_id)
         previous = jobs.get(run_id)
         if previous is None:
-            return jsonify(error='Benchmark run is unavailable.'), 404
-        refresh_jobs()
+            return benchmark_lookup_error(run_id)
         if history_index().has_active():
-            return jsonify(error='A benchmark is already running.'), 409
+            return jsonify(error='A benchmark is running or still finishing. Wait until it stops.'), 409
+        if not benchmark_stopped(previous):
+            return jsonify(error='The previous worker is still finishing. Wait a moment and resume again.'), 409
+        if previous.result.get('worker'):
+            # A terminal snapshot can be written before the detached process
+            # finishes its final checkpoints and releases ownership of the run.
+            from BenchmarkStore import Lease
+            try:
+                lease = Lease(path_for(RUN_STORE, run_id, '.lease'))
+            except OSError:
+                return jsonify(error='The previous worker is still finishing. Wait a moment and resume again.'), 409
+            lease.close()
         try:
             # Saved input is authoritative; the browser may currently show an
             # unrelated dataset. Uploads are a fallback for older/missing inputs.
@@ -670,10 +797,12 @@ def resume_benchmark(run_id):
                 data = payload.get('dataset')
             if data is None or data == []:
                 return jsonify(code='dataset_required', error='The original dataset is unavailable. Upload it to resume this run.'), 409
-            from Benchmark import BenchmarkJob
-            job = BenchmarkJob.resume(data, previous.snapshot())
+            from Benchmark import BenchmarkJob, MAX_QUESTION_WORKERS
+            job = BenchmarkJob.resume(data, previous.snapshot(), question_workers=MAX_QUESTION_WORKERS)
         except (OSError, ValueError, TypeError, KeyError) as error:
             return jsonify(error=str(error)), 400
+        if payload.get('validate_only') is True:
+            return jsonify(run_id=run_id, resumable=True, saved_cases=len(job.result['cases'])), 200
         jobs[run_id] = job
         try:
             start_benchmark(job)
@@ -687,7 +816,7 @@ def cancel_benchmark(run_id):
         refresh_jobs(run_id=run_id)
         job = jobs.get(run_id)
         if job is None:
-            return jsonify(error='Benchmark run is unavailable.'), 404
+            return benchmark_lookup_error(run_id)
         if job.result.get('worker'):
             path_for(RUN_STORE, run_id, '.cancel').touch()
         else:
@@ -700,7 +829,7 @@ def benchmark_review_export(run_id):
         refresh_jobs(run_id=run_id)
         job = jobs.get(run_id)
     if job is None:
-        return jsonify(error='Benchmark run is unavailable.'), 404
+        return benchmark_lookup_error(run_id)
     data = job.snapshot()
     cases = [{'case_index': i, 'question': c.get('question'), 'category': c.get('category'),
               'reference': c.get('answer'), 'prediction': c.get('prediction'),
@@ -716,7 +845,7 @@ def benchmark_review_import(run_id):
         refresh_jobs(run_id=run_id)
         job = jobs.get(run_id)
         if job is None:
-            return jsonify(error='Benchmark run is unavailable.'), 404
+            return benchmark_lookup_error(run_id)
         payload = request.get_json(silent=True)
         reviews = payload.get('reviews') if isinstance(payload, dict) else None
         if not isinstance(reviews, list):

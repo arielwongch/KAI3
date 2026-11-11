@@ -43,6 +43,7 @@ globalThis.KAI3Loading ||= (() => {
 const el = id => document.getElementById(id);
 const loaded = new Map(), selected = new Set();
 let filenames = [];
+let libraryGeneration = 0;
 let busy = false, pendingDelete = null, pendingRename = null;
 let finishBusyIndicator = null;
 const categoryNames = {'1':'Multi-hop','2':'Temporal','3':'Open-domain','4':'Single-hop','5':'Adversarial'};
@@ -75,7 +76,7 @@ function setBusy(value){
     if(!value){finishBusyIndicator?.();finishBusyIndicator=null;}
     el('library').setAttribute('aria-busy',String(value));for(const control of el('library').querySelectorAll('input,button'))control.disabled=value;updateActions();
 }
-async function loadRun(name,target){return KAI3Loading.during(target,async()=>{if(!loaded.has(name)){const result=await api('/api/results/file?analysis=1&path='+encodeURIComponent(name));loaded.set(name,result.report);}selected.add(name);});}
+async function loadRun(name,target){const generation=libraryGeneration;return KAI3Loading.during(target,async()=>{if(!loaded.has(name)){const result=await api('/api/results/file?analysis=1&path='+encodeURIComponent(name));if(generation!==libraryGeneration)return;loaded.set(name,result.report);}if(generation===libraryGeneration)selected.add(name);});}
 function renderLibrary(){
     const list=el('library');list.replaceChildren();const visible=visibleFiles();
     el('libraryCount').textContent=visible.length===filenames.length?String(filenames.length):`${visible.length} / ${filenames.length}`;
@@ -98,7 +99,18 @@ function renderLibrary(){
     if(!list.childElementCount){const empty=node('div',null,'empty-state');empty.append(node('h3',filenames.length?'No matching files':'Build your result library'),node('p',filenames.length?'Try another filename or clear your search.':'Upload benchmark JSON files to start your first comparison.'));list.append(empty);}
     updateActions();
 }
-async function refresh(){const result=await api('/api/results');filenames=result.files;sortFiles();for(const name of selected)if(!filenames.includes(name)){selected.delete(name);loaded.delete(name);}renderLibrary();render();}
+async function refresh(reloadSelected=true){
+    const generation=++libraryGeneration,result=await api('/api/results');if(generation!==libraryGeneration)return;
+    filenames=result.files;sortFiles();for(const name of selected)if(!filenames.includes(name))selected.delete(name);
+    for(const name of loaded.keys())if(reloadSelected||!selected.has(name))loaded.delete(name);const errors=[];
+    for(const name of [...selected]){
+        if(loaded.has(name))continue;
+        try{const result=await api('/api/results/file?analysis=1&path='+encodeURIComponent(name));if(generation!==libraryGeneration)return;loaded.set(name,result.report);}
+        catch(error){errors.push(displayName(name)+': '+error.message);}
+    }
+    if(generation!==libraryGeneration)return;renderLibrary();render();
+    if(errors.length)throw new Error('Some selected files could not be refreshed. '+errors.join(' '));
+}
 function rows(){
     const data=[...selected].flatMap(name=>{
         const report=loaded.get(name);return (report?.comparison?.rows||[]).map(row=>({
@@ -374,7 +386,7 @@ el('uploads').onchange=async()=>{
         try{const result=await uploadResult(file,index+1,files.length);if(!result){skipped++;continue;}loaded.set(result.path,result.report);selected.add(result.path);successes++;if(result.replaced)replaced++;}
         catch(error){errors.push(file.name+': '+error.message);}
     }
-    try{await refresh();if(successes){el('search').value='';renderLibrary();}}catch(error){errors.push(error.message);}finally{input.value='';setBusy(false);render();}
+    try{await refresh(false);if(successes){el('search').value='';renderLibrary();}}catch(error){errors.push(error.message);}finally{input.value='';setBusy(false);render();}
     status(`${successes} file(s) saved and selected · ${replaced} replaced · ${skipped} skipped. ${errors.join(' ')}`,!!errors.length);
 };
 el('save').onclick=async()=>{

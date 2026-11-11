@@ -1,5 +1,12 @@
 # Compare Runs workspace
 
+Refresh behavior reviewed 2026-11-12: explicit Refresh reloads selected reports
+and invalidates unselected cached reports even when filenames are unchanged.
+Per-file reload errors remain visible and the failed file's old metrics are
+removed; its selection is preserved for retry. A generation counter prevents
+older requests from replacing refreshed content. Successful upload responses
+can be retained while refreshing the filename list after an upload.
+
 Status: implemented behavior. Updated 2026-11-02. Automated API/DOM checks and
 headless Chrome previews at desktop and phone widths cover the library refresh.
 

@@ -29,7 +29,8 @@ const document={getElementById:id=>nodes[id]??=new Node(),createElement:tag=>new
 const marked={parse:text=>text};
 const DOMPurify={sanitize:text=>'SANITIZED:'+text};
 const navigator={clipboard:{writeText:async()=>{}}};
-const setTimeout=()=>1,clearTimeout=()=>{};
+const timeoutCalls=[];
+const setTimeout=(fn,delay)=>{timeoutCalls.push({fn,delay});return 1;},clearTimeout=()=>{};
 let requests=[];
 let responseHandler=()=>({status:404,data:{error:'Server memory is unavailable.'}});
 let fetch=async(url,options)=>{requests.push({url,options});const r=await responseHandler(url,options);return {ok:r.status<400,status:r.status,json:async()=>r.data};};
@@ -106,6 +107,33 @@ test('compaction chat sends fixed settings and manual action uses an independent
     assert.equal(run("JSON.parse(requests.find(r=>r.url.endsWith('/compact')).options.body).retain_percent"),12.5);
     assert.equal(run("active().memory_options.retain_percent"),35);
     assert.match(run("$('chatCompactionStatus').textContent"),/100.*10 tokens/);
+});
+
+test('compaction run stays on progress through temporary polling failures and recovers',async()=>{
+    const {run,act}=await harness();
+    run(`runId='compaction-run';$('benchmarkSetup').hidden=true;$('benchmarkRunning').hidden=false;
+        responseHandler=()=>({status:503,data:{error:'Checkpoint temporarily locked'}})`);
+    await act('pollBenchmark()');
+    assert.equal(run("$('benchmarkSetup').hidden"),true);
+    assert.equal(run("$('benchmarkRunning').hidden"),false);
+    assert.equal(run('runId'),'compaction-run');
+    assert.equal(run('pollTimer'),1);
+    assert.match(run("$('progressActivity').textContent"),/Retrying/);
+    run(`responseHandler=url=>({status:200,data:url==='/api/benchmarks'?{runs:[]}:
+        {run_id:'compaction-run',status:'running',config:{modules:['compaction']},
+         progress:{completed:13,total:100,phase:'ingestion'},cases:[]}})`);
+    await act('pollBenchmark()');
+    assert.equal(run("$('benchmarkSetup').hidden"),true);
+    assert.equal(run("$('benchmarkRunning').hidden"),false);
+    assert.doesNotMatch(run("$('progressActivity').textContent"),/Retrying/);
+    run("responseHandler=async()=>{throw new TypeError('Failed to fetch')}");
+    await act('pollBenchmark()');
+    assert.equal(run("$('benchmarkRunning').hidden"),false);
+    assert.equal(run('benchmark.progress.completed'),13);
+    assert.match(run("$('progressActivity').textContent"),/Failed to fetch.*Retrying/);
+    await act("$('newBenchmarkRun').onclick()");
+    assert.equal(run('runId'),null);
+    assert.equal(run("$('benchmarkSetup').hidden"),false);
 });
 
 test('each workspace bundles the shared helper without relying on a template script tag',()=>{
@@ -220,6 +248,47 @@ test('invalid saved JSON is recoverable',async()=>{
     assert.equal(run('active().messages.length'),0);
 });
 
+test('a rejected first request leaves memory settings and retry available',async()=>{
+    const {run,act}=await harness();
+    run("active().module='vector_store_reranker';render();$('userInput').value='hello';responseHandler=url=>url==='/get'?{status:400,data:{error:'Invalid settings'}}:{status:404,data:{error:'No memory'}}");
+    await act("$('chatForm').onsubmit({preventDefault(){}})");
+    assert.equal(run('active().started'),false);
+    assert.equal(run('unavailable'),false);
+    assert.equal(run("$('sendButton').disabled"),false);
+    assert.equal(run("$('chatRerankerSettings').hidden"),false);
+    assert.equal(run('active().pending_request'),undefined);
+});
+
+test('uncertain first request retries the same ID without duplicating the user turn',async()=>{
+    const {run,act}=await harness();
+    run("active().module='sliding_window';render();$('userInput').value='hello';responseHandler=url=>{if(url==='/get')throw new Error('connection lost');return {status:404,data:{error:'No memory'}}}");
+    await act("$('chatForm').onsubmit({preventDefault(){}})");
+    const requestId=run('active().pending_request.payload.request_id');
+    assert.equal(run('active().started'),false);
+    assert.equal(run("$('sendButton').disabled"),false);
+    run("$('userInput').value='hello';responseHandler=url=>url==='/get'?{status:200,data:{reply:'Tea',turn_id:'turn'}}:{status:200,data:{memory:{entries:[],config:{}},turns:[]}}");
+    await act("$('chatForm').onsubmit({preventDefault(){}})");
+    assert.equal(run("JSON.parse(requests.filter(r=>r.url==='/get').at(-1).options.body).request_id"),requestId);
+    assert.equal(run("active().messages.filter(m=>m.role==='user').length"),1);
+    assert.equal(run('active().pending_request'),undefined);
+});
+
+test('lost reply is recovered from turn diagnostics and failed memory has a write-only retry',async()=>{
+    const {run,act}=await harness();
+    run(`active().module='sliding_window';render();$('userInput').value='hello';
+        responseHandler=url=>{if(url==='/get')throw new Error('reply lost');return {status:200,data:{memory:{entries:[],config:{}},turns:[{request_id:active().pending_request.payload.request_id,turn_id:'paid',final_answer:'Tea',memory_write_status:'failed',warning:'Memory offline'}]}}}`);
+    await act("$('chatForm').onsubmit({preventDefault(){}})");
+    assert.equal(run('active().started'),true);
+    assert.equal(run('active().pending_request'),undefined);
+    assert.equal(run('active().messages.at(-1).content'),'Tea');
+    assert.equal(run("$('sendButton').disabled"),true);
+    run("responseHandler=url=>url.endsWith('/retry-memory')?{status:200,data:{memory_write_status:'completed'}}:{status:200,data:{memory:{entries:[],config:{}},turns:[{turn_id:'paid',memory_write_status:'completed'}]}}");
+    await act("descendants($('chatMessages')).find(n=>n.textContent==='Retry memory update').onclick()");
+    assert.equal(run("requests.filter(r=>r.url==='/get').length"),1);
+    assert.equal(run("requests.some(r=>r.url==='/api/chats/uuid-1/turns/paid/retry-memory')"),true);
+    assert.equal(run("$('sendButton').disabled"),false);
+});
+
 test('failed turns refresh diagnostics and require existing memory',async()=>{
     const {run,act}=await harness({'kai3-workspace-v1':JSON.stringify({version:1,active:'old',sessions:[{id:'old',title:'old',module:'sliding_window',messages:[],started:true}]})});
     await act("unavailable=false;checking=false;controlState();$('userInput').value='test';$('chatForm').onsubmit({preventDefault(){}})");
@@ -237,6 +306,48 @@ test('resume uses server input for both thread and detached runs',async()=>{
         assert.equal(run('requests[0].url'),'/api/benchmarks/saved/resume');
         assert.equal(run('requests[0].options.body'),'{}');
     }
+});
+
+test('resume blocks duplicate submissions and stays on progress through a polling failure',async()=>{
+    const {run,act}=await harness();
+    run(`runId='saved';benchmark={status:'failed'};requests=[];let finishResume;
+        responseHandler=url=>url.endsWith('/resume')?new Promise(resolve=>finishResume=resolve):
+            {status:503,data:{error:'Temporary status failure'}};
+        let resuming=resumeSavedBenchmark()`);
+    assert.equal(run("$('resumeBenchmark').disabled"),true);
+    await act('resumeSavedBenchmark()');
+    assert.equal(run("requests.filter(r=>r.url.endsWith('/resume')).length"),1);
+    run("finishResume({status:202,data:{run_id:'saved'}})");
+    await act('resuming');
+    assert.equal(run("$('benchmarkSetup').hidden"),true);
+    assert.equal(run("$('benchmarkRunning').hidden"),false);
+    assert.match(run("$('progressActivity').textContent"),/Retrying/);
+    assert.equal(run("$('resumeBenchmark').disabled"),true);
+    await act('resumeSavedBenchmark()');
+    assert.equal(run("requests.filter(r=>r.url.endsWith('/resume')).length"),1);
+});
+
+test('parallel limit is server-owned and progress shows active question count',async()=>{
+    const {run,act}=await harness();
+    run("runId='saved';benchmark={status:'failed'};requests=[];responseHandler=()=>({status:503,data:{error:'Test stop'}})");
+    await act('resumeSavedBenchmark()');
+    assert.equal(run('requests[0].options.body'),'{}');
+    assert(!source.includes('questionWorkerCount'));
+    const html=fs.readFileSync('src/index.html','utf8');
+    assert(!html.includes('id="questionWorkers"'));
+    assert(!html.includes('id="resumeQuestionWorkers"'));
+    run("renderRunProgress({status:'running',config:{question_workers:8},progress:{phase:'questions',active_questions:[0,2],question_workers:8}})");
+    assert.match(run("$('progressActivity').textContent"),/2 questions running.*8 in parallel/);
+});
+
+test('late resume response cannot reopen a run after switching away and back',async()=>{
+    const {run,act}=await harness();
+    run(`runId='saved';requests=[];let finishResume;responseHandler=()=>new Promise(resolve=>finishResume=resolve);
+        let resuming=resumeSavedBenchmark();$('newBenchmarkRun').onclick();runId='saved';
+        finishResume({status:202,data:{run_id:'saved'}})`);
+    await act('resuming');
+    assert.equal(run('requests.length'),1);
+    assert.equal(run("$('benchmarkSetup').hidden"),false);
 });
 
 test('resume requests an upload only when the server needs the original',async()=>{
@@ -463,7 +574,7 @@ test('reset during a saved-run load prevents the late response restoring the rep
     assert.equal(run("byClass($('savedRuns'),'selected').length"),0);
 });
 
-test('failed saved-run loading clears indicators and never resumes another run',async()=>{
+test('failed saved-run loading keeps the selected run pending and never resumes another run',async()=>{
     const {run,act}=await harness({},'/benchmark');
     run(savedRunSetup);await act('refreshSavedRuns()');
     run("let resumes=0;$('resumeBenchmark').onclick=()=>resumes++;let opening=byClass($('savedRuns'),'saved-run-actions')[1].children[1].onclick();replies.shift()({status:503,data:{error:'Temporarily unavailable'}})");
@@ -471,9 +582,67 @@ test('failed saved-run loading clears indicators and never resumes another run',
     assert.equal(run('resumes'),0);
     assert.equal(run('selectedRunId'),null);
     assert.equal(run("$('benchmarkLoadStatus').getAttribute('data-loading')"),null);
-    assert.equal(run("byClass($('savedRuns'),'saved-run-state')[1].hidden"),true);
-    assert.equal(run("$('benchmarkStatus').textContent"),'Temporarily unavailable');
+    assert.equal(run("byClass($('savedRuns'),'saved-run-state')[1].hidden"),false);
+    assert.match(run("$('benchmarkLoadStatus').textContent"),/Temporarily unavailable.*Retrying/);
+    assert.equal(run("$('benchmarkSetup').hidden"),true);
+    assert.equal(run('runId'),'run-b');
+    assert.equal(run("storage['kai3-benchmark-run']"),'run-b');
+});
+
+test('transient legacy 404 during first load preserves run selection and recovers without setup',async()=>{
+    const {run,act}=await harness({},'/benchmark');
+    run(savedRunSetup);await act('refreshSavedRuns()');
+    run("let opening=openSavedRun('run-a');replies.shift()({status:404,data:{error:'Benchmark run is unavailable.'}})");
+    await act('opening');
+    assert.equal(run('runId'),'run-a');
+    assert.equal(run("storage['kai3-benchmark-run']"),'run-a');
+    assert.equal(run("$('benchmarkSetup').hidden"),true);
+    assert.equal(run("$('benchmarkLoadStatus').hidden"),false);
+    assert.match(run("$('benchmarkLoadStatus').textContent"),/Retrying/);
+    assert.equal(run('pollTimer'),1);
+    run("let recovery=pollBenchmark();replies.shift()({status:200,data:snapshot('run-a')})");
+    await act('recovery');
+    assert.equal(run('selectedRunId'),'run-a');
+    assert.equal(run("$('benchmarkRunning').hidden"),false);
+    assert.equal(run("$('benchmarkSetup').hidden"),true);
+    assert.equal(run('pollFailures'),0);
+});
+
+test('live-run 404s back off without losing progress and explicit reset stops late timers',async()=>{
+    const {run,act}=await harness({},'/benchmark');
+    run(savedRunSetup);
+    run("let opening=openSavedRun('run-a');replies.shift()({status:200,data:snapshot('run-a','ingestion')})");
+    await act('opening');
+    run("responseHandler=()=>({status:404,data:{error:'Transient checkpoint miss'}})");
+    const delays=[];
+    for(let i=0;i<5;i++){
+        await act('pollBenchmark()');
+        delays.push(run('timeoutCalls.at(-1).delay'));
+    }
+    assert.deepEqual(delays,[2000,4000,8000,10000,10000]);
+    assert.equal(run('benchmark.progress.phase'),'ingestion');
+    assert.equal(run('selectedRunId'),'run-a');
+    assert.equal(run("$('benchmarkRunning').hidden"),false);
+    assert.equal(run("$('benchmarkSetup').hidden"),true);
+    run("$('newBenchmarkRun').onclick();requests=[]");
+    await act('pollBenchmark()');
+    assert.equal(run('requests.length'),0);
     assert.equal(run("$('benchmarkSetup').hidden"),false);
+});
+
+test('confirmed missing run stops retrying but does not discard last report or navigate',async()=>{
+    const {run,act}=await harness({},'/benchmark');
+    run(savedRunSetup);
+    run("let opening=openSavedRun('run-a');replies.shift()({status:200,data:snapshot('run-a')})");
+    await act('opening');
+    run("$('benchmarkRunning').hidden=true;$('benchmarkReport').hidden=false;responseHandler=()=>({status:404,data:{code:'benchmark_not_found',retryable:false,error:'Choose another saved run or New benchmark.'}})");
+    await act('pollBenchmark()');
+    assert.equal(run('pollTimer'),null);
+    assert.equal(run('runId'),'run-a');
+    assert.equal(run("storage['kai3-benchmark-run']"),'run-a');
+    assert.equal(run("$('benchmarkReport').hidden"),false);
+    assert.equal(run("$('benchmarkSetup').hidden"),true);
+    assert.match(run("$('reportStatus').textContent"),/Choose another/);
 });
 
 test('local file reads show an indicator and cannot reopen an import after reset',async()=>{

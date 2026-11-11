@@ -78,7 +78,7 @@ class MemoryIntegrationTests(unittest.TestCase):
 
     def test_malformed_response_is_rejected_and_retried(self):
         fake_client = FakeOpenAIClient([
-            "I can help with that.",
+            "Thought: working\nAction: lookup: fabricated evidence",
             "Thought: I have the final answer.\nFinal Answer: done",
         ])
 
@@ -87,11 +87,11 @@ class MemoryIntegrationTests(unittest.TestCase):
                 "request", memory_module=MemoryFactory.create_memory_module("sliding_window")
             )
 
-        self.assertIn("Task completed successfully.", result)
+        self.assertEqual("done", result)
         self.assertEqual(len(fake_client.calls), 2)
         self.assertTrue(any(
             isinstance(message, dict)
-            and "did not match the required format" in message.get("content", "")
+            and "No tools are available" in message.get("content", "")
             for message in fake_client.calls[1]["messages"]
         ))
 

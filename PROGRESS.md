@@ -1,6 +1,6 @@
 # Project progress
 
-Original phase review: 2026-10-08. Latest implementation/status update: 2026-11-10.
+Original phase review: 2026-10-08. Latest implementation/status update: 2026-11-12.
 The original five-item Phase 1 outline is preserved in
 [the development-plan archive](plans/archive/initial_phase.md), first recorded
 on 2026-09-15 in commit `df2e17f`.
@@ -9,7 +9,7 @@ on 2026-09-15 in commit `df2e17f`.
 | --- | --- |
 | Shared memory interface | Implemented; see [interface](spec/memory/interface.md) |
 | Four memory modules | Window, summary, vector, and current facts implemented; benchmark also selects temporal facts and separate baselines; see [components](spec/README.md) |
-| Small agent loop | ReAct chat integration implemented; benchmark QA uses direct answering |
+| Small agent loop | Chat uses direct answering through the existing `run_ReAct` interface; fabricated action observations removed; benchmark QA remains direct |
 | Test modules on LoCoMo | Runner and mocked coverage implemented; a completed matched six-condition study is not established |
 | Record latency, tokens, storage growth | Diagnostics/results implement these measurements; snapshots exclude embeddings/runtime, and missing usage remains unavailable |
 
@@ -17,6 +17,31 @@ This is an evidence-based status summary, not an assertion that every experiment
 or acceptance criterion is complete. Use the [plan register](plans/README.md) for
 dated milestones, dependencies, remaining work, and unscheduled proposals.
 Current contracts are indexed under [spec/](spec/README.md).
+
+## Workflow correctness and recovery — 2026-11-12
+
+All ten [workflow audit findings](plans/workflow_dfs_audit_2026-11-12.md) are
+implemented. Invalid summaries preserve memory; completed chat answers survive
+memory-write failures with explicit write-only retries. Session request IDs and
+diagnostic reconciliation protect uncertain deliveries without recreating
+confirmed lost memory. Cancellation, provider success and checkpoint failure
+have distinct outcomes. Comparison refresh reloads content, nested storage is
+measured, empty question selections are rejected, and terminal setup is lazy.
+
+The accumulated benchmark work includes incremental SQLite artifact storage,
+fixed eight-worker question execution, guarded worker ownership, temporary
+checkpoint/false-404 recovery and runtime optimizations. The
+[mechanism audit](plans/mechanism_consistency_audit_2026-11-11.md) records those
+contracts. The [compaction stall plan](plans/compaction_progress_transport_fix_2026-11-12.md)
+remains proposed; it must not be read as implemented streaming or progress UI.
+
+Verification: **376 offline tests passed** in 181.950 seconds, including 14 new
+Python regressions and existing frontend wrappers; the chat harness passed 45
+cases and the comparison refresh/race checks passed. JavaScript syntax, Python
+source parsing and whitespace checks passed. Existing results were preserved.
+No provider-backed experiment, new human calibration or visual acceptance is
+claimed. Resume still requires compatible execution sources; historical reports
+remain viewable. Restarting code does not update already-running workers.
 
 ## Decision-brief verification and comparison uncertainty - 2026-11-04
 

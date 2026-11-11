@@ -1,5 +1,13 @@
 # Local setup and startup
 
+Terminal startup reviewed 2026-11-12: `python src/TerminalInterface.py --help`
+works without credentials, and importing the module starts no input loop.
+Both terminal and web load provider credentials lazily from the shared
+`ProviderClient` and `src/.env`. Raw terminal requests use the shared bounded
+retry policy and commit conversation pairs only after a complete response.
+Failed attempts retain diagnostics; EOF exits cleanly. Compaction terminal
+chats support `/retry-memory` after a completed answer's memory update fails.
+
 Status: implemented documentation and runtime conventions. Reviewed on 2026-11-02.
 Basic Windows setup and local HTTP startup verified with Python 3.12.10 on that date.
 
@@ -53,7 +61,7 @@ Jinja templates, and `.env` are not served as arbitrary static files.
 
 ## Runtime data and recovery boundary
 
-Web benchmark snapshots, input files, worker logs, leases, and control files live
+Web benchmark snapshots, run-owned artifact databases, input files, worker logs, leases, and control files live
 under `instance/benchmark_runs/`. `instance/` is excluded from Git; previously
 tracked files were removed from the index with local content preserved. Exported
 reports intended for sharing belong under `data/result/`.

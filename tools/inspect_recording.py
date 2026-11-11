@@ -7,6 +7,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from ExperimentRecording import validate, get, archive_metrics
+from BenchmarkStore import read_json
 
 
 def main():
@@ -15,7 +16,7 @@ def main():
     parser.add_argument('--artifact', help='Print one full artifact by SHA-256.')
     args = parser.parse_args()
     try:
-        report = json.loads(Path(args.report).read_text(encoding='utf-8-sig'))
+        report = read_json(args.report)
         validate(report)
         archive = report.get('recording')
         if archive is None:

@@ -1,5 +1,19 @@
 # Experiment recording contract
 
+Request checkpoint handling reviewed 2026-11-12: provider transport and local
+durability outcomes are independent. A failed preflight checkpoint records
+`not_sent` with zero usage and sends no request. A failed checkpoint after a
+successful provider response preserves `completed`, returned usage and the
+response artifact, and records a separate `checkpoint_error`. Durability failure
+stops further paid work rather than retrying a successful transport. If an error
+checkpoint also fails, the original transport exception is preserved. Responses
+retained only in process memory cannot promise recovery after a crash. Execution
+source identities still participate in strict resume compatibility; these
+algorithm changes are not exempted from validation.
+
+Storage, concurrency, and resume contracts reviewed on 2026-11-11; see the
+[mechanism consistency audit](../../plans/mechanism_consistency_audit_2026-11-11.md).
+
 New runs retain a version 1 `recording` archive inside the established schema 2
 LoCoMo report. The scoring protocol is unchanged. The [research, gap audit, and
 pre-implementation design](../../plans/experiment_recording_2026-11-10.md) explain
@@ -165,16 +179,23 @@ single-artifact reads and the offline inspector perform hash validation. Use the
 inspector when checking a downloaded or browser-local file independently.
 
 Confirmed deletion uses existing stopped-run/lease checks and deletes only that
-run's JSON, input copy, logs and controls. Inline archives cannot orphan shared
-filesystem blobs or delete another run's objects.
+run's JSON, input copy, run-owned artifact database, logs and controls. Databases
+are not shared between runs; deleting one run cannot delete another run's objects.
 
 ## Limits and interpretation
 
 Archives are lossless/unpruned. Repeated sources, candidates and partial snapshots
-can greatly exceed active memory size. In-memory archives and whole-report atomic
-writes suit bounded datasets, not unbounded campaigns. Browser imports retain the
+can greatly exceed active memory size. Active checkpoints store immutable objects
+once in a run-owned SQLite database and atomically publish a small JSON index.
+Readers hydrate objects lazily; portable exports materialize the complete inline
+archive. Retain sidecars with internal checkpoints. Archives still require
+bounded datasets and sufficient disk space. Browser imports retain the
 32 MiB limit; larger files can be copied/inspected/resumed locally with the CLI.
-There is no cross-run content store, retention policy or automatic old-data migration.
+There is no cross-run content store or retention policy. Existing inline run
+checkpoints migrate on the next save by an updated worker; original portable
+exports remain readable. `Benchmark.py --resume` and the offline inspector use
+the shared reader for both formats. Other offline analysis tools take portable
+exports, not stripped polling responses or standalone internal manifests.
 
 Weights, provider infrastructure/cache, dependency wheels and dirty source files
 are not bundled. Vectors are stored exactly, but new query embeddings can vary

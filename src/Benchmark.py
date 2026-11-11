@@ -1,6 +1,6 @@
 """LoCoMo QA protocol: direct ingestion, isolated memories, no QA write-back."""
 import argparse
-from collections import Counter, defaultdict
+from collections import Counter, defaultdict, OrderedDict
 from copy import deepcopy
 import hashlib
 import json
@@ -8,6 +8,8 @@ import re
 import string
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
+from contextvars import ContextVar, copy_context
 from uuid import uuid4
 from functools import lru_cache
 from API import call_api, client
@@ -19,7 +21,7 @@ from HybridMemory import HYBRIDS, HYBRID_PACKING_POLICY, hybrid_settings
 from NoMemory import NoMemory
 from MemoryConfig import MODULES, HYBRID_MODULES as WINDOW_HYBRIDS, PERIODIC_MODULES, RERANKED_MODULES, window_size_for
 from SlidingWindow import SlidingWindow
-from RequestPolicy import completion, fatal_provider_error, status_code, cancel_event
+from RequestPolicy import completion, fatal_provider_error, status_code, cancel_event, RequestCancelled
 from MemoryContext import build_memory_context, get_benchmark_tokenizer, positive_count, PACKING_POLICY, WINDOW_PACKING_POLICY, TOKENIZER_REVISION
 from AuditProvenance import code_identity, hardware_identity, memory_identity
 from Compaction import OPTION_KEYS as COMPACTION_KEYS, validate_options as compaction_options, POLICY as COMPACTION_POLICY, COMPACTION_PROMPT, digest as compaction_digest
@@ -27,6 +29,55 @@ from ResultAnalysis import complete_sum, question_phase_seconds, context_tokens
 import ExperimentRecording as Recording
 
 from BenchmarkConfig import BENCHMARK_MODULES, PROTOCOL_VERSION, MODULE_CAPABILITIES
+
+question_retrieval_lock = ContextVar('benchmark_question_retrieval_lock', default=None)
+MAX_QUESTION_WORKERS = 8
+
+
+class CachedTokenizer:
+    """Bounded, run-local cache of exact counts; tokenizer identity is unchanged."""
+    def __init__(self, base, max_bytes=2 * 1024 * 1024, max_entries=64):
+        self.base = base
+        self.max_bytes, self.max_entries = max_bytes, max_entries
+        self._counts = OrderedDict()
+        self._bytes = 0
+        self._lock = threading.RLock()
+
+    def __getattr__(self, name):
+        return getattr(self.base, name)
+
+    def count(self, text):
+        with self._lock:
+            if text in self._counts:
+                self._counts.move_to_end(text)
+                return self._counts[text]
+            count = self.base.count(text)
+            size = 4 * len(text)  # Conservative bound for Python string contents.
+            if size <= self.max_bytes:
+                while self._counts and (len(self._counts) >= self.max_entries or self._bytes + size > self.max_bytes):
+                    old, _ = self._counts.popitem(last=False)
+                    self._bytes -= 4 * len(old)
+                self._counts[text] = count
+                self._bytes += size
+            return count
+
+
+class QuestionCancellation:
+    """Stop sibling request retries after a fatal failure without cancelling the run."""
+    def __init__(self, cancel, stop):
+        self.cancel, self.stop = cancel, stop
+
+    def is_set(self):
+        return self.cancel.is_set() or self.stop.is_set()
+
+    def wait(self, seconds):
+        deadline = time.monotonic() + seconds
+        while not self.is_set():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            self.stop.wait(min(.1, remaining))
+        return True
 
 @lru_cache(maxsize=1)
 def get_stemmer():
@@ -120,6 +171,12 @@ def storage_metrics(module):
     if hasattr(module, 'components'):
         metrics['components'] = {name: storage_metrics(child) for name, child in module.components.items()}
         metrics['component_usage'] = deepcopy(snapshot['component_usage'])
+        metrics['embedding_arrays_serialized_bytes'] = sum(child['embedding_arrays_serialized_bytes'] for child in metrics['components'].values())
+        metrics['embedding_chunks'] = sum(child['embedding_chunks'] for child in metrics['components'].values())
+    if hasattr(module, 'long_term'):
+        metrics['tiers'] = {name: storage_metrics(getattr(module, name)) for name in ('window', 'long_term')}
+        metrics['embedding_arrays_serialized_bytes'] = sum(child['embedding_arrays_serialized_bytes'] for child in metrics['tiers'].values())
+        metrics['embedding_chunks'] = sum(child['embedding_chunks'] for child in metrics['tiers'].values())
     return metrics
 
 
@@ -142,6 +199,9 @@ def direct_answer(module, question, diagnostics, conversation_text=None,
                   memory_context_tokens=None, retrieval_k=None, tokenizer=None):
     started = time.perf_counter()
     diagnostics.update(retrieval_seconds=0.0, answer_seconds=0.0)
+    gate = question_retrieval_lock.get()
+    if gate is not None:
+        gate.acquire()
     try:
         import Embeddings
         import Reranker
@@ -169,6 +229,8 @@ def direct_answer(module, question, diagnostics, conversation_text=None,
                 diagnostics['memory_context_tokens'] = count
     finally:
         diagnostics['retrieval_seconds'] = time.perf_counter() - started
+        if gate is not None:
+            gate.release()
     diagnostics['retrieval_model_state'] = dict(**model_state,
         embedding_loaded_after=Embeddings._load_model.cache_info().currsize > 0,
         reranker_loaded_after=Reranker._load_model.cache_info().currsize > 0,
@@ -264,7 +326,11 @@ def validate_dataset(data):
             raise ValueError('Conversation sample IDs must be unique')
         sample_ids.add(sample_id)
         dialogue_ids = set()
+        if sample['conversation'] and not any(re.fullmatch(r'session_\d+', key) for key in sample['conversation']):
+            raise ValueError('Conversation requires a recognized session_N array.')
         for key, turns in sample['conversation'].items():
+            if key.startswith('session') and not re.fullmatch(r'session_\d+(_date_time)?', key):
+                raise ValueError('Conversation session keys must use session_N or session_N_date_time.')
             if re.fullmatch(r'session_\d+', key):
                 if not isinstance(turns, list) or any(not isinstance(t, dict) or not all(k in t for k in ('speaker', 'text', 'dia_id')) for t in turns):
                     raise ValueError('Session turns require speaker, text, and dia_id.')
@@ -369,6 +435,11 @@ def options_for(data, options):
     if type(summary_batch_size) is not int or not 1 <= summary_batch_size <= 20:
         raise ValueError('Summary batch size must be an integer from 1 to 20.')
     normalized = dict(summary_batch_size=summary_batch_size, review_memory=options.get('review_memory', False), background=options.get('background', False), context_limit=context_limit, max_output_tokens=max_output_tokens, modules=modules, sample_ids=[str(i) for i in ids], categories=list(categories), question_limit=limit, **memory_options)
+    workers = options.get('question_workers', 1)
+    if type(workers) is not int or not 1 <= workers <= 8:
+        raise ValueError('question_workers must be an integer from 1 to 8.')
+    if 'question_workers' in options:
+        normalized['question_workers'] = workers
     if mode in ('full_context', 'question_only'):
         normalized['no_memory_context'] = context_mode
     return normalized
@@ -393,6 +464,8 @@ class BenchmarkJob:
             if self.options['question_limit']:
                 selected = selected[:self.options['question_limit']]
             manifest.extend(dict(module=mode, sample_id=sample['sample_id'], question_index=i, category=q['category']) for i, q in selected)
+        if not manifest:
+            raise ValueError('The selected conversations and categories contain no questions.')
         self.result = dict(schema_version=2, protocol_version=PROTOCOL_VERSION, run_id=str(uuid4()), status='queued',
                            question_manifest=manifest, question_manifest_hash=hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest(),
                            packing_policy=HYBRID_PACKING_POLICY if mode in HYBRIDS else PACKING_POLICY, tokenizer=None,
@@ -407,7 +480,10 @@ class BenchmarkJob:
                            answer_prompt_version=ANSWER_PROMPT_VERSION, answer_settings=dict(thinking='enabled', reasoning_effort='high', max_tokens=self.options['max_output_tokens'], max_attempts=5, timeout_seconds=180),
                            answer_model='deepseek-flash', judge_model='deepseek-flash', judge_prompt_version=JUDGE_PROMPT_VERSION, scoring='binary-semantic-correctness',
                            progress={'completed': 0, 'total': 0}, cases=[], memories=[], errors=[])
-        self.result['config_hash'] = hashlib.sha256(json.dumps(self.options, sort_keys=True).encode()).hexdigest()
+        self.result['config_hash'] = hashlib.sha256(json.dumps(
+            {k: v for k, v in self.options.items() if k != 'question_workers'}, sort_keys=True).encode()).hexdigest()
+        self.result['question_execution'] = dict(workers=self.options.get('question_workers', 1),
+            policy='bounded-question-pool-v1; conversation-barrier; serialized-retrieval; no-qa-writeback')
         self.result['recording'] = Recording.new_archive()
         self.result['dataset_artifact'] = Recording.put(self.result['recording'], 'dataset', data)
         self.result['recording_contract'] = dict(version=Recording.VERSION,
@@ -488,8 +564,10 @@ class BenchmarkJob:
             self.result['retrieval_version'] = 'vector-shortlist-cross-encoder-rerank-v1'
 
     @classmethod
-    def resume(cls, data, previous):
+    def resume(cls, data, previous, question_workers=None):
         config = deepcopy(previous.get('config', {}))
+        if question_workers is not None:
+            config['question_workers'] = question_workers
         if previous.get('protocol_version') != PROTOCOL_VERSION:
             raise ValueError('Legacy protocol cannot resume under the controlled comparison. Start a new run; the saved report remains readable.')
         config.setdefault('summary_batch_size', 1)
@@ -580,7 +658,7 @@ class BenchmarkJob:
         with self.lock:
             callback = self._persistence_callback
             if callback:
-                callback(self.snapshot())
+                callback(Recording.checkpoint_view(self.result))
     def snapshot(self):
         with self.lock:
             return deepcopy(self.result)
@@ -607,32 +685,45 @@ class BenchmarkJob:
             self.result['updated_at'] = time.time()
         now = time.monotonic()
         if phase or force or now - getattr(self, '_last_progress_persist', 0) > .4:
-            self._last_progress_persist = now
             if getattr(self, '_formation_checkpoint', None):
                 self._formation_checkpoint()
             self.persist()
+            # Saving must not consume the interval and immediately trigger the
+            # next turn's checkpoint again on a slow filesystem.
+            self._last_progress_persist = time.monotonic()
 
     def record_memory(self, module, sample, mode, ingestion, error=None, complete=False):
         """Update one construction checkpoint; its immutable objects remain archived."""
         with self.lock:
-            saved = dict(sample_id=sample['sample_id'], module=mode, memory=module.inspect(),
-                         identity=memory_identity(module), ingestion=deepcopy(ingestion),
+            memory = module.inspect()
+            identity = ({'snapshot_sha256': compaction_digest(memory)} if mode == 'compaction'
+                        else memory_identity(module))
+            saved = dict(sample_id=sample['sample_id'], module=mode, memory=memory,
+                         identity=identity, ingestion=deepcopy(ingestion),
                          error=error, formation_complete=complete)
             archive = self.result.get('recording')
+            cache = getattr(self, '_conversation_source_cache', None)
+            if cache is None:
+                cache = self._conversation_source_cache = {}
+            source_key = (id(archive), str(sample['sample_id']), id(sample['conversation']))
+            source = cache.setdefault(source_key, {})
             if archive is not None:
                 saved['memory_state_artifact'] = Recording.freeze(module, archive)
                 saved['state_storage'] = Recording.state_storage(archive, saved['memory_state_artifact'])
-                saved['source_artifact'] = Recording.put(archive, 'ordered-source',
-                    [dict(text=e.text, metadata=e.metadata) for e in conversation_entries(sample['conversation'])])
+                if 'artifact' not in source:
+                    source['artifact'] = Recording.put(archive, 'ordered-source',
+                        [dict(text=e.text, metadata=e.metadata) for e in conversation_entries(sample['conversation'])])
+                saved['source_artifact'] = deepcopy(source['artifact'])
                 saved['archive_storage'] = Recording.archive_metrics(archive)
             if mode == 'compaction':
-                artifact = module.export_state()
                 # The run archive owns payloads. Retain the existing compact-state
                 # envelope for older analysis consumers without a second archive.
-                if archive is not None:
-                    artifact.pop('recording', None)
+                artifact = (dict(schema_version=1, state=deepcopy(memory), sha256=compaction_digest(memory))
+                            if archive is not None else module.export_state())
+                if 'sha256' not in source:
+                    source['sha256'] = compaction_digest(sample['conversation'])
                 saved.update(compaction_artifact=artifact,
-                             compaction_source_sha256=compaction_digest(sample['conversation']))
+                             compaction_source_sha256=source['sha256'])
             for i, old in enumerate(self.result['memories']):
                 if old['ingestion']['ingestion_id'] == ingestion['ingestion_id']:
                     self.result['memories'][i] = saved
@@ -668,6 +759,10 @@ class BenchmarkJob:
                     break
             else:
                 self.result['cases'].append(deepcopy(case))
+            if self.options.get('question_workers', 1) > 1:
+                order = {(c['module'], str(c['sample_id']), c['question_index']): i
+                         for i, c in enumerate(self.result['question_manifest'])}
+                self.result['cases'].sort(key=lambda c: order[(c['module'], str(c['sample_id']), c['question_index'])])
             self.result['progress']['completed'] = len(self.result['cases'])
         self.live_progress(force=True)
 
@@ -675,6 +770,7 @@ class BenchmarkJob:
         request_token = cancel_event.set(self.cancel)
         archive_token = Recording.active_archive.set(self.result.get('recording'))
         checkpoint_token = Recording.checkpoint.set(lambda: self.live_progress(force=True))
+        archive_lock_token = Recording.archive_lock.set(self.lock)
         try:
             self._run()
         finally:
@@ -682,6 +778,7 @@ class BenchmarkJob:
             cancel_event.reset(request_token)
             Recording.active_archive.reset(archive_token)
             Recording.checkpoint.reset(checkpoint_token)
+            Recording.archive_lock.reset(archive_lock_token)
             self._formation_checkpoint = None
 
     def _run(self):
@@ -699,7 +796,7 @@ class BenchmarkJob:
             if self.cancel.is_set():
                 return
             if self.options['modules'][0] in MODULES[:-1]:
-                self.tokenizer = get_benchmark_tokenizer()
+                self.tokenizer = CachedTokenizer(get_benchmark_tokenizer())
                 if getattr(self, '_resume_tokenizer', None) not in (None, self.tokenizer.identity):
                     raise ValueError('Resume tokenizer does not match the original run')
                 self.update(tokenizer=deepcopy(self.tokenizer.identity))
@@ -791,6 +888,10 @@ class BenchmarkJob:
                                         ingestion['write_seconds'] += time.perf_counter() - write_started
                                 if current_session is not None:
                                     ingestion['storage_growth'].append(dict(session=current_session, ingested_turns=ingestion['ingested_turns'], **storage_metrics(module)))
+                    except RequestCancelled:
+                        ingestion['outcome'] = 'cancelled'
+                        self.cancel.set()
+                        return
                     except Exception as error:
                         ingestion_error = str(error)
                         self.mark_ingestion_blocked(mode, sample, questions, ingestion_error, existing)
@@ -814,129 +915,13 @@ class BenchmarkJob:
                         continue
                     if self.options['review_memory'] and not self.wait_for_review(sample['sample_id'], module, full_context):
                         return
-                    for question_number, (index, qa) in enumerate(questions, 1):
-                        if self.cancel.is_set():
-                            return
-                        previous_case = existing.get((mode, str(sample['sample_id']), index))
-                        if finished(previous_case):
-                            continue
-                        self.live_progress('answer', question_number=question_number, question_total=len(questions), question_index=index)
-                        stop_error = None
-                        d = {}
-                        previous_diagnostics = (previous_case or {}).get('diagnostics', {})
-                        previous_judge_seconds = question_phase_seconds(previous_diagnostics, 'judge') if previous_case else 0.0
-                        previous_phases = {phase: question_phase_seconds(previous_diagnostics, phase) if previous_case else 0.0
-                                           for phase in ('retrieval', 'answer')}
-                        d.update({'execution_' + phase + '_seconds': seconds for phase, seconds in previous_phases.items()})
-                        previous_execution_seconds = (previous_case or {}).get('diagnostics', {}).get('execution_total_seconds',
-                            (previous_case or {}).get('diagnostics', {}).get('total_seconds', 0))
-                        case = dict(sample_id=sample['sample_id'], module=mode, question_index=index, question=qa['question'], category=qa['category'], answer=qa.get('answer'), evidence=qa.get('evidence', []), diagnostics=d, score=None, exact_match=None, token_f1=None, judge=None, correct=None, evidence_recall=None)
-                        if previous_case and self.result.get('recording') is not None:
-                            case['previous_attempt_artifact'] = Recording.capture('case-attempt', previous_case)
-                        attempt_checkpoint = Recording.checkpoint.set(lambda: self.save_case(case))
-                        try:
-                            case_started = time.perf_counter()
-                            d.update(status='running', query=qa['question'], answer_tokens=0, judge_tokens=0,
-                                     judge_seconds=0.0, judge_llm_calls=0,
-                                     execution_judge_seconds=previous_judge_seconds)
-                            d['stored_before'] = len(module.inspect()['entries'])
-                            d['ingestion_id'] = ingestion['ingestion_id']
-                            d['memory_state_artifact'] = deepcopy(saved_memory.get('memory_state_artifact'))
-                            if previous_case and previous_case.get('prediction') is not None:
-                                d.update(deepcopy(previous_case['diagnostics']))
-                                d.update(judge_seconds=0.0, prediction_reused=True)
-                                # Preserve failed judge transport work and original
-                                # prediction/context links across judge-only resume.
-                                d.setdefault('judge_llm_calls', 0)
-                                d.pop('judge_status', None)
-                                d['final_answer'] = previous_case['prediction']
-                                d.update({'execution_' + phase + '_seconds': seconds for phase, seconds in previous_phases.items()})
-                            else:
-                                d.update(retrieval_seconds=0.0, answer_seconds=0.0)
-                                for key in ('provider_requests', 'answer_retries', 'answer_llm_calls'):
-                                    if key in previous_diagnostics:
-                                        d[key] = deepcopy(previous_diagnostics[key])
-                                try:
-                                    d['final_answer'] = direct_answer(module, qa['question'], d, conversation_text=full_context, context_limit=self.options['context_limit'], max_output_tokens=self.options['max_output_tokens'], memory_context_tokens=self.options.get('memory_context_tokens'), retrieval_k=self.options.get('retrieval_k'), tokenizer=self.tokenizer)
-                                finally:
-                                    for phase, seconds in previous_phases.items():
-                                        d['execution_' + phase + '_seconds'] = complete_sum([seconds, d.get(phase + '_seconds')])
-                            d.update(status='completed', answer_status='completed')
-                            # Diagnostic-only annotations run after retrieval and answering.
-                            for trace in d.get('retrieval_traces', []):
-                                evidence = set(qa.get('evidence', []))
-                                ids = {r['dialogue_id'] for r in trace['records'] if r.get('dialogue_id')}
-                                ids.update(source for r in trace['records'] for source in r.get('source_ids', []))
-                                trace['evidence_complete'] = evidence <= ids if evidence else None
-                                trace['evidence_recall'] = len(evidence & ids)/len(evidence) if evidence else None
-                                trace['evidence_basis'] = 'fact_source_provenance' if any(r.get('fact_id') for r in trace['records']) else 'original_turn'
-                            case['prediction'] = d['final_answer']
-                            requests = [r for r in d.get('provider_requests', [])
-                                        if r.get('phase') == 'answer' and r.get('status') == 'completed']
-                            final_request = requests[-1] if requests else {}
-                            case['prediction_artifact'] = Recording.capture('prediction', dict(
-                                text=case['prediction'], context_artifact=d.get('context_artifact'),
-                                memory_state_artifact=d.get('memory_state_artifact'),
-                                request_artifact=final_request.get('request_artifact'),
-                                response_artifact=final_request.get('response_artifact')))
-                            case['score'] = score(d['final_answer'], qa.get('answer', ''), qa['category'])
-                            case['exact_match'] = exact_match(d['final_answer'], qa.get('answer', ''), qa['category'])
-                            case['token_f1'] = token_f1(d['final_answer'], qa.get('answer', ''), qa['category'])
-                            # Save the paid prediction before starting a separate judge request.
-                            self.save_case(case)
-                            self.live_progress('judge')
-                            try:
-                                judge, elapsed, tokens = judge_answer(qa['question'], None if qa['category'] == 5 else qa.get('answer'), d['final_answer'], [d['supplied_context']] if full_context is not None else [e['text'] for e in d['retrieved']], diagnostics=d)
-                                d['judge_seconds'] = elapsed; d['judge_tokens'] = tokens
-                                case['judge'] = judge
-                                case['correct'] = judge['correct']
-                            except Exception as judge_error:
-                                case['judge_error'] = str(judge_error)
-                                d['judge_status'] = 'error'
-                                d['judge_tokens'] = None
-                                if fatal_provider_error(judge_error):
-                                    stop_error = judge_error
-                            finally:
-                                d['execution_judge_seconds'] = complete_sum([previous_judge_seconds, d.get('judge_seconds')])
-                            d['total_seconds'] = time.perf_counter() - case_started
-                            d['stored_after'] = len(module.inspect()['entries'])
-                            if mode in ('sliding_window', 'vector_store', 'vector_store_reranker', 'fact_store', 'beta', 'full_context') and qa.get('evidence'):
-                                if mode == 'full_context':
-                                    ids = {e.metadata['dialogue_id'] for e in conversation_entries(sample['conversation'])}
-                                elif mode == 'fact_store':
-                                    ids = {source for e in d['retrieved'] for source in e['metadata'].get('source_ids', [])}
-                                else:
-                                    ids = {e['metadata'].get('dialogue_id') for e in d['retrieved']}
-                                evidence = set(qa['evidence'])
-                                case['evidence_recall'] = len(evidence & ids) / len(evidence)
-                                case['evidence_complete'] = evidence <= ids
-                                case['evidence_recall_basis'] = 'fact_source_provenance' if mode == 'fact_store' else 'original_turn'
-                            if mode in HYBRIDS and qa.get('evidence'):
-                                evidence = set(qa['evidence'])
-                                coverage = {}
-                                for name in HYBRIDS[mode]:
-                                    records = [e for e in d['retrieved'] if e['metadata'].get('component') == name]
-                                    ids = ({e['metadata'].get('dialogue_id') for e in records} if name == 'vector_store' else
-                                           {source for e in records for source in e['metadata'].get('source_ids', [])})
-                                    coverage[name] = dict(recall=None if name == 'summarization' else len(evidence & ids) / len(evidence),
-                                                         basis={'summarization': 'unavailable', 'vector_store': 'original_turn', 'fact_store': 'fact_source_provenance'}[name])
-                                case['component_evidence_recall'] = coverage
-                        except Exception as error:
-                            case['error'] = str(error)
-                            if d.get('answer_llm_calls'):
-                                d['answer_tokens'] = None
-                            if fatal_provider_error(error):
-                                stop_error = error
-                            d.update(status='context_limit_exceeded' if isinstance(error, ContextLimitExceeded) else 'error', error=str(error), total_seconds=time.perf_counter() - case_started)
-                        finally:
-                            Recording.checkpoint.reset(attempt_checkpoint)
-                        elapsed = time.perf_counter() - case_started
-                        d['execution_total_seconds'] = (previous_execution_seconds + elapsed
-                            if isinstance(previous_execution_seconds, (int, float)) else None)
-                        self.save_case(case)
-                        if stop_error is not None:
-                            self.update(status='failed', error=str(stop_error), failure_status_code=status_code(stop_error))
-                            return
+                    stop_error = self._run_questions(module, mode, sample, questions, ingestion,
+                                                     saved_memory, full_context, existing)
+                    if stop_error is not None:
+                        self.update(status='failed', error=str(stop_error), failure_status_code=status_code(stop_error))
+                        return
+                    if self.cancel.is_set():
+                        return
             self.live_progress('finalizing')
             failures = sum(m.get('error') is not None for m in self.result['memories'])
             self.result['ingestion_outcome'] = dict(
@@ -948,12 +933,16 @@ class BenchmarkJob:
         finally:
             if self.cancel.is_set():
                 self.update(status='cancelled')
+            # Every question worker has joined. Aggregate only detached cases;
+            # copying the full archive per metric needlessly multiplies its cost.
+            with self.lock:
+                final_cases = deepcopy(self.result['cases'])
             groups = defaultdict(list)
             exact_groups = defaultdict(list)
             f1_groups = defaultdict(list)
             judge_groups = defaultdict(list)
             binary_groups = defaultdict(list)
-            for case in self.snapshot()['cases']:
+            for case in final_cases:
                 if case['score'] is not None:
                     groups[(case['module'], str(case['category']))].append(case['score'])
                     groups[(case['module'], 'overall')].append(case['score'])
@@ -968,13 +957,13 @@ class BenchmarkJob:
                     judge_groups[(case['module'], str(case['category']))].append(case['judge']['overall'])
                     judge_groups[(case['module'], 'overall')].append(case['judge']['overall'])
             summaries = []
-            for key in dict.fromkeys([*((case['module'], c) for case in self.snapshot()['cases'] for c in (str(case['category']), 'overall')), *groups, *exact_groups, *f1_groups, *judge_groups, *binary_groups]):
+            for key in dict.fromkeys([*((case['module'], c) for case in final_cases for c in (str(case['category']), 'overall')), *groups, *exact_groups, *f1_groups, *judge_groups, *binary_groups]):
                 m, c = key
                 summaries.append(dict(module=m, category=c,
                     accuracy=(sum(binary_groups[key])/len(binary_groups[key]) if binary_groups.get(key) else None),
-                    context_limit_count=sum(case['module'] == m and (c == 'overall' or str(case['category']) == c) and case['diagnostics'].get('status') == 'context_limit_exceeded' for case in self.snapshot()['cases']),
+                    context_limit_count=sum(case['module'] == m and (c == 'overall' or str(case['category']) == c) and case['diagnostics'].get('status') == 'context_limit_exceeded' for case in final_cases),
                     correct_count=sum(binary_groups.get(key, [])), scored_count=len(binary_groups.get(key, [])),
-                    unscored_count=sum(case['module'] == m and (c == 'overall' or str(case['category']) == c) and case.get('correct') is None for case in self.snapshot()['cases']),
+                    unscored_count=sum(case['module'] == m and (c == 'overall' or str(case['category']) == c) and case.get('correct') is None for case in final_cases),
                     mean_qa_score=(sum(groups[key])/len(groups[key]) if groups.get(key) else None),
                     mean_exact_match=(sum(exact_groups[key])/len(exact_groups[key]) if exact_groups.get(key) else None),
                     mean_token_f1=(sum(f1_groups[key])/len(f1_groups[key]) if f1_groups.get(key) else None),
@@ -982,7 +971,7 @@ class BenchmarkJob:
                     answer_count=len(groups.get(key, [])), judge_count=len(judge_groups.get(key, []))))
             efficiency = []
             for mode in self.options['modules']:
-                cases = [c for c in self.snapshot()['cases'] if c['module'] == mode]
+                cases = [c for c in final_cases if c['module'] == mode]
                 def mean(field, diagnostic=False):
                     values = [(c['diagnostics'] if diagnostic else c).get(field) for c in cases]
                     values = [v for v in values if v is not None]
@@ -1007,6 +996,207 @@ class BenchmarkJob:
             self.update(scores=summaries, efficiency=efficiency)
             if completed_run and not self.cancel.is_set():
                 self.update(status='completed', progress={**self.result['progress'], 'percent': 100, 'phase': 'completed'})
+
+    def _run_questions(self, module, mode, sample, questions, ingestion, saved_memory, full_context, existing):
+        pending = []
+        for number, (index, qa) in enumerate(questions, 1):
+            previous = existing.get((mode, str(sample['sample_id']), index))
+            if previous is not None and (previous.get('correct') is not None or
+                    previous.get('diagnostics', {}).get('status') == 'context_limit_exceeded'):
+                continue
+            pending.append((number, index, qa, previous))
+        workers = self.options.get('question_workers', 1)
+        if workers == 1:
+            for args in pending:
+                if self.cancel.is_set():
+                    break
+                error = self._evaluate_question(module, mode, sample, questions, ingestion,
+                                                saved_memory, full_context, *args)
+                if error is not None:
+                    return error
+            return None
+
+        stop = threading.Event()
+        cancellation = QuestionCancellation(self.cancel, stop)
+        retrieval_gate = threading.RLock()
+        active = set()
+
+        def evaluate(args):
+            cancel_token = cancel_event.set(cancellation)
+            retrieval_token = question_retrieval_lock.set(retrieval_gate)
+            try:
+                if cancellation.is_set():
+                    return None
+                with self.lock:
+                    active.add(args[1])
+                    self.live_progress('questions', active_questions=sorted(active), question_workers=workers)
+                error = self._evaluate_question(module, mode, sample, questions, ingestion,
+                                                saved_memory, full_context, *args)
+                if error is not None:
+                    stop.set()
+                return error
+            except BaseException:
+                stop.set()
+                raise
+            finally:
+                try:
+                    with self.lock:
+                        active.discard(args[1])
+                        self.live_progress(force=True, active_questions=sorted(active))
+                finally:
+                    cancel_event.reset(cancel_token)
+                    question_retrieval_lock.reset(retrieval_token)
+
+        first_error = None
+        iterator = iter(pending)
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix='benchmark-question') as pool:
+            futures = set()
+            def submit_next():
+                if cancellation.is_set():
+                    return False
+                args = next(iterator, None)
+                if args is None:
+                    return False
+                context = copy_context()  # ContextVars are not inherited by executor threads.
+                futures.add(pool.submit(context.run, evaluate, args))
+                return True
+            try:
+                for _ in range(workers):
+                    if not submit_next():
+                        break
+                while futures:
+                    completed, futures = wait(futures, return_when=FIRST_COMPLETED)
+                    for future in completed:
+                        error = future.result()
+                        if error is not None and first_error is None:
+                            first_error = error
+                    for _ in completed:
+                        submit_next()
+            except BaseException:
+                stop.set()
+                for future in futures:
+                    future.cancel()
+                raise
+        # Executor exit joins every running answer/judge/checkpoint before the
+        # caller can start ingestion for another conversation.
+        return first_error
+
+    def _evaluate_question(self, module, mode, sample, questions, ingestion, saved_memory, full_context, question_number, index, qa, previous_case):
+        self.live_progress('questions' if self.options.get('question_workers', 1) > 1 else 'answer', question_number=question_number, question_total=len(questions), question_index=index)
+        stop_error = None
+        d = {}
+        previous_diagnostics = (previous_case or {}).get('diagnostics', {})
+        previous_judge_seconds = question_phase_seconds(previous_diagnostics, 'judge') if previous_case else 0.0
+        previous_phases = {phase: question_phase_seconds(previous_diagnostics, phase) if previous_case else 0.0
+                           for phase in ('retrieval', 'answer')}
+        d.update({'execution_' + phase + '_seconds': seconds for phase, seconds in previous_phases.items()})
+        previous_execution_seconds = (previous_case or {}).get('diagnostics', {}).get('execution_total_seconds',
+            (previous_case or {}).get('diagnostics', {}).get('total_seconds', 0))
+        case = dict(sample_id=sample['sample_id'], module=mode, question_index=index, question=qa['question'], category=qa['category'], answer=qa.get('answer'), evidence=qa.get('evidence', []), diagnostics=d, score=None, exact_match=None, token_f1=None, judge=None, correct=None, evidence_recall=None)
+        if previous_case and self.result.get('recording') is not None:
+            case['previous_attempt_artifact'] = Recording.capture('case-attempt', previous_case)
+        attempt_checkpoint = Recording.checkpoint.set(lambda: self.save_case(case))
+        try:
+            case_started = time.perf_counter()
+            d.update(status='running', query=qa['question'], answer_tokens=0, judge_tokens=0,
+                     judge_seconds=0.0, judge_llm_calls=0,
+                     execution_judge_seconds=previous_judge_seconds)
+            d['stored_before'] = len(module.inspect()['entries'])
+            d['ingestion_id'] = ingestion['ingestion_id']
+            d['memory_state_artifact'] = deepcopy(saved_memory.get('memory_state_artifact'))
+            if previous_case and previous_case.get('prediction') is not None:
+                d.update(deepcopy(previous_case['diagnostics']))
+                d.update(judge_seconds=0.0, prediction_reused=True)
+                # Preserve failed judge transport work and original
+                # prediction/context links across judge-only resume.
+                d.setdefault('judge_llm_calls', 0)
+                d.pop('judge_status', None)
+                d['final_answer'] = previous_case['prediction']
+                d.update({'execution_' + phase + '_seconds': seconds for phase, seconds in previous_phases.items()})
+            else:
+                d.update(retrieval_seconds=0.0, answer_seconds=0.0)
+                for key in ('provider_requests', 'answer_retries', 'answer_llm_calls'):
+                    if key in previous_diagnostics:
+                        d[key] = deepcopy(previous_diagnostics[key])
+                try:
+                    d['final_answer'] = direct_answer(module, qa['question'], d, conversation_text=full_context, context_limit=self.options['context_limit'], max_output_tokens=self.options['max_output_tokens'], memory_context_tokens=self.options.get('memory_context_tokens'), retrieval_k=self.options.get('retrieval_k'), tokenizer=self.tokenizer)
+                finally:
+                    for phase, seconds in previous_phases.items():
+                        d['execution_' + phase + '_seconds'] = complete_sum([seconds, d.get(phase + '_seconds')])
+            d.update(status='completed', answer_status='completed')
+            # Diagnostic-only annotations run after retrieval and answering.
+            for trace in d.get('retrieval_traces', []):
+                evidence = set(qa.get('evidence', []))
+                ids = {r['dialogue_id'] for r in trace['records'] if r.get('dialogue_id')}
+                ids.update(source for r in trace['records'] for source in r.get('source_ids', []))
+                trace['evidence_complete'] = evidence <= ids if evidence else None
+                trace['evidence_recall'] = len(evidence & ids)/len(evidence) if evidence else None
+                trace['evidence_basis'] = 'fact_source_provenance' if any(r.get('fact_id') for r in trace['records']) else 'original_turn'
+            case['prediction'] = d['final_answer']
+            requests = [r for r in d.get('provider_requests', [])
+                        if r.get('phase') == 'answer' and r.get('status') == 'completed']
+            final_request = requests[-1] if requests else {}
+            case['prediction_artifact'] = Recording.capture('prediction', dict(
+                text=case['prediction'], context_artifact=d.get('context_artifact'),
+                memory_state_artifact=d.get('memory_state_artifact'),
+                request_artifact=final_request.get('request_artifact'),
+                response_artifact=final_request.get('response_artifact')))
+            case['score'] = score(d['final_answer'], qa.get('answer', ''), qa['category'])
+            case['exact_match'] = exact_match(d['final_answer'], qa.get('answer', ''), qa['category'])
+            case['token_f1'] = token_f1(d['final_answer'], qa.get('answer', ''), qa['category'])
+            # Save the paid prediction before starting a separate judge request.
+            self.save_case(case)
+            self.live_progress('questions' if self.options.get('question_workers', 1) > 1 else 'judge')
+            try:
+                judge, elapsed, tokens = judge_answer(qa['question'], None if qa['category'] == 5 else qa.get('answer'), d['final_answer'], [d['supplied_context']] if full_context is not None else [e['text'] for e in d['retrieved']], diagnostics=d)
+                d['judge_seconds'] = elapsed; d['judge_tokens'] = tokens
+                case['judge'] = judge
+                case['correct'] = judge['correct']
+            except Exception as judge_error:
+                case['judge_error'] = str(judge_error)
+                d['judge_status'] = 'error'
+                d['judge_tokens'] = None
+                if fatal_provider_error(judge_error):
+                    stop_error = judge_error
+            finally:
+                d['execution_judge_seconds'] = complete_sum([previous_judge_seconds, d.get('judge_seconds')])
+            d['total_seconds'] = time.perf_counter() - case_started
+            d['stored_after'] = len(module.inspect()['entries'])
+            if mode in ('sliding_window', 'vector_store', 'vector_store_reranker', 'fact_store', 'beta', 'full_context') and qa.get('evidence'):
+                if mode == 'full_context':
+                    ids = {e.metadata['dialogue_id'] for e in conversation_entries(sample['conversation'])}
+                elif mode == 'fact_store':
+                    ids = {source for e in d['retrieved'] for source in e['metadata'].get('source_ids', [])}
+                else:
+                    ids = {e['metadata'].get('dialogue_id') for e in d['retrieved']}
+                evidence = set(qa['evidence'])
+                case['evidence_recall'] = len(evidence & ids) / len(evidence)
+                case['evidence_complete'] = evidence <= ids
+                case['evidence_recall_basis'] = 'fact_source_provenance' if mode == 'fact_store' else 'original_turn'
+            if mode in HYBRIDS and qa.get('evidence'):
+                evidence = set(qa['evidence'])
+                coverage = {}
+                for name in HYBRIDS[mode]:
+                    records = [e for e in d['retrieved'] if e['metadata'].get('component') == name]
+                    ids = ({e['metadata'].get('dialogue_id') for e in records} if name == 'vector_store' else
+                           {source for e in records for source in e['metadata'].get('source_ids', [])})
+                    coverage[name] = dict(recall=None if name == 'summarization' else len(evidence & ids) / len(evidence),
+                                         basis={'summarization': 'unavailable', 'vector_store': 'original_turn', 'fact_store': 'fact_source_provenance'}[name])
+                case['component_evidence_recall'] = coverage
+        except Exception as error:
+            case['error'] = str(error)
+            if d.get('answer_llm_calls'):
+                d['answer_tokens'] = None
+            if fatal_provider_error(error):
+                stop_error = error
+            d.update(status='context_limit_exceeded' if isinstance(error, ContextLimitExceeded) else 'error', error=str(error), total_seconds=time.perf_counter() - case_started)
+        finally:
+            Recording.checkpoint.reset(attempt_checkpoint)
+        elapsed = time.perf_counter() - case_started
+        d['execution_total_seconds'] = (previous_execution_seconds + elapsed
+            if isinstance(previous_execution_seconds, (int, float)) else None)
+        self.save_case(case)
+        return stop_error
 
     def mark_ingestion_blocked(self, mode, sample, questions, error, existing):
         for index, qa in questions:
@@ -1110,13 +1300,13 @@ def main():
             parser.error('Resume uses saved compaction settings; start a new run to change them.')
         if any(key in vars(args) for key in ('retrieval_k', 'max_stored_entries', 'memory_context_tokens', 'max_summary_tokens', 'no_memory_context', 'hybrid_shares', 'component_options', 'candidate_k', 'window_size')):
             parser.error('Resume uses saved memory settings; start a new run to change them.')
-        with open(args.resume, encoding='utf-8') as source:
-            job = BenchmarkJob.resume(data, json.load(source))
+        from BenchmarkStore import read_json
+        job = BenchmarkJob.resume(data, read_json(args.resume), question_workers=MAX_QUESTION_WORKERS)
     else:
-        job = BenchmarkJob(data, vars(args))
+        job = BenchmarkJob(data, {**vars(args), 'question_workers': MAX_QUESTION_WORKERS})
     def checkpoint(snapshot):
-        from BenchmarkStore import atomic_json
-        atomic_json(target, snapshot)
+        from BenchmarkStore import write_snapshot
+        write_snapshot(target, snapshot)
     if not target.exists():
         target.parent.mkdir(parents=True, exist_ok=True)
         # Exclusive creation prevents racing new runs from claiming the same output.
@@ -1128,7 +1318,10 @@ def main():
     except KeyboardInterrupt:
         job.cancel.set()
         job.update(status='cancelled')
-    checkpoint(job.snapshot())
+    # CLI users historically receive one portable JSON file. Use compact
+    # checkpoints while active, then materialize that portable file once.
+    from BenchmarkStore import atomic_json
+    atomic_json(target, job.snapshot())
 
 if __name__ == '__main__':
     main()

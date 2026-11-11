@@ -22,8 +22,8 @@ based on the previous summary and the next group of turns.
    decisions, preferences, names, dates, and context within `max_summary_tokens`.
 3. Make one logical memory LLM call per batch, then enforce the token cap locally.
    If needed, retain a token-aligned prefix and append `\n[Summary truncated]`,
-   counting the marker in the cap. If even the marker cannot fit, store an empty
-   summary with `truncated=True`. There is no second compression call.
+   counting the marker in the cap. If no nonblank candidate fits, reject the
+   update and preserve the previous summary. There is no second compression call.
 4. Replace the previous summary only after the new response is validated and
    capped. Retain the summary string and truncation flag; do not retain the
    original turns or earlier summary versions in the module.
@@ -60,11 +60,13 @@ candidate selection; storage and retrieval limits are independent.
 
 ## Failure behavior
 
-A failed LLM call, non-string response, or failed token-cap calculation leaves
-the previous summary unchanged and propagates an error. A successful empty
-string response replaces it with an empty summary. Truncation is a reported
-size-control outcome, not a failed write. Ingestion errors block the affected
-conversation's pending benchmark questions.
+A failed LLM call, non-string/blank response, incomplete provider finish reason,
+or failed token-cap calculation leaves the previous summary unchanged and
+propagates an error. Candidate validation precedes all state assignment; paid
+usage remains recorded for rejected responses. Local truncation of a valid
+response remains a reported size-control outcome. Ingestion errors block the
+affected conversation's pending benchmark questions. Live chat returns an
+already-completed answer with a memory warning and supports a write-only retry.
 
 ## Verification
 

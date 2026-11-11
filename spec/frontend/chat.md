@@ -51,19 +51,41 @@ Assistant Markdown uses `marked` then `DOMPurify`; code blocks have copy control
 Pending and failed requests have visible states. Memory behavior belongs to the
 [memory components](../README.md) and [agent interface](../memory/interface.md).
 
+As of 2026-11-12, chat generates direct answers using the shared bounded provider
+policy. It never interprets model-written action arguments as tool results.
+Blank, incomplete and unsupported action-format responses have a bounded repair
+loop; rejected responses are not written to memory.
+
+A completed answer remains visible when its memory update fails. The warning
+offers **Retry memory update**, which resubmits the original interaction to the
+memory module without generating another answer. New turns and manual compaction
+are blocked until that pending write succeeds, preserving conversation order.
+The pending entry and retry metrics are process-local, like the chat itself.
+
+The browser retains a request ID while delivery is uncertain and reconciles it
+against turn diagnostics. Repeated `/get` requests with that same ID/message
+reuse the server's saved response instead of calling the provider or writing
+memory again. Reusing an ID with another message is rejected. The guarantee is
+limited to the current server session; it does not survive a server restart.
+Rejected first requests leave initialization settings editable. Confirmed lost
+sessions still require a new chat.
+
 ## API and configuration
 
 `POST /get` receives JSON with `message`, `chat_id`, `memory_module`, and optional
-`requires_existing`. IDs must be nonblank strings up to 200 characters; mode must
+`requires_existing` and `request_id`. IDs must be nonblank strings up to 200 characters; mode must
 be known; message must be nonblank. Success includes `reply`, `latency`, `tokens`,
-the implementation class in `memory_module`, and `turn_id`.
+the implementation class in `memory_module`, `turn_id`, `memory_write_status`,
+and an optional `warning`. `POST /api/chats/<chat_id>/turns/<turn_id>/retry-memory`
+retries only that pending write; repeated successful retries do not write twice.
 
 | Outcome | HTTP status |
 | --- | --- |
 | Invalid payload/message/chat ID/mode | 400 |
-| Existing chat requested with another mode | 409 |
+| Existing chat requested with another mode, reused request ID with another message, or pending memory write | 409 |
 | `requires_existing` but server memory was lost | 410 |
-| Agent/model/embedding/extraction failure | 503 |
+| Retrieval or answer generation failure | 503 |
+| Answer completed but memory update failed | 200 with warning |
 
 Requests for one chat are serialized. Turn diagnostics are appended even on
 failure. Diagnostics/export endpoints are specified in

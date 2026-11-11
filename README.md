@@ -1,5 +1,28 @@
 # KAI3
 
+## Workflow reliability update — 2026-11-12
+
+Chat now returns direct answers and preserves a completed answer if its memory
+update fails. Use **Retry memory update** to retry storage without generating
+another answer; finish that update before continuing the conversation. Invalid
+summary responses preserve existing memory. Uncertain chat requests retain an
+ID so reconnecting can recover the reply without duplicating the turn within
+the same server session.
+
+Benchmark cancellation remains separate from ingestion failure, empty question
+selections are rejected, and storage metrics include nested memory tiers.
+Provider outcomes remain distinct from local checkpoint errors. **Refresh** in
+Compare Runs reloads selected reports even when their filenames are unchanged.
+Terminal `--help` and imports no longer require credentials or start a chat.
+
+The full offline suite passed **376 tests**, including the frontend wrappers;
+JavaScript syntax and patch whitespace checks passed. See the
+[workflow audit and implementation record](plans/workflow_dfs_audit_2026-11-12.md).
+Restart the application to load changed code. Existing reports remain readable;
+strict execution-source checks can require a new run for reports created before
+these algorithm changes. No compatibility bypass or new model-quality claim is
+introduced by this update.
+
 ## Documentation
 
 [Component and feature specifications](spec/README.md) describe current memory,
@@ -215,7 +238,7 @@ memory = MemoryFactory.create_memory_module("vector_store")
 memory = MemoryFactory.create_memory_module("fact_store")
 ```
 
-All fourteen modes are available in the chat UI, including **No memory** for a
+All fifteen modes are available in the chat UI, including **No memory** for a
 baseline that stores and retrieves nothing. Each chat keeps its selected mode
 and isolated memory for the lifetime of the server process. Restarting the server
 clears memory; browser history does not restore it.
@@ -226,7 +249,7 @@ cache; subsequent runs reuse cached weights. The model is loaded lazily and shar
 across chats. Vector memory indexes overlapping chunks but returns whole original
 interactions. Fact memory uses the existing DeepSeek credentials to extract and
 update current user-stated facts, then searches them using the same embeddings.
-No database is required. Both stores default to unlimited capacity; callers can
+No external database server is required for these retrieval stores. Both stores default to unlimited capacity; callers can
 configure finite capacity with oldest-record eviction.
 
 ### Periodic window modes
@@ -487,7 +510,7 @@ first conversation. Use `--all-conversations --question-limit 0` for the full
 dataset, or select **All conversations** and set the question limit to zero in
 the frontend. The CLI writes partial results if interrupted.
 
-Frontend benchmark snapshots are saved under `src/instance/benchmark_runs/`.
+Frontend benchmark snapshots are saved under `instance/benchmark_runs/`.
 Completed runs remain available after a server restart. Runs interrupted by a
 restart are restored with their last saved partial results and marked
 `interrupted`; they are not resumed automatically; use **Resume unfinished work** with the original dataset. Export completed results as
@@ -582,13 +605,13 @@ Exports include retrieved items with vector ranks/scores and, where applicable, 
 
 HTTP 402 means insufficient DeepSeek account balance, not an invalid API key. Top up the account, then use **Resume unfinished work**. HTTP 401 requires correcting the key and restarting the server before resuming. The runner stops on permanent provider errors (400/401/402/403/422) instead of failing all later questions. Transient rate-limit/server/connection/timeout failures receive at most five attempts, a 180-second request timeout, and exponential delays capped at 60 seconds, respecting numeric Retry-After. Retry waits can be cancelled. Exhausted transient failures are saved and the run continues; resume retries those cases.
 
-Every question is checkpointed. CLI runs also checkpoint their output file while running. Resume from a saved export:
+Every question is checkpointed. CLI runs use the same incremental artifact storage while active and materialize a self-contained JSON output when they stop. Internal checkpoints require their run-owned SQLite sidecar; `Benchmark.py --resume` and the offline inspector can read both internal checkpoints and portable exports. Resume from a saved export:
 
 ```powershell
 py src/Benchmark.py --dataset data/locomo/locomo10.json --output recovered_results.json --resume results.json
 ```
 
-Resume validates the dataset hash and model/prompt compatibility, keeps fully scored cases (including incorrect answers), and reuses saved predictions when only judging failed. Failed cases are replaced rather than appended. For compatible v3 resumes, external-memory stores are rebuilt for unfinished conversations; summary/fact ingestion may incur additional calls and generate different memories. Prior ingestion snapshots are retained for auditing. Full-context/question-only baselines need no memory rebuild. Frontend resume uses the original dataset saved on the server, including after a restart. If that dataset is unavailable, the report requests an upload and validates it against the saved run. API keys remain server-side and are read from `src/.env` (environment variables take precedence).
+Resume validates the dataset hash and model/prompt compatibility, keeps fully scored cases (including incorrect answers), and reuses saved predictions when only judging failed. Failed cases are replaced rather than appended. For archived v3 resumes, compatible completed frozen memory is restored, including vectors and pending state. Incomplete formation without a dependent prediction can be rebuilt; legacy reports without exact-state archives may also rebuild summary/fact memory and incur additional calls. Prior ingestion snapshots are retained for auditing. Full-context/question-only baselines need no memory rebuild. Frontend resume uses the original dataset saved on the server, including after a restart. If that dataset is unavailable, the report requests an upload and validates it against the saved run. API keys remain server-side and are read from `src/.env` (environment variables take precedence).
 
 ### Import saved benchmark reports
 
@@ -629,6 +652,34 @@ frozen memory (including vectors/pending state), compaction sources and every
 returned candidate, exact answering contexts, requests and prediction links.
 Resume reuses compatible frozen memory and preserves original prediction identity.
 Use Export results for portability; normal polling omits the archive payloads.
+Live runs store immutable audit objects once in a run-owned
+`instance/benchmark_runs/<run-id>.artifacts.sqlite3` database. The JSON checkpoint
+contains progress and an artifact index, so later saves do not rewrite the full
+archive. Keep the database and checkpoint together when backing up internal run
+files. **Export JSON** still produces one self-contained, portable JSON file.
+Existing inline checkpoints remain readable and migrate on their next save by
+an updated worker. Running workers must be stopped cleanly and resumed to load
+the optimization; editing source files does not update an already running worker.
+
+All user entrypoints (web, API and CLI) use a fixed maximum of **8 parallel
+questions** per conversation. There is no user-selectable worker setting or CLI
+flag; client-supplied limits are ignored. New runs and resumed runs use eight
+workers, or fewer active tasks when fewer questions remain. Ingestion and local
+retrieval stay sequential. Answer and judge API requests overlap after memory
+is frozen, and all running questions/checkpoints finish before the next conversation.
+Exported cases remain in original question order. Resume preserves saved answers,
+contexts and frozen memory, while upgrading older worker limits to eight.
+Provider retries remain per question. Fatal provider failures stop new scheduling
+and wait for in-flight work. Concurrency remains recorded under
+`question_execution`; aggregate processing durations are not elapsed wall time.
+
+Additional runtime optimizations reuse each immutable conversation's source
+artifact and compaction source hash across checkpoints. Exact token counts are
+cached per run with a bounded content budget (2 MiB, at most 64 texts); tokenizer
+identity, prompts and token counts are unchanged. Compaction checkpoints reuse
+their inspection snapshot rather than copying an audit archive to discard it.
+Final score aggregation copies the case records once without copying audit
+payloads. These optimizations retain the existing conversation barrier.
 Inspect locally with `python tools/inspect_recording.py path/to/results.json`.
 See the [recording contract and workflow](spec/benchmark/experiment_recording.md)
 and [research/gap audit](plans/experiment_recording_2026-11-10.md).

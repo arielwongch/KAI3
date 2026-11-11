@@ -1,5 +1,40 @@
 # Updates
 
+## Repair workflow failure boundaries and benchmark recovery — 2026-11-12
+
+Implemented the ten findings in the
+[workflow DFS audit](plans/workflow_dfs_audit_2026-11-12.md). Chat generates direct
+answers, rejects fabricated action/observation flows, and preserves paid answers
+when memory writes fail. Explicit write-only retries preserve interaction order;
+request IDs and diagnostic reconciliation recover uncertain replies within the
+current server session. Blank or incomplete summary responses no longer erase
+existing memory.
+
+Cancellation during formation is recorded separately from ingestion failure.
+Selected workloads must contain questions, malformed session structure is
+rejected, and nested memory storage/eviction metrics are accounted for. Comparison
+refresh invalidates stale report content and ignores older responses. Local
+checkpoint failures retain the provider's completed outcome and known usage,
+stop further paid work, and preserve original transport exceptions. Terminal
+startup uses shared lazy configuration and handles failed requests and EOF.
+
+This change also includes the accumulated
+[mechanism-consistency corrections](plans/mechanism_consistency_audit_2026-11-11.md),
+[false-404 recovery](plans/benchmark_false_404_root_cause_2026-11-11.md), incremental
+artifact checkpoints, fixed eight-worker question execution, and runtime
+optimizations described in the relevant specifications. The separate
+[compaction transport/stall investigation](plans/compaction_progress_transport_fix_2026-11-12.md)
+remains a diagnosis and proposed implementation plan; streaming transport and
+new liveness UI are not implemented by this update.
+
+Verification: **376 offline tests passed** in 181.950 seconds, including 14 new
+Python workflow regressions and frontend wrappers. The chat harness passed 45
+cases; comparison refresh/failure/race checks passed. Both frontend scripts
+passed syntax checks, all 35 source Python files parsed, and patch whitespace
+checks passed. Saved reports were preserved. No paid provider calls, model
+downloads, live worker operations or browser visual acceptance were performed.
+Strict resume source compatibility remains enforced; old reports stay readable.
+
 ## Reduce application startup latency - 2026-11-10
 
 Pages now use dependency-light metadata. Provider client construction, selected
@@ -15,7 +50,8 @@ repeated polls in 6 ms; original reports remained unchanged. Deferred first-use
 costs remain: provider construction 2.775 s and Porter scoring 4.739 s in separate
 local probes. No provider requests were sent. All 281 offline Python tests and
 36 combined Node tests passed. See the [plan and evidence](plans/startup_performance_2026-11-10.md)
-and `tools/profile_startup.py`. Changes remain local and uncommitted.
+and `tools/profile_startup.py`. That entry records the validation status at the
+time; see the 2026-11-12 entry for the current accumulated change.
 
 ## Align ingestion accounting and release unused initialization resources - 2026-11-04
 

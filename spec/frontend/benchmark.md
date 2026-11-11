@@ -224,3 +224,31 @@ and `google-chrome`. The test verifies real mouse/keyboard selection, settings
 visibility, root/header/sidebar geometry, and scrolling to both ends at desktop
 and phone widths, including collapsed desktop sidebars. DOM-only change events
 do not exercise the native focus path responsible for the original defect.
+
+## Execution and storage consistency (2026-11-11)
+
+Web, API and CLI runs use a fixed maximum of eight parallel questions per
+conversation, including on resume. The UI has no worker selector and the CLI has
+no worker-count flag; client overrides cannot lower or increase the fixed limit. Ingestion and local retrieval stay
+serialized. Answer/judge requests overlap only after memory is frozen and any
+review pause is released. All tasks and checkpoints join before the next
+conversation. `questions` progress includes `active_questions` and
+`question_workers`; result order remains the original manifest order.
+
+Aggregate processing durations can overlap and are not elapsed wall-clock time.
+Stopped reports retain the worker count under `config.question_workers` and
+`question_execution`. Resume upgrades older worker counts to eight while preserving
+memory/model/prompt controls, completed cases and paid predictions.
+
+Internal run checkpoints require their run-owned SQLite artifact database.
+Exports remain self-contained inline JSON; normal polling omits payloads.
+Uploads exceeding the configured request limit return a structured JSON 413
+error. Large portable exports can be placed in `data/result` and loaded through
+saved results without uploading their contents.
+
+Failed status polls never implicitly clear localStorage, discard the selected
+run or open setup. Transient failures, including legacy-server false 404s,
+retry at 2/4/8/10-second intervals while preserving loaded progress or the loading
+panel. Explicit nonretryable missing/corrupt responses stop automatic polling
+and leave the error in the current view. New benchmark and confirmed local
+deletion remain explicit reset actions; late callbacks cannot undo them.

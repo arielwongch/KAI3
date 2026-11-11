@@ -10,6 +10,14 @@ class RequestCancelled(RuntimeError):
     pass
 
 
+class CheckpointError(RuntimeError):
+    """A local durability failure, possibly after a successful paid response."""
+    def __init__(self, error, response=None):
+        super().__init__('Could not save request checkpoint: ' + str(error))
+        self.response = response
+        self.persistence_failure = True
+
+
 def status_code(error):
     code = getattr(error, 'status_code', None)
     if code is not None:
@@ -19,7 +27,7 @@ def status_code(error):
 
 
 def fatal_provider_error(error):
-    return status_code(error) in (400, 401, 402, 403, 422)
+    return getattr(error, 'persistence_failure', False) or status_code(error) in (400, 401, 402, 403, 422)
 
 
 def completion(api_client, diagnostics=None, phase='answer', **kwargs):
@@ -39,7 +47,6 @@ def completion(api_client, diagnostics=None, phase='answer', **kwargs):
         for attempt in range(5):
             if event is not None and event.is_set():
                 raise RequestCancelled('Run cancelled.')
-            metrics[phase + '_llm_calls'] = metrics.get(phase + '_llm_calls', 0) + 1
             request = dict(phase=phase, attempt=attempt+1, settings=settings,
                            operation=operation.get(), usage_complete=False,
                            context_artifact=metrics.get('context_artifact'),
@@ -53,28 +60,26 @@ def completion(api_client, diagnostics=None, phase='answer', **kwargs):
             if provenance is not None:
                 provenance.setdefault('provider_requests', []).append(request)
             callback = checkpoint.get()
-            if callback:
-                callback()
+            def save_checkpoint(response=None, primary=None):
+                if not callback:
+                    return
+                try:
+                    callback()
+                except Exception as error:
+                    request['checkpoint_error'] = str(error)
+                    metrics['checkpoint_error'] = str(error)
+                    if request['status'] == 'started':
+                        request.update(status='not_sent', tokens=0, prompt_tokens=0,
+                                       completion_tokens=0, usage_complete=True)
+                    if primary is not None:
+                        primary.persistence_failure = True
+                        raise primary from error
+                    raise CheckpointError(error, response) from error
+            save_checkpoint()
+            metrics[phase + '_llm_calls'] = metrics.get(phase + '_llm_calls', 0) + 1
             attempt_started = time.perf_counter()
             try:
                 response = api_client.with_options(max_retries=0, timeout=180).chat.completions.create(**kwargs)
-                request['provider_seconds'] = time.perf_counter() - attempt_started
-                usage = getattr(response, 'usage', None)
-                request.update(status='completed', returned_model=getattr(response, 'model', None),
-                    system_fingerprint=getattr(response, 'system_fingerprint', None),
-                    response_id=getattr(response, 'id', None), tokens=getattr(usage, 'total_tokens', None),
-                    prompt_tokens=getattr(usage, 'prompt_tokens', None),
-                    completion_tokens=getattr(usage, 'completion_tokens', None))
-                if usage is not None and hasattr(usage, 'model_dump'):
-                    request['usage_details'] = usage.model_dump(mode='json')
-                request['usage_complete'] = request['tokens'] is not None
-                request['response_artifact'] = capture('provider-response', dict(
-                    response_id=getattr(response, 'id', None), model=getattr(response, 'model', None),
-                    choices=[dict(content=getattr(c.message, 'content', None),
-                                  finish_reason=getattr(c, 'finish_reason', None)) for c in response.choices]))
-                if callback:
-                    callback()
-                return response
             except Exception as error:
                 request['provider_seconds'] = time.perf_counter() - attempt_started
                 request.update(status='error', status_code=status_code(error),
@@ -83,6 +88,8 @@ def completion(api_client, diagnostics=None, phase='answer', **kwargs):
                     cause=str(error.__cause__) if error.__cause__ else None)
                 from openai import APIConnectionError, APITimeoutError
                 retryable = status_code(error) in (408, 429, 500, 502, 503, 504) or isinstance(error, (APIConnectionError, APITimeoutError))
+                request['seconds'] = time.perf_counter() - attempt_started
+                save_checkpoint(primary=error)
                 if not retryable or attempt == 4:
                     raise
                 delay = min(60., 2 ** (attempt + 1) + random.random())
@@ -97,10 +104,28 @@ def completion(api_client, diagnostics=None, phase='answer', **kwargs):
                         raise RequestCancelled('Run cancelled during retry wait.')
                 else:
                     time.sleep(delay)
-            finally:
+            else:
+                request['provider_seconds'] = time.perf_counter() - attempt_started
+                usage = getattr(response, 'usage', None)
+                request.update(status='completed', returned_model=getattr(response, 'model', None),
+                    system_fingerprint=getattr(response, 'system_fingerprint', None),
+                    response_id=getattr(response, 'id', None), tokens=getattr(usage, 'total_tokens', None),
+                    prompt_tokens=getattr(usage, 'prompt_tokens', None),
+                    completion_tokens=getattr(usage, 'completion_tokens', None))
+                if usage is not None and hasattr(usage, 'model_dump'):
+                    request['usage_details'] = usage.model_dump(mode='json')
+                request['usage_complete'] = request['tokens'] is not None
+                try:
+                    request['response_artifact'] = capture('provider-response', dict(
+                        response_id=getattr(response, 'id', None), model=getattr(response, 'model', None),
+                        choices=[dict(content=getattr(c.message, 'content', None),
+                                      finish_reason=getattr(c, 'finish_reason', None)) for c in response.choices]))
+                except Exception as error:
+                    request['checkpoint_error'] = metrics['checkpoint_error'] = str(error)
+                    raise CheckpointError(error, response) from error
                 request['seconds'] = time.perf_counter() - attempt_started
-                if callback:
-                    callback()
+                save_checkpoint(response=response)
+                return response
     finally:
         metrics[phase + '_seconds'] = time.perf_counter() - started
         metrics[phase + '_timing_scope'] = 'wall time including retries, backoff and audit checkpoints; provider_seconds measures the SDK transport call'

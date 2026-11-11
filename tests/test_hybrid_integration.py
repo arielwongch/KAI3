@@ -14,6 +14,7 @@ import Benchmark
 import ReAct
 import Summarization
 from MemoryFactory import MemoryFactory
+from BenchmarkStore import read_json
 from test_binary_benchmark import judgment
 from benchmark_helpers import FakeTokenizer
 from test_memory_integration import FakeOpenAIClient
@@ -221,7 +222,7 @@ class HybridBenchmarkTests(unittest.TestCase):
             run_id = response.json['run_id']
             job = launch.call_args.args[1]
             self.assertEqual(job.options['window_size'], 3)
-            saved = json.loads((Path(directory) / f'{run_id}.input.json').read_text())
+            saved = read_json(Path(directory) / f'{run_id}.input.json')
             restored = Benchmark.BenchmarkJob.resume(saved['dataset'], saved['snapshot'])
             self.assertEqual(restored.options['window_size'], 3)
             self.assertTrue(restored.options['background'])

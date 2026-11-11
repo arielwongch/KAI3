@@ -1,5 +1,8 @@
 # Benchmark results, persistence, and resume
 
+Storage, concurrency, and resume contracts reviewed on 2026-11-11; see the
+[mechanism consistency audit](../../plans/mechanism_consistency_audit_2026-11-11.md).
+
 Status: implemented behavior. Last checked against repository source: 2026-10-08.
 This check date is not an implementation or release date.
 Snapshot loading and recovery behavior reviewed and updated on 2026-11-02.
@@ -71,14 +74,17 @@ See [Compare runtime definitions](../frontend/compare_runs.md#metric-meaning-and
 ## Write and recovery flow
 
 Web runs are stored under `instance/benchmark_runs/`. A run's `.json` snapshot
-is atomically replaced via a temporary file. `.input.json` retains original
+is a small manifest atomically replaced via a temporary file. A run-owned
+`.artifacts.sqlite3` database stores immutable audit objects once; objects commit
+before a manifest can reference them. Keep both together for internal backups.
+Portable exports contain all payloads in one JSON file. `.input.json` retains original
 dataset and launch state for restart/resume. The run store contains results and
 conversation data, not API credentials.
 
 Default execution uses a server thread. `background=True` starts a detached
 worker with the same Python environment; it writes snapshots/logs and uses a
-lease plus cancellation/continuation control files. Server startup restores saved
-runs. Active threaded runs interrupted by restart become `interrupted`; a live
+lease plus cancellation/continuation control files. The server discovers saved
+runs lazily. Active threaded runs interrupted by restart become `interrupted`; a live
 detached worker remains authoritative on disk. Missing worker liveness turns an
 active detached run into an interrupted report. Launch/persistence failures are
 surfaced as failed runs rather than leaving a permanent queued state.
@@ -161,8 +167,9 @@ identifiers. Configuration hashes cover budgets, k, storage, summary batches, an
 fact history. Legacy protocols cannot resume into v3.
 
 Previously completed cases are retained. Judge failures can retry judging the
-saved prediction and context. Missing answers can require chronological memory
-rebuilding, which may regenerate different summaries/facts. Prior memory snapshots
+saved prediction and context. Compatible completed archived memory is restored, including vectors and pending
+state. Incomplete formation without dependent predictions and legacy reports
+can require chronological rebuilding, which may regenerate summaries/facts. Prior memory snapshots
 are retained in `previous_ingestions`; ingestion identity distinguishes reused
 predictions from new contexts. A resumed run keeps its run ID and records resume
 count and prior status. Saved batch settings are preserved; a missing legacy batch
@@ -180,7 +187,9 @@ percentages when no nonempty question manifest exists; those counts do not
 recover the original selected-question denominator. See its
 [metric definitions](../frontend/compare_runs.md#metric-meaning-and-coverage).
 
-Snapshots do not restore embedding arrays or serialize live module objects.
+Inspection snapshots alone do not restore embedding arrays. Exact-state experiment
+archives restore explicitly encoded vectors and logical fields, without
+serializing live service objects or arbitrary classes.
 Malformed imported result files, incompatible resume settings, unavailable datasets,
 and active-run conflicts produce explicit errors. Unreadable local run snapshots
 follow the skip-and-warn recovery behavior above. Partial reports remain inspectable.
@@ -251,3 +260,23 @@ have been removed. Successful deletion detaches persistence and removes the
 registry entry so normal restore/listing cannot resurrect the run. The UI asks
 for confirmation before sending the DELETE request. See the
 [benchmark workspace](../frontend/benchmark.md#delete-saved-runs) for the flow.
+
+
+## Runtime consistency (2026-11-11)
+
+Web and CLI active checkpoints use the same incremental artifact writer and
+reader. The CLI materializes its historical portable JSON output once on exit;
+`--resume` and `tools/inspect_recording.py` also accept internal manifests with
+their sidecars. Creation/resume waits for active or finishing server threads and
+the global detached-worker lease, even after a terminal status was published.
+Parallel question workers join before the next conversation. Exported case order
+remains manifest order. Aggregate processing durations can overlap under parallel
+execution and must not be interpreted as elapsed wall-clock duration.
+
+Detail lookup probes its exact manifest path and retries a changed checkpoint
+once. Temporary OS/SQLite read failures are not cached as permanent corruption.
+An index miss while a checkpoint exists or a worker owns its lease returns a
+retryable JSON 503; stable unreadable checkpoints return 409 and confirmed
+missing runs return a distinct JSON 404. Polling failures preserve the selected
+run and last view rather than opening setup. Legacy transient 404 responses are
+retried with bounded backoff; explicit nonretryable responses remain visible.

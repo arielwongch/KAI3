@@ -61,7 +61,9 @@ class LifecycleTests(unittest.TestCase):
                 self.assertEqual(client.post(url,json={'token':'stale'}).status_code,409)
                 self.assertEqual(client.post(url,json={'token':snap['review']['token']}).status_code,200)
             finally:
-                job.review_continue.set();thread.join(5)
+                # Real checkpoint I/O (including Windows sync-lock retries)
+                # can outlast five seconds; keep mocks active until it finishes.
+                job.review_continue.set();thread.join(15)
         self.assertFalse(thread.is_alive())
         self.assertEqual(job.result['status'],'completed')
         self.assertEqual(job.result['progress']['percent'],100)
@@ -166,16 +168,18 @@ class LifecycleTests(unittest.TestCase):
                     pass
 
     def test_detached_worker_runs_without_model_calls(self):
-        # A real child process evaluates an empty QA set: never submits a paid request.
-        dataset=data();dataset[0]['qa']=[]
-        job=Benchmark.BenchmarkJob(dataset,dict(module='no_memory',background=True))
+        # A real child process rejects a selected question at its local context
+        # guard, so this test never submits a paid request.
+        dataset=data()
+        job=Benchmark.BenchmarkJob(dataset,dict(module='no_memory',background=True,context_limit=100,max_output_tokens=1))
         worker=launch(self.temp.name,job)
         try:
             worker.wait(timeout=30)
             self.assertEqual(worker.returncode,0, path_for(self.temp.name,job.result['run_id'],'.log').read_text())
             result=read_json(path_for(self.temp.name,job.result['run_id']))
             self.assertEqual(result['status'],'completed')
-            self.assertEqual(result['cases'],[])
+            self.assertTrue(result['cases'])
+            self.assertTrue(all(c['diagnostics']['status'] == 'context_limit_exceeded' for c in result['cases']))
             self.assertFalse(worker_active(self.temp.name,result))
         finally:
             if worker.poll() is None:
@@ -185,8 +189,8 @@ class LifecycleTests(unittest.TestCase):
     def test_venv_worker_has_no_visible_console(self):
         # Probe inside the actual interpreter after the venv redirector runs.
         # Mocking creationflags alone misses the redirector allocating a console.
-        dataset = data(); dataset[0]['qa'] = []
-        job = Benchmark.BenchmarkJob(dataset, dict(module='no_memory', background=True))
+        dataset = data()
+        job = Benchmark.BenchmarkJob(dataset, dict(module='no_memory', background=True, context_limit=100, max_output_tokens=1))
         probe = Path(self.temp.name) / 'console-probe.json'
         popen = subprocess.Popen
         code = (

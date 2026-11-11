@@ -1,5 +1,5 @@
 from API import call_api
-from Diagnostics import record_memory_call
+from Diagnostics import record_memory_call, memory_response
 from MemoryEntry import MemoryEntry
 from MemoryModule import MemoryModule
 
@@ -40,20 +40,30 @@ class Summarization(MemoryModule):
         if self.max_summary_tokens is not None:
             system_prompt += f' Keep the summary within {self.max_summary_tokens} benchmark tokens. Preserve named speakers and dates.'
 
+        response_token = memory_response.set(None)
         try:
-            new_summary, _, tokens = call_api(system_prompt, user_input)
-        except Exception:
-            record_memory_call(None)
-            raise
+            try:
+                new_summary, _, tokens = call_api(system_prompt, user_input)
+            except Exception:
+                record_memory_call(None)
+                raise
+            response_info = memory_response.get() or {}
+        finally:
+            memory_response.reset(response_token)
         record_memory_call(tokens)
         if not isinstance(new_summary, str):
             raise TypeError("call_api must return summary text")
+        if not new_summary.strip() or response_info.get('finish_reason') not in (None, 'stop'):
+            raise ValueError('Summary response is empty or incomplete; previous memory preserved.')
 
         if self.max_summary_tokens is not None:
             from MemoryContext import truncate_summary
-            self.summary, self.truncated = truncate_summary(new_summary, self.max_summary_tokens, self.tokenizer)
+            candidate, truncated = truncate_summary(new_summary, self.max_summary_tokens, self.tokenizer)
         else:
-            self.summary = new_summary[:self.summary_limit]
+            candidate, truncated = new_summary[:self.summary_limit], len(new_summary) > self.summary_limit
+        if not candidate.strip():
+            raise ValueError('Summary cannot fit the configured limit; previous memory preserved.')
+        self.summary, self.truncated = candidate, truncated
         return self.summary
 
     def retrieve(self, query: str = "", k: int = 1) -> list[MemoryEntry]:

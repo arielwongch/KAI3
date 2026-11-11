@@ -59,14 +59,14 @@ class SummaryBenchmarkTests(unittest.TestCase):
         self.assertEqual(batches[-1][0].metadata['dialogue_id'], 'last')
 
     def test_per_turn_resume_retains_per_turn_ingestion(self):
-        data = [dict(sample_id='one', conversation={}, qa=[])]
+        data = [dict(sample_id='one', conversation={}, qa=[dict(question='Q', answer='A', category=4)])]
         previous = Benchmark.BenchmarkJob(data, dict(modules=['summarization'], summary_batch_size=1)).snapshot()
         resumed = Benchmark.BenchmarkJob.resume(data, previous)
         self.assertEqual(resumed.options['summary_batch_size'], 1)
         self.assertEqual(resumed.result['ingestion_unit'], 'turn')
 
     def test_new_resume_retains_batched_ingestion(self):
-        data = [dict(sample_id='one', conversation={}, qa=[])]
+        data = [dict(sample_id='one', conversation={}, qa=[dict(question='Q', answer='A', category=4)])]
         previous = Benchmark.BenchmarkJob(data, dict(modules=['summarization'])).snapshot()
         resumed = Benchmark.BenchmarkJob.resume(data, previous)
         self.assertEqual(resumed.options['summary_batch_size'], 20)

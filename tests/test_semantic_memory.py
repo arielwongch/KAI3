@@ -203,7 +203,9 @@ class SemanticMemoryTests(unittest.TestCase):
             web.chat_memory_modules["failure"] = web.ChatSession("fact_store")
         with patch.object(ReAct, "client", FakeOpenAIClient()), patch.object(web.app.logger, "exception"):
             response = web.app.test_client().post("/get", json={"chat_id": "failure", "memory_module": "fact_store", "message": "new"})
-        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json['reply'], 'done')
+        self.assertEqual(response.json['memory_write_status'], 'failed')
         self.assertEqual(module.retrieve("cat", 1)[0].text, "cat")
         web.chat_memory_modules.clear()
 

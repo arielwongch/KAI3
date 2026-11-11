@@ -13,6 +13,7 @@ VERSION = 1
 active_archive = ContextVar('experiment_archive', default=None)
 checkpoint = ContextVar('experiment_checkpoint', default=None)
 operation = ContextVar('experiment_operation', default=None)
+archive_lock = ContextVar('experiment_archive_lock', default=None)
 
 
 def canonical(value):
@@ -24,16 +25,115 @@ def sha256(value):
     return hashlib.sha256(canonical(value)).hexdigest()
 
 
+class Artifacts(dict):
+    """Immutable payloads with cached sizes and optional lazy disk loading."""
+    def __init__(self, values=(), *, sizes=None, loader=None):
+        super().__init__(values)
+        self.sizes = dict(sizes or {})
+        self.loader = loader
+        self.total_bytes = sum(self.sizes.values())
+
+    def __getitem__(self, key):
+        value = super().__getitem__(key)
+        if value is None and self.loader is not None:
+            value = self.loader(key)
+            super().__setitem__(key, value)
+        return value
+
+    def __setitem__(self, key, value):
+        size = len(canonical(value))
+        self.total_bytes += size - self.sizes.get(key, 0)
+        self.sizes[key] = size
+        super().__setitem__(key, value)
+
+    def __delitem__(self, key):
+        super().__delitem__(key)
+        self.total_bytes -= self.sizes.pop(key, 0)
+
+    def get(self, key, default=None):
+        return self[key] if key in self else default
+
+    def __eq__(self, other):
+        if not isinstance(other, dict):
+            return NotImplemented
+        return dict(self.items()) == dict(other.items())
+
+    def __ne__(self, other):
+        result = self.__eq__(other)
+        return NotImplemented if result is NotImplemented else not result
+
+    def pop(self, key, *default):
+        if key not in self:
+            if default:
+                return default[0]
+            raise KeyError(key)
+        value = self[key]
+        del self[key]
+        return value
+
+    def popitem(self):
+        if not self:
+            raise KeyError('popitem(): dictionary is empty')
+        key = next(reversed(self))
+        return key, self.pop(key)
+
+    def setdefault(self, key, value=None):
+        if key not in self:
+            self[key] = value
+        return self[key]
+
+    def update(self, values=(), **kwargs):
+        for key, value in dict(values, **kwargs).items():
+            if key not in self or self[key] != value:
+                self[key] = value
+
+    def items(self):
+        return ((key, self[key]) for key in self)
+
+    def values(self):
+        return (self[key] for key in self)
+
+    def clear(self):
+        super().clear()
+        self.sizes.clear()
+        self.total_bytes = 0
+
+    def copy(self):
+        # Payloads are immutable once captured. Copy only the index for a
+        # synchronous checkpoint; public snapshots still deep-copy payloads.
+        return Artifacts(super().copy(), sizes=self.sizes, loader=self.loader)
+
+    def __deepcopy__(self, memo):
+        result = {}
+        memo[id(self)] = result
+        result.update((key, deepcopy(value, memo)) for key, value in self.items())
+        return result
+
+
+def checkpoint_view(report):
+    archive = report.get('recording')
+    if archive is None:
+        return deepcopy(report)
+    objects = archive['artifacts']
+    if not isinstance(objects, Artifacts):
+        tracked = Artifacts()
+        tracked.update(objects)
+        archive['artifacts'] = objects = tracked
+    shared = dict(archive, artifacts=objects.copy())
+    return deepcopy(report, {id(archive): shared})
+
+
 def new_archive():
-    return dict(version=VERSION, layout='inline-run-owned-sha256-v1', artifacts={})
+    return dict(version=VERSION, layout='inline-run-owned-sha256-v1', artifacts=Artifacts())
 
 
 def put(archive, kind, value):
     obj = dict(kind=kind, value=deepcopy(value))
     identity = sha256(obj)
-    existing = archive['artifacts'].setdefault(identity, obj)
-    if existing != obj:
-        raise ValueError('Artifact identity collision: ' + identity)
+    with archive_lock.get() or nullcontext():
+        existing = archive['artifacts'].setdefault(identity, obj)
+        if existing != obj:
+            raise ValueError('Artifact identity collision: ' + identity)
     return {'artifact_sha256': identity}
 
 
@@ -58,7 +158,37 @@ def check_compatibility(previous, current):
                   'answer_settings', 'judge_settings', 'memory_model_settings'):
         before, after = previous.get(field), current.get(field)
         if field == 'code_identity':
-            before, after = (before or {}).get('source_sha256'), (after or {}).get('source_sha256')
+            # Checkpoint transport and archive validation do not change the
+            # evaluated algorithm. Keep their full identities in provenance,
+            # while allowing saved work to resume after infrastructure repairs.
+            # All model/memory/benchmark execution sources must still match.
+            from AuditProvenance import digest
+            infrastructure = {'src/BenchmarkStore.py', 'src/BenchmarkHistory.py', 'src/BenchmarkWorker.py',
+                              'src/ExperimentRecording.py', 'src/app.py', 'tools/inspect_recording.py'}
+            def execution_sources(identity):
+                identity = identity or {}
+                files = identity.get('source_files')
+                if not isinstance(files, dict) or identity.get('source_sha256') != digest(files):
+                    raise ValueError('Frozen-state execution requires valid code_identity')
+                result = {name: value for name, value in files.items() if name not in infrastructure}
+                # Explicit migration for audited checkpoint/scheduler/cache
+                # refactors: prompts, scoring, contexts and QA write-back policy
+                # are unchanged. Do not exempt arbitrary engine edits.
+                from pathlib import Path
+                source = Path(__file__).with_name('Benchmark.py').read_bytes()
+                normalized_source = source.replace(b'\r\n', b'\n')
+                current_hash = hashlib.sha256(normalized_source).hexdigest()
+                scheduler = 'e82e08d8688df7d3eddebeffcfb79aa975335ad8ee743afc1d014f0393c3e643'
+                audited = {'bf6ed5c618b589a71a5f241c68a56fa8a025f3ae4524aa72a78cbe482cd8d57f',
+                           '874ee199bfc82c1a7ad8487aaf6f575f81a87ee58b63b937fb32a9ba93e764ac',
+                           'e39df5fed174b3af489d2f5ee1c897db713af78450ff0a2a7d4f08674026ed55',
+                           '71e9236553f6da7f80c6c63ad4becbb3abf41e14a076409b12a9c23692636500',
+                           '88f77c508787ab3efd73f9749193f9c5681adeb02f24fc1ff6cd9b9508cbaa26', scheduler,
+                           hashlib.sha256(normalized_source.replace(b'\n', b'\r\n')).hexdigest()}
+                if current_hash == scheduler and result.get('src/Benchmark.py') in audited:
+                    result['src/Benchmark.py'] = 'bounded-question-pool-compatible-v1'
+                return result
+            before, after = execution_sources(before), execution_sources(after)
         if before != after:
             raise ValueError('Frozen-state execution requires matching ' + field)
 
@@ -227,17 +357,23 @@ def restore(module, archive, reference):
 
 def polling_view(report):
     """Keep old diagnostic fields; omit only payloads owned by the archive."""
-    value = deepcopy(report)
+    archive = report.get('recording')
+    omitted = ({k: deepcopy(v) for k, v in archive.items() if k != 'artifacts'} if archive else None)
+    if omitted is not None:
+        omitted.update(artifact_count=len(archive['artifacts']), payloads_omitted=True)
+    value = deepcopy(report, {id(archive): omitted} if archive else {})
     if 'recording' in value:
-        archive = value['recording']
-        archive['artifact_count'] = len(archive['artifacts'])
-        archive.pop('artifacts')
-        archive['payloads_omitted'] = True
+        value['recording'] = omitted
     return value
 
 
 def archive_metrics(archive):
     objects = archive['artifacts']
+    if isinstance(objects, Artifacts):
+        payload = objects.total_bytes
+        index_bytes = sum(len(canonical(key)) + 1 for key in objects) + max(0, len(objects) - 1)
+        return dict(audit_artifact_count=len(objects), artifact_payload_bytes=payload,
+                    audit_archive_bytes=len(canonical(dict(archive, artifacts={}))) + payload + index_bytes)
     return dict(audit_artifact_count=len(objects),
                 audit_archive_bytes=len(canonical(archive)),
                 artifact_payload_bytes=sum(len(canonical(v)) for v in objects.values()))

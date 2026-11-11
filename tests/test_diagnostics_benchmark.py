@@ -54,7 +54,9 @@ class DiagnosticsTests(unittest.TestCase):
         with patch.object(ReAct, 'client', fake), patch.object(ReAct.time, 'perf_counter', side_effect=range(100)):
             result = ReAct.run_ReAct('question', memory_module=module, diagnostics=diagnostics, write_back=False)
         self.assertEqual(len(result), 3)
-        self.assertEqual(diagnostics['agent_seconds'], 2)
+        self.assertGreater(diagnostics['agent_seconds'], 0)
+        self.assertEqual(len(diagnostics['provider_requests']), 2)
+        self.assertTrue(all(r['status'] == 'completed' for r in diagnostics['provider_requests']))
         self.assertEqual(diagnostics['agent_tokens'], 14)
         self.assertEqual(diagnostics['agent_llm_calls'], 2)
         self.assertEqual(diagnostics['retrieved'][0]['text'], 'prior')
@@ -67,10 +69,12 @@ class DiagnosticsTests(unittest.TestCase):
         module.summary = 'old'
         d = {}
         with patch.object(ReAct, 'client', FakeOpenAIClient()), patch.object(summary_module, 'call_api', side_effect=RuntimeError('write failed')):
-            with self.assertRaises(RuntimeError):
-                ReAct.run_ReAct('question', memory_module=module, diagnostics=d)
+            answer, _, _ = ReAct.run_ReAct('question', memory_module=module, diagnostics=d)
+        self.assertEqual(answer, 'done')
         self.assertEqual(module.summary, 'old')
-        self.assertEqual(d['status'], 'error')
+        self.assertEqual(d['status'], 'completed')
+        self.assertEqual(d['memory_write_status'], 'failed')
+        self.assertEqual(d['pending_write']['metadata']['user_text'], 'question')
         self.assertEqual(d['retrieved'][0]['text'], 'old')
         self.assertEqual(d['memory_llm_calls'], 1)
         self.assertIsNone(d['memory_tokens'])

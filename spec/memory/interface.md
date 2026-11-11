@@ -1,5 +1,8 @@
 # Shared memory interface
 
+Storage, concurrency, and resume contracts reviewed on 2026-11-11; see the
+[mechanism consistency audit](../../plans/mechanism_consistency_audit_2026-11-11.md).
+
 Status: implemented behavior. Last checked against repository source: 2026-10-08.
 This check date is not an implementation or release date.
 
@@ -69,24 +72,35 @@ allowance, and injected tokenizer/compressor. It supplies its complete active
 state without secondary packing. Its frozen artifacts can be restored explicitly
 for benchmark resume; ordinary chat sessions remain process-local.
 
-The application and benchmark construct `NoMemory()` directly for their no-memory
-paths. Importing `NoMemory` also installs support for `no_memory` on the factory;
-do not assume that alias exists before that import. The factory rejects known
+The application and benchmark support `NoMemory()` directly, and the factory
+constructs it for `no_memory` without an import-order dependency. The factory rejects known
 capacity/summary/history controls used with the wrong architecture. The benchmark
 performs stricter capability-based validation before constructing modules.
 
 ## Stored data and lifecycle
 
-Memory representations are process-local; modules do not reload persisted
-conversation state. Embedding models are loaded lazily and shared; cached weights
-are independent of stored records. [Saved benchmark results](../benchmark/results_and_resume.md)
-contain logical snapshots, not live module instances or embedding arrays.
+Live memory representations are process-local. Embedding models are loaded
+lazily and shared; cached weights are independent of stored records. Inspection
+snapshots exclude embedding arrays. [Saved benchmark results](../benchmark/results_and_resume.md)
+also carry exact-state experiment archives, which retain vectors, pending buffers
+and logical fields for compatible frozen-state resume. Services, credentials,
+locks and model weights are not serialized. Legacy inspection-only reports can
+require memory rebuilding.
 
 Each module defines its capacity and eviction rules. Window is finite; vector
 and facts default to unlimited but accept finite capacities. Summary holds one
 string. NoMemory retains no entries.
 
 ## Agent write and retrieval flow
+
+Workflow corrections reviewed 2026-11-12: `run_ReAct` retains its public return
+tuple but generates direct answers with the shared bounded request policy.
+There is no action executor or synthetic observation loop. Plain answers and
+legacy final-answer envelopes are accepted; unsupported actions, blank output
+and incomplete provider responses are rejected within a bounded attempt count.
+Only a completed answer is eligible for write-back. A failed write preserves the
+answer and records `memory_write_status=failed` plus the original `pending_write`.
+The web and compaction terminal expose explicit write-only retries.
 
 At the start of `run_ReAct`, the agent retrieves context and renders it into its
 system prompt. Standalone sliding windows use their full retained capacity; other

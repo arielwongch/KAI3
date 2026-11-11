@@ -74,7 +74,7 @@ let busy = false, unavailable = false, checking = false;
 let inspection = null, inspectionTab = 'contents', inspectionSource = 'chat', selectedRecord = null;
 let importedBenchmark = false, importedOriginal = null, importedFilename = '';
 let compareExportSource = null, compareExportBusy = false;
-let benchmark = null, runId = null, pollTimer = null, inspectionRequest = 0, previewDataset = null;
+let benchmark = null, runId = null, pollTimer = null, pollFailures = 0, inspectionRequest = 0, previewDataset = null;
 let savedRunsRequest=0, savedRunsTimer=null, benchmarkDeleteTarget=null, benchmarkDeleteBusy=false;
 let benchmarkRequest=0, selectedRunId=null, loadingRunId=null, resultFileRequest=0;
 const page = typeof location !== 'undefined' && location.pathname === '/benchmark' ? 'benchmark' : 'chat';
@@ -88,17 +88,17 @@ function markdown(text) { return DOMPurify.sanitize(marked.parse(String(text)));
 function labelMode(mode) { return mode==='windowed_summarization'?'Windowed Summary':mode==='vector_store_reranker'?'Vector Store + Reranker':(mode || 'No architecture selected').replaceAll('_', ' '); }
 function controlState() {
     const session = active();
-    $('userInput').disabled = busy || checking || unavailable || !session.module;
+    $('userInput').disabled = busy || checking || unavailable || !session.module || session.messages.some(m=>m.memory_write_status==='failed');
     $('sendButton').disabled = $('userInput').disabled || (hasWindow(session.module)&&!validWindow(session.window_size??10));
     $('chatWindowControl').hidden=!hasWindow(session.module);
     $('chatWindowSize').value=String(session.window_size??10);
-    $('chatWindowSize').disabled=session.started||busy||checking;
+    $('chatWindowSize').disabled=session.started||!!session.pending_request||busy||checking;
     $('chatWindowDescription').textContent=periodicWindow(session.module)?'Keep k recent entries and update long-term memory every k completed entries.':isWindowHybrid(session.module)?'Keep recent turns alongside long-term memory. Configure before the first message.':'Use the full recent window in chat.';
     $('chatCompactionSettings').hidden=session.module!=='compaction';
     if(session.module==='compaction'){
         const options=session.memory_options||{};
         for(const [id,value] of Object.entries({chatCompactPercent:options.retain_percent??50,chatCompactMode:options.compaction_mode??'repeated',chatCompactTrigger:options.compaction_trigger_tokens??2000,chatCompactBudget:options.memory_context_tokens??8000})){
-            $(id).value=String(value);$(id).disabled=session.started||busy||checking;
+            $(id).value=String(value);$(id).disabled=session.started||!!session.pending_request||busy||checking;
         }
         $('chatManualPercent').disabled=busy||checking;
         $('compactChat').disabled=!session.started||busy||checking||unavailable;
@@ -111,14 +111,14 @@ function controlState() {
         button.setAttribute('aria-pressed', String(selected));
     });
     $('userInput').placeholder = session.module ? 'Message KAI3…' : 'Select a memory architecture to start';
-    $('chatRerankerSettings').hidden=!usesReranker(session.module)||session.messages.length>0;
+    $('chatRerankerSettings').hidden=!usesReranker(session.module)||session.started||!!session.pending_request;
     if(usesReranker(session.module)){
         const options=session.memory_options||{};
         $('chatCandidateK').value=options.candidate_k===null?'all':String(options.candidate_k??50);
         $('chatRerankerCapacity').value=String(options.max_stored_entries??'unlimited');
     }
     const components=HYBRID_COMPONENTS[session.module];
-    $('chatHybridSettings').hidden=!components||session.messages.length>0;
+    $('chatHybridSettings').hidden=!components||session.started||!!session.pending_request;
     if(components){
         $('chatHybridDescription').textContent=`${components.map(labelMode).join(' + ')}. Configure before the first message.`;
         $('chatHybridShare').value=String((session.memory_options?.hybrid_shares?.[components[0]]??0.5)*100);
@@ -139,7 +139,25 @@ function render() {
         if (message.role === 'user') { body.textContent = message.content; body.style.whiteSpace = 'pre-wrap'; } else body.innerHTML = markdown(message.content);
         body.querySelectorAll('pre').forEach(block => { const button = document.createElement('button'); button.className = 'copy-button'; button.textContent = 'Copy'; button.onclick = async () => { await navigator.clipboard.writeText(block.querySelector('code')?.textContent || ''); button.textContent = 'Copied'; }; block.append(button); });
         content.append(label, body); row.append(avatar, content); $('chatMessages').append(row);
+        if(message.memory_write_status==='failed'){
+            const warning=document.createElement('p');warning.textContent=message.warning||'Memory update failed. Retry it before continuing.';
+            const retry=document.createElement('button');retry.textContent='Retry memory update';retry.disabled=busy||checking||unavailable;
+            retry.onclick=async()=>{
+                busy=true;render();
+                try{
+                    const data=await jsonRequest(`/api/chats/${encodeURIComponent(session.id)}/turns/${encodeURIComponent(message.turn_id)}/retry-memory`,{method:'POST'});
+                    message.memory_write_status=data.memory_write_status;message.warning=data.warning;
+                }catch(error){message.warning=error.message;}
+                finally{busy=false;save();render();await refreshInspection();}
+            };
+            content.append(warning,retry);
+        }
     });
+    if(session.pending_request){
+        const retry=document.createElement('button');retry.textContent='Retry unanswered request';retry.disabled=busy||checking||unavailable;
+        retry.onclick=()=>{$('userInput').value=session.pending_request.payload.message;return $('chatForm').onsubmit({preventDefault(){}});};
+        $('chatMessages').append(retry);
+    }
     $('chatHistory').replaceChildren();
     workspace.sessions.slice().reverse().forEach(s => {
         const button = document.createElement('button'); button.className = 'history-item' + (s.id === session.id ? ' active' : ''); button.textContent = s.title; button.title = s.title; button.disabled = busy;
@@ -245,6 +263,17 @@ async function refreshInspection() {
     try {
         const data = await jsonRequest(`/api/chats/${encodeURIComponent(session.id)}/diagnostics`);
         if (requestId !== inspectionRequest || active().id !== session.id) return;
+        session.started=true;
+        const pending=session.pending_request;
+        if(pending){
+            const turn=(data.turns||[]).find(t=>t.request_id===pending.payload.request_id);
+            if(turn){
+                session.messages.push({role:'assistant',content:turn.final_answer||`Request failed: ${turn.error||'No answer returned.'}`,turn_id:turn.turn_id,memory_write_status:turn.memory_write_status,warning:turn.warning});
+                delete session.pending_request;
+            }
+        }
+        for(const message of session.messages){const turn=(data.turns||[]).find(t=>t.turn_id===message.turn_id);if(turn){message.memory_write_status=turn.memory_write_status;message.warning=turn.warning;}}
+        save();render();
         if(hasWindow(session.module)&&data.window_size){session.window_size=data.window_size;save();}
         setInspection(data, labelMode(session.module));
     } catch (error) {
@@ -257,23 +286,31 @@ async function refreshInspection() {
 $('chatForm').onsubmit = async event => {
     event.preventDefault(); if ($('sendButton').disabled) return;
     const session=active(), message=$('userInput').value.trim(); if (!message) return;
-    if(HYBRID_COMPONENTS[session.module]&&!session.started){
+    if(session.pending_request&&session.pending_request.payload.message!==message){$('userInput').value=session.pending_request.payload.message;return;}
+    if(HYBRID_COMPONENTS[session.module]&&!session.started&&!session.pending_request){
         try{session.memory_options=hybridFormOptions(session.module,$('chatHybridShare').value,$('chatComponentOptions').value);session.memory_options.memory_context_tokens=parseMemoryCount($('chatHybridBudget').value,null);$('chatHybridError').textContent='';}
         catch(error){$('chatHybridError').textContent=error.message;return;}
     }
-    if(usesReranker(session.module)&&!session.started){
+    if(usesReranker(session.module)&&!session.started&&!session.pending_request){
         try{session.memory_options={...(session.memory_options||{}),candidate_k:parseMemoryCount($('chatCandidateK').value,'all'),max_stored_entries:parseMemoryCount($('chatRerankerCapacity').value,'unlimited')};$('chatRerankerError').textContent='';}
         catch(error){$('chatRerankerError').textContent=error.message;return;}
     }
-    if(session.module==='compaction'&&!session.started){
+    if(session.module==='compaction'&&!session.started&&!session.pending_request){
         try{session.memory_options={...compactionFormOptions('chat'),memory_context_tokens:parseMemoryCount($('chatCompactBudget').value,null)};}
         catch(error){$('chatCompactionStatus').textContent=error.message;return;}
     }
-    const requiresExisting=session.started; session.messages.push({role:'user',content:message});
+    const requiresExisting=session.started;
+    if(!session.pending_request){
+        session.messages.push({role:'user',content:message});
+        session.pending_request={payload:{message,chat_id:session.id,memory_module:session.module,memory_options:session.memory_options,request_id:crypto.randomUUID(),...(hasWindow(session.module)?{window_size:session.window_size??10}:{})}};
+    }
     session.title=session.messages.find(m=>m.role==='user').content.slice(0,60); $('userInput').value=''; busy=true; save(); render();
     const loading=document.createElement('div'); loading.className='chat-loading'; loading.textContent=requiresExisting?'KAI3 is thinking…':'Preparing memory and generating your first reply…'; $('chatMessages').append(loading);
-    try { const data=await jsonRequest('/get',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message,chat_id:session.id,memory_module:session.module,memory_options:session.memory_options,requires_existing:requiresExisting,...(hasWindow(session.module)?{window_size:session.window_size??10}:{})})}); session.started=true; session.messages.push({role:'assistant',content:data.reply,turn_id:data.turn_id}); }
-    catch(error) { session.started=true; session.messages.push({role:'assistant',content:`Request failed: ${error.message}`}); }
+    try { const data=await jsonRequest('/get',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...session.pending_request.payload,requires_existing:requiresExisting})}); session.started=true;delete session.pending_request;session.messages.push({role:'assistant',content:data.reply,turn_id:data.turn_id,memory_write_status:data.memory_write_status,warning:data.warning}); }
+    catch(error) {
+        if(error.status){session.started=requiresExisting||!!error.details?.turn_id;delete session.pending_request;}
+        session.messages.push({role:'assistant',content:`Request failed: ${error.message}`});
+    }
     finally { busy=false; save(); render(); inspectionSource='chat'; await refreshInspection(); $('userInput').focus(); }
 };
 function retainedPercent(value){const number=Number(value);if(!Number.isFinite(number)||number<=0||number>100)throw new Error('Retained percentage must be greater than 0 and at most 100.');return number;}
@@ -442,18 +479,28 @@ $('compareExportDialog').oncancel=event=>{if(compareExportBusy)event.preventDefa
 $('compareExportDialog').onclose=()=>{if(!$('compareExportDialog').open)compareExportSource=null;};
 $('exportReview').onclick=()=>{if(importedBenchmark)return;return download(`/api/benchmarks/${runId}/review`,$('exportReview'));};
 $('reviewFile').onchange=async()=>{if(importedBenchmark)return;try{const data=JSON.parse(await $('reviewFile').files[0].text());const reviews=data.reviews||data.cases.filter(c=>c.ratings).map(c=>({case_index:c.case_index,ratings:c.ratings,notes:c.notes}));const result=await jsonRequest(`/api/benchmarks/${runId}/review`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reviews})});benchmark.calibration=result.calibration;drawBenchmark();$('reportStatus').textContent='Human labels imported and agreement updated.';}catch(error){$('reportStatus').textContent=error.message;}};
+const pendingResumes=new Set();
 async function resumeSavedBenchmark(dataset){
-    if(importedBenchmark||!runId)return;
-    const requestedRun=runId;
+    if(importedBenchmark||!runId||pendingResumes.has(runId)||['queued','running','waiting_review'].includes(benchmark?.status))return;
+    const requestedRun=runId,selection=resultFileRequest;
+    pendingResumes.add(requestedRun);$('resumeBenchmark').disabled=true;
     try{
-        const result=await jsonRequest(`/api/benchmarks/${requestedRun}/resume`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(dataset===undefined?{}:{dataset})});
-        if(importedBenchmark||runId!==requestedRun)return;
+        const payload=dataset===undefined?{}:{dataset};
+        const result=await jsonRequest(`/api/benchmarks/${requestedRun}/resume`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+        if(importedBenchmark||runId!==requestedRun||selection!==resultFileRequest)return;
         $('resumeDatasetControl').hidden=true;
-        runId=result.run_id;pollBenchmark();
+        clearTimeout(pollTimer);benchmarkRequest++;pollFailures=0;
+        benchmark={...benchmark,status:'queued'};
+        $('benchmarkReport').hidden=true;$('benchmarkSetup').hidden=true;$('benchmarkRunning').hidden=false;
+        $('progressTitle').textContent='Resuming benchmark';$('progressActivity').textContent='Loading saved progress.';
+        runId=result.run_id;await pollBenchmark();
     }catch(error){
-        if(importedBenchmark||runId!==requestedRun)return;
+        if(importedBenchmark||runId!==requestedRun||selection!==resultFileRequest)return;
         $('reportStatus').textContent=error.message;
         if(error.code==='dataset_required')$('resumeDatasetControl').hidden=false;
+    }finally{
+        pendingResumes.delete(requestedRun);
+        if(runId===requestedRun&&selection===resultFileRequest)$('resumeBenchmark').disabled=['queued','running','waiting_review'].includes(benchmark?.status);
     }
 }
 $('resumeBenchmark').onclick=()=>resumeSavedBenchmark();
@@ -466,6 +513,7 @@ $('resumeDatasetFile').onchange=async()=>{
     finally{$('resumeDatasetFile').value='';}
 };
 $('newBenchmarkRun').onclick=()=>{
+    pollFailures=0;
     benchmarkRequest++;resultFileRequest++;selectedRunId=null;loadingRunId=null;
     $('benchmarkLoadStatus').hidden=true;$('resumeDatasetControl').hidden=true;$('reportMode').hidden=true;
     $('reviewLabelsControl').hidden=false;$('reportMoreActions').hidden=false;$('reportMoreActions').open=false;
@@ -607,10 +655,11 @@ function renderRunProgress(report){
     const percent=p.percent??(p.total?100*(p.completed||0)/p.total:0);
     $('progressBar').style.width=`${Math.min(100,Math.max(0,percent))}%`;
     $('progressCount').textContent=`${percent.toFixed(1)}% ? ${p.answered??p.completed??0} answered ? ${p.judged??0} judged / ${p.total??0} questions`;
-    const titles={preparing:'Preparing your run',ingestion:'Ingesting conversation',answer:'Answering question',judge:'Judging answer',review:'Memory ready for review',finalizing:'Finalizing results'};
+    const titles={preparing:'Preparing your run',ingestion:'Ingesting conversation',answer:'Answering question',judge:'Judging answer',questions:'Evaluating questions in parallel',review:'Memory ready for review',finalizing:'Finalizing results'};
     $('progressTitle').textContent=waiting?titles.review:titles[p.phase]||'Starting benchmark';
     $('progressDetail').textContent=p.sample_id?`Conversation ${p.conversation_index??'?'} of ${p.conversation_total??'?'} ? ${p.sample_id}`:'Preparing selected conversations';
     $('progressActivity').textContent=p.phase==='ingestion'?`Writing turn ${p.turn_completed??0} of ${p.turn_total??0}`:waiting?'Inspect the stored memory, then continue when ready.':['answer','judge'].includes(p.phase)?`Question ${p.question_number??'?'} of ${p.question_total??'?'} in this conversation`:'';
+    if(p.phase==='questions')$('progressActivity').textContent=`${p.active_questions?.length??0} questions running · up to ${p.question_workers??report.config?.question_workers??1} in parallel. Waiting for this conversation before continuing.`;
     $('backgroundHint').textContent=report.worker?'Running independently in the background. Return through Saved runs.':'This run continues while the Python server remains running.';
     $('reviewMemoryButton').hidden=!waiting;$('continueBenchmark').hidden=!waiting;
 }
@@ -686,6 +735,7 @@ $('benchmarkDeleteForm').onsubmit=async event=>{
     finally{benchmarkDeleteBusy=false;$('benchmarkDeleteConfirm').disabled=false;$('benchmarkDeleteCancel').disabled=false;}
 };
 async function openSavedRun(id){
+    pollFailures=0;
     resultFileRequest++;loadingRunId=id;selectedRunId=null;benchmark=null;updateSavedRunSelection();
     $('benchmarkLoadStatus').hidden=false;$('benchmarkLoadStatus').textContent=`Loading saved run ${id.slice(0,8)}…`;
     $('benchmarkSetup').hidden=true;$('benchmarkRunning').hidden=true;$('benchmarkReport').hidden=true;
@@ -697,12 +747,13 @@ $('continueBenchmark').onclick=async()=>{try{await jsonRequest(`/api/benchmarks/
 $('reviewMemoryButton').onclick=()=>{if(!benchmark?.review)return;inspectionSource='benchmark';setInspection({memory:benchmark.review.memory,turns:[],totals:{}},`${benchmark.review.sample_id} ? ${benchmark.review.full_context?'Full conversation':'Stored memory'}`);$('inspector').hidden=false;document.body.classList.add('memory-open');};
 function categoryName(value){return ({'1':'Multi-hop','2':'Temporal','3':'Open-domain','4':'Single-hop','5':'Adversarial',overall:'Overall'})[String(value)]||String(value);}
 async function pollBenchmark(){
-    clearTimeout(pollTimer);
-    if(importedBenchmark)return;
+    clearTimeout(pollTimer);pollTimer=null;
+    if(importedBenchmark||!runId)return;
     const requestedRun=runId,requested=++benchmarkRequest;
     try{
         const result=await jsonRequest(`/api/benchmarks/${requestedRun}?analysis=1`,undefined,[]);
         if(importedBenchmark||requestedRun!==runId||requested!==benchmarkRequest)return false;
+        pollFailures=0;
         selectedRunId=requestedRun;loadingRunId=null;$('benchmarkLoadStatus').hidden=true;updateSavedRunSelection();
         benchmark=result;const running=['queued','running','waiting_review'].includes(benchmark.status);$('resultsFile').disabled=running;$('resultLibrary').disabled=running;$('reportMode').hidden=true;$('reviewLabelsControl').hidden=false;$('reportMoreActions').hidden=false;$('reportMoreActions').open=false;
         $('benchmarkSetup').hidden=true;$('benchmarkRunning').hidden=!running;$('benchmarkReport').hidden=running;
@@ -716,7 +767,20 @@ async function pollBenchmark(){
         $('exportReview').disabled=!benchmark.cases.some(c=>c.prediction!=null);$('reviewFile').disabled=!benchmark.cases.some(c=>c.prediction!=null);
         refreshSavedRuns(false);if(running){pollTimer=setTimeout(pollBenchmark,1200);}else drawBenchmark();
         return true;
-    }catch(error){if(importedBenchmark||requestedRun!==runId||requested!==benchmarkRequest)return false;selectedRunId=null;loadingRunId=null;$('benchmarkLoadStatus').hidden=true;updateSavedRunSelection();$('resultsFile').disabled=false;$('resultLibrary').disabled=false;$('benchmarkReport').hidden=true;$('benchmarkRunning').hidden=true;$('benchmarkSetup').hidden=false;if(error.status===404){localStorage.removeItem('kai3-benchmark-run');runId=null;$('benchmarkStatus').textContent='That saved run is no longer available. Start a new benchmark; completed runs are now saved across server restarts.';}else{$('benchmarkStatus').textContent=error.message;}return false;}
+    }catch(error){
+        if(importedBenchmark||requestedRun!==runId||requested!==benchmarkRequest)return false;
+        // Legacy servers can return 404 for a transient index/checkpoint race.
+        // Never erase the selected run or navigate to setup because a GET failed.
+        const retry=error.details?.retryable!==false;
+        const message=`Could not refresh run status: ${error.message}${retry?' Retrying…':''}`;
+        $('benchmarkSetup').hidden=true;
+        if(!$('benchmarkRunning').hidden)$('progressActivity').textContent=message;
+        else if(benchmark&&!$('benchmarkReport').hidden)$('reportStatus').textContent=message;
+        else{$('benchmarkLoadStatus').hidden=false;$('benchmarkLoadStatus').textContent=message;loadingRunId=requestedRun;}
+        updateSavedRunSelection();
+        if(retry){pollFailures++;pollTimer=setTimeout(pollBenchmark,Math.min(10000,1000*2**Math.min(pollFailures,4)));}
+        return false;
+    }
 }
 function metricCard(label,value,note){const card=document.createElement('article');card.className='metric-card';const name=document.createElement('span');name.textContent=label;const number=document.createElement('strong');number.textContent=typeof value==='number'?value.toFixed(3):String(value??'—');const hint=document.createElement('small');hint.textContent=note;card.append(name,number,hint);return card;}
 function detailRow(label,value,parent){const row=document.createElement('div');row.className='case-detail-row';const name=document.createElement('strong');name.textContent=label;const content=document.createElement('div');content.textContent=value==null||value===''?'—':typeof value==='string'?value:JSON.stringify(value,null,2);row.append(name,content);parent.append(row);}
@@ -915,9 +979,9 @@ function drawUsageSummary(body){
      ['All recorded requests missing usage',formatCount(usage.missingRequests)],
      ['Phase records with incomplete usage',formatCount(usage.unknownUsageRecords)],
      ['Phase records without request ledgers',formatCount(usage.phaseRecordsWithoutLedger)],
-     ['Recorded ingestion builds',formatCount(usage.buildCount)],['Total runtime excluding judging',formatDuration(usage.totalRuntime)],
+     ['Recorded ingestion builds',formatCount(usage.buildCount)],['Aggregate processing time excluding judging',formatDuration(usage.totalRuntime)],
      ['Recorded processing time',formatDuration(usage.recordedSeconds)]].forEach(([k,v])=>addField(grid,k,v));
-    section.append(grid);const note=document.createElement('p');note.className='summary-note';note.textContent='Reported API tokens and recorded processing time include recorded judging, failed attempts, and resumed work, matching Compare Runs lifecycle totals. Missing usage, including failed requests, makes complete token totals unavailable. Known recorded usage is a lower bound, not complete cost. The memory-plus-answering subtotal excludes judging; lifecycle usage includes it. Totals include recorded rebuilds and retries, and construction per question depends on the recorded query workload. Legacy ledgers may omit attempts. Currency costs are unknown. Processing time excludes review pauses and unrecorded work; missing required measurements remain unavailable.';section.append(note);body.append(section);
+    section.append(grid);const note=document.createElement('p');note.className='summary-note';note.textContent='Reported API tokens and recorded processing time include recorded judging, failed attempts, and resumed work, matching Compare Runs lifecycle totals. Missing usage, including failed requests, makes complete token totals unavailable. Known recorded usage is a lower bound, not complete cost. The memory-plus-answering subtotal excludes judging; lifecycle usage includes it. Totals include recorded rebuilds and retries, and construction per question depends on the recorded query workload. Legacy ledgers may omit attempts. Currency costs are unknown. With parallel questions, processing durations can overlap; their sum is not elapsed run time. Processing time excludes review pauses and unrecorded work; missing required measurements remain unavailable.';section.append(note);body.append(section);
     const memory=reportDetails('Memory and retrieval');const memoryGrid=document.createElement('div');memoryGrid.className='config-grid';
     addField(memoryGrid,'Evidence recall',usage.meanEvidenceRecall==null?'Unavailable':`${(usage.meanEvidenceRecall*100).toFixed(1)}% (${usage.evidenceCount} questions)`);
     addField(memoryGrid,'Legacy context-byte proxy',usage.meanRetrievedBudget==null?'Unavailable':`${formatCount(usage.meanRetrievedBudget)} (conservative estimate)`);memory.append(memoryGrid);

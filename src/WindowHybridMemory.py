@@ -39,6 +39,7 @@ class WindowHybridMemory(MemoryModule):
             elif evicted:
                 self.long_term.write(evicted[0])
             self.window.buffer = pending
+            self.window.evicted_count += len(evicted)
 
     def _tag(self, entry, tier, component):
         entry = deepcopy(entry)
@@ -74,6 +75,7 @@ class WindowHybridMemory(MemoryModule):
             return {"config": {"architecture": self.architecture,
                                "max_items": self.window.buffer.maxlen,
                                "write_policy": self.write_policy,
+                               "evicted_count": recent['config']['evicted_count'] + archive['config'].get('evicted_count', 0),
                                "long_term": {"module": self.component, **archive["config"]}},
                     "entries": archive["entries"] + recent["entries"]}
 
@@ -100,6 +102,7 @@ class Alpha(WindowHybridMemory):
             if evicted:
                 self.long_term.write(MemoryEntry("\n\n".join(e.text for e in evicted)))
             self.window.buffer = pending
+            self.window.evicted_count += len(evicted)
 
 
 class Beta(WindowHybridMemory):
@@ -142,12 +145,13 @@ class PeriodicWindowMemory(WindowHybridMemory):
         if not entry.text.strip() or entry.metadata.get('completed') is False:
             return
         with self._lock:
-            incoming, _, window = self._stage([entry])
+            incoming, evicted, window = self._stage([entry])
             pending = self._pending + incoming
             if len(pending) == self.window.buffer.maxlen:
                 self._update(pending)
                 pending = []
             self.window.buffer, self._pending = window, pending
+            self.window.evicted_count += len(evicted)
 
     def flush(self):
         with self._lock:

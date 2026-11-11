@@ -1,5 +1,22 @@
 # LoCoMo ingestion and question lifecycle
 
+Workflow corrections reviewed 2026-11-12: malformed session-like keys and
+nonempty conversations without recognized `session_N` arrays are rejected.
+An explicitly empty conversation object remains supported for empty-memory
+controls. The selected question manifest must be nonempty before launch.
+User cancellation during write, periodic flush or compaction retains partial
+construction and usage as cancelled; it does not fabricate ingestion-blocked
+question failures. Untouched selected questions remain not attempted.
+
+Storage metrics recurse through paired components and window/long-term tiers.
+Parent serialized embedding bytes and chunk counts sum children once. Active
+text, inspection JSON and serialized arrays remain separate measurements;
+these do not measure resident memory or model weights. Window eviction counters
+advance only on committed window changes.
+
+Storage, concurrency, and resume contracts reviewed on 2026-11-11; see the
+[mechanism consistency audit](../../plans/mechanism_consistency_audit_2026-11-11.md).
+
 Status: implemented behavior. Last checked against repository source: 2026-11-02.
 This check date is not an implementation or release date.
 
@@ -124,11 +141,19 @@ Implementation: [Benchmark.py](../../src/Benchmark.py),
    Reference answers and annotated evidence are used after prediction for scoring,
    never to select or construct memory.
 
-All module state is process-local Python data. There is no memory database or
-automatic restoration from a snapshot. Benchmark results can persist inspection
-snapshots and diagnostics, but snapshots omit embedding arrays. Resume rebuilds
-memory when needed; generated summaries/facts can differ on rebuilding. Cached
-model weights and tokenizer artifacts are separate from conversation state.
+Live module state is process-local Python data. Inspection snapshots omit
+embedding arrays, while the run-owned experiment archive retains exact logical
+state, vectors and pending buffers. Compatible archived resumes restore that
+frozen state; incomplete formation without dependent predictions and legacy
+reports may require rebuilding. Cached model weights and tokenizer artifacts are
+separate from conversation state. Audit SQLite storage is not a retrieval store.
+
+Web, API and CLI entrypoints use a fixed maximum of eight question workers.
+No worker selector or CLI flag is exposed; client overrides are ignored. Ingestion
+and local retrieval are serialized; answering/judging can overlap after memory
+is frozen. Every question and checkpoint finishes before the next conversation.
+Older worker counts are upgraded to eight on resume without
+changing the dataset, memory settings, prompts, or saved predictions.
 
 ## Execution state and failure behavior
 

@@ -1,7 +1,7 @@
 """Independent benchmark process; survives the web server exiting."""
 import argparse
 import time
-from BenchmarkStore import Lease, atomic_json, path_for, read_json
+from BenchmarkStore import Lease, write_snapshot, path_for, read_json
 
 class DiskCancel:
     def __init__(self, path):
@@ -41,7 +41,7 @@ def run_worker(root, run_id):
         from BenchmarkHistory import cache_summary
         def persist(value):
             path = path_for(root, run_id)
-            atomic_json(path, value)
+            write_snapshot(path, value)
             cache_summary(path, value)
         job.set_persistence_callback(persist)
         if snapshot.get('recording') is not None:

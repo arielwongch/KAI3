@@ -1,5 +1,14 @@
 # Component and feature specifications
 
+Latest focused source/documentation review: 2026-11-12. The
+[workflow audit implementation](../plans/workflow_dfs_audit_2026-11-12.md)
+corrects chat answer/write failures, summary validation, request reconciliation,
+ingestion cancellation, comparison refresh, nested storage, workload validation,
+checkpoint outcomes and terminal setup. The full offline suite passed 376 tests;
+the chat harness passed 45 cases and comparison refresh/race checks passed.
+The earlier test counts below are dated milestones. Provider effectiveness,
+human calibration and unperformed visual acceptance remain separate.
+
 - [Experiment recording and portable archives](benchmark/experiment_recording.md)
 - [Compaction metrics, fidelity annotations and paired statistics](benchmark/compaction_evaluation.md)
 
@@ -13,8 +22,8 @@ verification at that milestone included the 143-test offline suite and scoped de
 checks. The post-commit Markdown review changed documentation only. Subsequent
 periodic-memory, reranking, and scatter-plot changes were committed in `6679238`.
 The 2026-11-03 audit adds offline adjudication and focused policy regressions;
-human calibration and effectiveness confirmation remain pending. The current
-offline suite passed 179 tests. See [updates](../UPDATES.md).
+human calibration and effectiveness confirmation remain pending. That milestone's
+offline suite passed 179 tests. See [updates](../UPDATES.md) for current evidence.
 [Development plans](../plans/README.md) separately track sequences, historical
 dates, remaining acceptance work, and unscheduled proposals.
 See [updates](../UPDATES.md), [progress](../PROGRESS.md), and the

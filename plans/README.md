@@ -1,5 +1,10 @@
 # Development plans and history
 
+Latest workflow implementation review: 2026-11-12. All ten workflow DFS findings
+are implemented and the full offline suite passed 376 tests. This register
+distinguishes those corrections from the still-proposed compaction transport and
+liveness work. Older milestones below retain their historical verification dates.
+
 Original status review: 2026-10-08. Latest Compare/shared-shell/export, local setup,
 recovery, and documentation reconciliation: 2026-11-02. Audit tooling/policy
 verification and confirmation-contract update: 2026-11-03. Decision-brief
@@ -22,6 +27,10 @@ a tagged release, deployment, or fresh application test run.
 
 | Plan | First recorded in Git | Status as of review | Next work and timing |
 | --- | --- | --- | --- |
+| [Workflow DFS audit](workflow_dfs_audit_2026-11-12.md) | This change (2026-11-12) | F1–F10 implemented; 376 offline tests passed | Provider quality and visual acceptance remain separate; unscheduled |
+| [Mechanism consistency audit](mechanism_consistency_audit_2026-11-11.md) | This change; reviewed 2026-11-11 | Cross-entrypoint checkpoint, ownership and documentation corrections implemented | Preserve strict compatibility and recorded timing limits |
+| [Benchmark false-404 recovery](benchmark_false_404_root_cause_2026-11-11.md) | This change; reviewed 2026-11-11 | Temporary I/O/index races and frontend recovery corrected | Exact historical filesystem event unproven; retain focused regressions |
+| [Compaction transport/stall investigation](compaction_progress_transport_fix_2026-11-12.md) | This change (2026-11-12) | Diagnosis and fix plan only | Streaming aggregation and accurate liveness/progress UI proposed; unscheduled |
 | [Startup performance](startup_performance_2026-11-10.md) | 2026-11-10 | Implemented locally; startup below 1 second in repeated entry-point probes | First-use initialization remains lazy; cold-cache timing not established |
 | [Compaction research and implementation](compaction_research_2026-11-10.md) | 2026-11-10 | User approved local implementation; validation recorded in progress/updates | Provider-backed ratio study and adaptive controller remain future work |
 | [Product experience](product_experience.md) | 2026-10-05 (`acb7a6f`) | Shared workspaces, managed result library, and named benchmark-to-Compare export implemented; calibration/study acceptance incomplete | Evaluator audit, human calibration, and remaining acceptance; unscheduled |
