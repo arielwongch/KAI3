@@ -46,8 +46,10 @@ input; they do not compress each other's outputs.
 Repeated mode checks a staged append. If adding a complete turn would exceed the
 trigger, it compacts the existing state, then appends that turn. If the new turn
 still will not fit, it may compact the combined staged state once under an
-`oversized_append` event. If that result exceeds the trigger, the entire write
-rolls back. There is no unbounded fit loop. Subsequent compactions see only the
+`oversized_append` event. That operation validates and retries against the smaller
+of the percentage target and trigger, recording `acceptance_limit_tokens`
+separately from the percentage's `target_tokens`. If no complete candidate fits,
+the entire write rolls back. There is no unbounded fit loop. Subsequent compactions see only the
 previous summary and newer raw turns, with no hidden raw-history retrieval.
 Blank and explicitly incomplete entries do not advance ingestion. There is no
 forced final partial-batch flush in repeated benchmarks.
@@ -61,8 +63,24 @@ corrections, preferences/constraints, decisions, uncertainty, task progress, and
 unresolved work. Structural validation is not a semantic-fidelity guarantee.
 Generation uses a 90%-of-target requested text allowance and a 16,384 provider
 output cap, which can include reasoning. The fully rendered output is measured
-after generation. Empty/non-text/incomplete/over-budget output gets at most one
-regeneration from the unchanged source. Provider transport retries are separate
+after generation. Empty/non-text/incomplete/over-budget output gets at most three
+total generation attempts (the first call plus two retries), fixed in code with
+no user override. Over-budget retries report the measured count and reduce the
+requested allowance using the observed overshoot plus a safety margin. Incomplete
+responses also reduce the requested allowance. Each attempt uses the unchanged
+original source, never a rejected summary. The hard target and configured retained
+percentage stay fixed; text is never sliced to manufacture a passing result.
+An empty response with an incomplete finish reason also reduces the allowance.
+Nonempty incomplete candidates retain their measured token count for diagnostics
+but cannot be accepted. A failure to archive a returned candidate preserves known
+usage and stops the benchmark as a durability failure rather than sending more
+paid requests to later conversations.
+Checkpoint callbacks are also fatal on persistence failure. Transaction-state
+archiving is part of the commit boundary: a failure restores the original entries,
+depth and counters, and no event is published as committed until all transaction
+snapshots have been archived.
+Exhaustion reports the rejection reason and final measured count, preserves the
+committed state, and blocks QA for that conversation. Provider transport retries are separate
 and remain in the shared request ledger. A conservative 1,000,000-token envelope
 counts input UTF-8 bytes plus prompt/framing/output reserves before compression.
 
@@ -102,6 +120,10 @@ renderer/policy, and model settings must agree. Original ingestion cost remains
 in previous builds; reuse adds preparation time but no new compaction calls.
 Invalid artifacts block ingestion instead of silently producing a new memory.
 Failed original ingestion may be retried from the raw source as a new build.
+The exact audited migrations from the original two-attempt compactor and first
+three-attempt repair to the audited retry repair permit frozen-state reuse; exports retain previous code
+identities and all original ingestion costs. Other execution-source changes still
+require matching identities.
 
 Compare Runs labels configurations and exposes requested percentage, mean actual
 percentage per committed event, compaction time, and logical compaction attempts

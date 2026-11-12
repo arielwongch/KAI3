@@ -132,6 +132,23 @@ class ResumeIntegrityTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, 'code_identity'):
                         Benchmark.BenchmarkJob.resume(dataset(), previous)
 
+    def test_audited_compaction_retry_repair_preserves_saved_work_and_provenance(self):
+        original = self.failed_run()
+        for source_hash in ('a4917866f7b34aa71a46bc950e865952bb9e675f9c7da3ee5ccd6136703ec59c',
+                            '45b40b2412d0514983a9364aa1f012a385029510f471adb5b83345d601debdbd',
+                            'b3d53abd2b8d5751b263d85118a13697d84d6ed6cd0a69fc2ba31515766b5234',
+                            '081b437c33667986e0287977130e1d3b07fbe5ed58fe59edb78c3b3a13f930c6',
+                            'beb160157b02bbb0a8437e2b461a8669a7afb735b52ee9a2f78f7ad576dc7968',
+                            'c2c68668e43e1f284ef1fba9899d5bdea869713dfb855bc4bb5082d0cef50ff4'):
+            previous = deepcopy(original)
+            previous['code_identity']['source_files']['src/Compaction.py'] = source_hash
+            previous['code_identity']['source_sha256'] = digest(previous['code_identity']['source_files'])
+            resumed = Benchmark.BenchmarkJob.resume(dataset(), previous)
+            self.assertEqual(resumed.result['cases'][0], previous['cases'][0])
+            self.assertEqual(resumed._frozen_cache['one']['memory_state_artifact'],
+                             previous['memories'][0]['memory_state_artifact'])
+            self.assertEqual(resumed.result['previous_code_identities'][-1], previous['code_identity'])
+
     def test_terminal_thread_must_finish_before_resume(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(app, 'RUN_STORE', directory), \
              patch.object(app, 'jobs', {}), patch.object(app, '_history_index', None):

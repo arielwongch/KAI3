@@ -157,8 +157,8 @@ class CompactionCustodyTests(unittest.TestCase):
         memory.write(MemoryEntry('a'*70, {'dialogue_id': 'D1:1'}))
         before = memory.retrieve()
         # First compaction succeeds, combined input is still oversized, second
-        # candidate fails the 50% budget, then its regeneration fails too.
-        memory.compressor.side_effect = [('x'*20, 0, 7), ('y'*90, 0, 7), ('z'*90, 0, None)]
+        # candidate and both regenerations fail the 50% budget.
+        memory.compressor.side_effect = [('x'*20, 0, 7), ('y'*90, 0, 7), ('z'*90, 0, None), ('w'*90, 0, 7)]
         with self.assertRaises(ValueError):
             memory.write(MemoryEntry('b'*70, {'dialogue_id': 'D1:2'}))
         first, second = memory.events
@@ -166,7 +166,7 @@ class CompactionCustodyTests(unittest.TestCase):
         self.assertEqual(R.get(memory.audit_archive, second['source_artifact'])['rendered_text'], 'x'*20+'\n\n'+'b'*70)
         self.assertFalse(first['committed'])
         self.assertFalse(second['committed'])
-        self.assertEqual(len(second['attempts']), 2)
+        self.assertEqual(len(second['attempts']), 3)
         self.assertEqual(memory.retrieve(), before)
         for event in memory.events:
             self.assertEqual(R.get(memory.audit_archive, event['transaction_state_artifact'])['entries'][0]['text'], 'a'*70)

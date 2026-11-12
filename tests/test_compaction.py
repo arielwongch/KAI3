@@ -18,7 +18,7 @@ from Diagnostics import collector, memory_response
 from MemoryContext import build_memory_context
 from MemoryEntry import MemoryEntry
 from MemoryFactory import MemoryFactory
-from RequestPolicy import cancel_event, RequestCancelled
+from RequestPolicy import cancel_event, RequestCancelled, CheckpointError
 from ResultAnalysis import enrich_report
 from benchmark_helpers import FakeTokenizer
 from test_controlled_comparison import dataset
@@ -91,7 +91,7 @@ class CompactionTests(unittest.TestCase):
         self.assertNotIn('x'*60, module.compressor.call_args.args[1])
 
     def test_terminal_failure_preserves_active_state_and_unknown_usage(self):
-        for outputs in ([response(''), response(None)], [response('x'*90)]*2, [RuntimeError('network')]):
+        for outputs in ([response(''), response(None), response('')], [response('x'*90)]*3, [RuntimeError('network')]):
             module = self.make()
             module.compressor.side_effect = outputs
             before = module.retrieve()
@@ -107,7 +107,50 @@ class CompactionTests(unittest.TestCase):
             self.assertFalse(module.events[-1]['committed'])
             if isinstance(outputs[0], Exception):
                 self.assertIsNone(metrics['memory_tokens'])
-            self.assertLessEqual(module.compressor.call_count, 2)
+            self.assertEqual(module.compressor.call_count, 1 if isinstance(outputs[0], Exception) else 3)
+
+    def test_measured_overshoot_recovery_on_third_attempt_from_original_source(self):
+        # Reproduce conv-41's actual target and rejected output sizes.
+        module = self.make('a'*6357, retain_percent=75)
+        module.compressor.side_effect = [response('x'*5338), response('y'*4906), response('z'*4000)]
+        metrics = dict(memory_llm_calls=0, memory_tokens=0)
+        token = collector.set(metrics)
+        try:
+            event = module.compact()
+        finally:
+            collector.reset(token)
+        self.assertEqual(event['target_tokens'], 4767)
+        self.assertEqual(event['max_attempts'], 3)
+        self.assertEqual([a['status'] for a in event['attempts']], ['invalid', 'invalid', 'accepted'])
+        budgets = [a['requested_tokens'] for a in event['attempts']]
+        self.assertGreater(budgets[0], budgets[1])
+        self.assertGreater(budgets[1], budgets[2])
+        calls = module.compressor.call_args_list
+        self.assertIn('5338 benchmark tokens', calls[1].args[0])
+        self.assertIn('4906 benchmark tokens', calls[2].args[0])
+        self.assertTrue(all(c.args[1] == 'Conversation:\n' + 'a'*6357 for c in calls))
+        self.assertEqual(metrics['memory_llm_calls'], 3)
+        self.assertEqual(metrics['memory_tokens'], 21)
+        self.assertEqual(module.depth, 1)
+        self.assertTrue(event['committed'])
+
+    def test_exhausted_budget_retries_report_measurement_without_changing_state(self):
+        module = self.make()
+        module.compressor.return_value = response('x'*60)
+        before = module.export_state()['state']['entries']
+        with self.assertRaisesRegex(ValueError, 'after 3 attempts.*over_budget.*60.*50'):
+            module.compact()
+        self.assertEqual(module.compressor.call_count, 3)
+        self.assertEqual(module.export_state()['state']['entries'], before)
+        self.assertEqual(module.depth, 0)
+        self.assertTrue(all(a['validation_error'] == 'over_budget' for a in module.events[-1]['attempts']))
+        self.assertFalse(module.events[-1]['committed'])
+
+    def test_retry_limit_cannot_be_configured(self):
+        with self.assertRaisesRegex(ValueError, 'Unsupported compaction option'):
+            self.make(max_attempts=10)
+        options = Benchmark.options_for(dataset(), {'module': 'compaction', 'max_attempts': 10})
+        self.assertNotIn('max_attempts', options)
 
     def test_length_stop_is_not_accepted_as_complete_summary(self):
         module = self.make()
@@ -117,7 +160,11 @@ class CompactionTests(unittest.TestCase):
         module.compressor.side_effect = incomplete
         with self.assertRaises(ValueError):
             module.compact()
-        self.assertEqual(module.compressor.call_count, 2)
+        self.assertEqual(module.compressor.call_count, 3)
+        self.assertTrue(all(a['validation_error'] == 'incomplete_response' for a in module.events[-1]['attempts']))
+        self.assertTrue(all(a['after_tokens'] == len('short') for a in module.events[-1]['attempts']))
+        self.assertLess(module.events[-1]['attempts'][1]['requested_tokens'],
+                        module.events[-1]['attempts'][0]['requested_tokens'])
 
     def test_tiny_budget_and_provider_guard_fail_without_calling(self):
         for text, percent in [('a', .1), ('x'*1_000_000, 50)]:
@@ -125,6 +172,139 @@ class CompactionTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 module.compact()
             module.compressor.assert_not_called()
+
+    def test_empty_length_limited_response_tightens_retry_budget(self):
+        module = self.make()
+        def generate(*args):
+            memory_response.set({'finish_reason': 'length'})
+            return response('')
+        module.compressor.side_effect = generate
+        with self.assertRaises(ValueError):
+            module.compact()
+        attempts = module.events[-1]['attempts']
+        self.assertTrue(all(a['validation_error'] == 'incomplete_response' for a in attempts))
+        self.assertGreater(attempts[0]['requested_tokens'], attempts[1]['requested_tokens'])
+
+    def test_oversized_append_retries_against_trigger_limit(self):
+        module = self.make('', compaction_mode='repeated', compaction_trigger_tokens=20)
+        module.compressor.side_effect = [response('x'*30), response('summary')]
+        module.write(MemoryEntry('A'*100, {'dialogue_id': 'D1:1'}))
+        self.assertEqual(module.retrieve()[0].text, 'summary')
+        event = module.events[-1]
+        self.assertEqual(event['target_tokens'], 50)
+        self.assertEqual(event['acceptance_limit_tokens'], 20)
+        self.assertEqual([a['status'] for a in event['attempts']], ['invalid', 'accepted'])
+        self.assertTrue(event['committed'])
+        self.assertEqual(module.ingested_entries, 1)
+
+    def test_candidate_archive_failure_retains_known_usage_and_is_fatal(self):
+        module = self.make()
+        original = compact_module.capture
+        def capture(kind, value):
+            if kind == 'compaction-candidate':
+                raise OSError('disk full')
+            return original(kind, value)
+        metrics = dict(memory_llm_calls=0, memory_tokens=0)
+        token = collector.set(metrics)
+        try:
+            with patch.object(compact_module, 'capture', side_effect=capture):
+                with self.assertRaises(CheckpointError) as failure:
+                    module.compact()
+        finally:
+            collector.reset(token)
+        self.assertTrue(failure.exception.persistence_failure)
+        self.assertEqual(metrics['memory_llm_calls'], 1)
+        self.assertEqual(metrics['memory_tokens'], 7)
+        self.assertEqual(module.compressor.call_count, 1)
+        self.assertEqual(module.events[-1]['attempts'][0]['tokens'], 7)
+        self.assertEqual(module.retrieve()[0].text, 'a'*100)
+        self.assertFalse(module.events[-1]['committed'])
+
+    def test_budget_feedback_changes_output_of_length_estimator(self):
+        import re
+        module = self.make('a'*1000)
+        def approximate(system, source):
+            requested = int(re.search(r'Use at most (\d+)', system).group(1))
+            return response('x' * int(requested * 1.25))
+        module.compressor.side_effect = approximate
+        event = module.compact()
+        self.assertEqual(len(event['attempts']), 2)
+        self.assertEqual(event['attempts'][0]['status'], 'invalid')
+        self.assertLessEqual(event['after_tokens'], event['target_tokens'])
+
+    def test_transaction_archive_failure_rolls_back_manual_and_repeated_commits(self):
+        for repeated in (False, True):
+            with self.subTest(repeated=repeated):
+                module = self.make('A'*30, compaction_mode='repeated' if repeated else 'one_shot',
+                                   compaction_trigger_tokens=40)
+                before = module.inspect()
+                original = compact_module.capture
+                def capture(kind, value):
+                    if kind == 'compaction-transaction-state':
+                        raise OSError('transaction archive unavailable')
+                    return original(kind, value)
+                with patch.object(compact_module, 'capture', side_effect=capture):
+                    with self.assertRaises(CheckpointError):
+                        if repeated:
+                            module.write(MemoryEntry('B'*20))
+                        else:
+                            module.compact()
+                after = module.inspect()
+                self.assertEqual(after['entries'], before['entries'])
+                self.assertEqual(after['config'], before['config'])
+                self.assertTrue(all(e['committed'] is False for e in module.events))
+
+    def test_final_checkpoint_failure_is_fatal_and_preserves_active_memory(self):
+        module = self.make()
+        callback = Mock(side_effect=[None, OSError('checkpoint unavailable')])
+        token = compact_module.checkpoint.set(callback)
+        try:
+            with self.assertRaises(CheckpointError) as error:
+                module.compact()
+        finally:
+            compact_module.checkpoint.reset(token)
+        self.assertTrue(error.exception.persistence_failure)
+        self.assertEqual(module.retrieve()[0].text, 'a'*100)
+        self.assertEqual(module.compressor.call_count, 1)
+        self.assertFalse(module.events[-1]['committed'])
+
+    def test_partial_transaction_archive_failure_restores_both_staged_operations(self):
+        module = self.make('A'*30, compaction_mode='repeated', compaction_trigger_tokens=40)
+        module.compressor.return_value = response('short')
+        before = module.inspect()
+        original = compact_module.capture
+        saved = 0
+        def capture(kind, value):
+            nonlocal saved
+            if kind == 'compaction-transaction-state':
+                saved += 1
+                if saved == 2:
+                    raise OSError('second transaction snapshot failed')
+            return original(kind, value)
+        with patch.object(compact_module, 'capture', side_effect=capture):
+            with self.assertRaises(CheckpointError):
+                module.write(MemoryEntry('B'*100, {'dialogue_id': 'D1:2'}))
+        after = module.inspect()
+        self.assertEqual(after['entries'], before['entries'])
+        self.assertEqual(after['config'], before['config'])
+        self.assertEqual(len(module.events), 2)
+        from ExperimentRecording import get
+        for event in module.events:
+            self.assertFalse(event['committed'])
+            state = get(module.audit_archive, event['transaction_state_artifact'])
+            self.assertEqual(state['entries'], before['entries'])
+            self.assertEqual(state['depth'], 0)
+
+    def test_initial_checkpoint_failure_never_sends_a_paid_request(self):
+        module = self.make()
+        token = compact_module.checkpoint.set(Mock(side_effect=OSError('checkpoint unavailable')))
+        try:
+            with self.assertRaises(CheckpointError):
+                module.compact()
+        finally:
+            compact_module.checkpoint.reset(token)
+        module.compressor.assert_not_called()
+        self.assertEqual(module.depth, 0)
 
     def test_repeated_lineage_reuses_only_compacted_state(self):
         module = self.make('', compaction_mode='repeated', compaction_trigger_tokens=45)
@@ -142,7 +322,7 @@ class CompactionTests(unittest.TestCase):
 
     def test_failed_oversized_append_rolls_back_prior_staged_compaction(self):
         module = self.make('A'*30, compaction_mode='repeated', compaction_trigger_tokens=40)
-        module.compressor.side_effect = [response('short'), response('bad'*50), response('bad'*50)]
+        module.compressor.side_effect = [response('short')] + [response('bad'*50)]*3
         before = module.retrieve()
         with self.assertRaises(ValueError):
             module.write(MemoryEntry('B'*100))
@@ -292,6 +472,45 @@ class CompactionIntegrationTests(unittest.TestCase):
         self.assertEqual(result['memories'][0]['ingestion']['memory_llm_calls'], 0)
         self.assertEqual(result['memories'][0]['memory']['config']['depth'], 0)
         self.assertEqual(enrich_report(result)['comparison']['rows'][0]['overall']['compaction']['attempt_count'], 0)
+
+    def test_third_attempt_recovery_reaches_qa_and_records_all_costs(self):
+        job = Benchmark.BenchmarkJob(dataset(2), dict(module='compaction'))
+        with patch.object(Benchmark, 'get_benchmark_tokenizer', return_value=FakeTokenizer()), \
+             patch.object(compact_module, 'call_api', side_effect=[response('x'*100), response('y'*100), response('Google')]) as compressor, \
+             patch.object(Benchmark, 'client', FakeOpenAIClient()), \
+             patch.object(Benchmark, 'judge_answer', return_value=(json.loads(judgment(1)), .01, 7)):
+            job.run()
+        result = job.snapshot()
+        self.assertEqual(result['ingestion_outcome']['status'], 'successful')
+        self.assertEqual(compressor.call_count, 3)
+        self.assertTrue(all(c['correct'] == 1 for c in result['cases']))
+        self.assertEqual(result['memories'][0]['ingestion']['memory_tokens'], 21)
+        self.assertEqual(enrich_report(result)['comparison']['rows'][0]['overall']['compaction']['attempt_count'], 3)
+        from ExperimentRecording import validate
+        validate(result)
+
+    def test_archive_failure_stops_later_conversations_without_losing_paid_usage(self):
+        data = dataset(1)
+        other = deepcopy(data[0])
+        other['sample_id'] = 'two'
+        data.append(other)
+        job = Benchmark.BenchmarkJob(data, dict(module='compaction'))
+        original = compact_module.capture
+        def capture(kind, value):
+            if kind == 'compaction-candidate':
+                raise OSError('disk full')
+            return original(kind, value)
+        with patch.object(Benchmark, 'get_benchmark_tokenizer', return_value=FakeTokenizer()), \
+             patch.object(compact_module, 'call_api', return_value=response('Google')) as compressor, \
+             patch.object(compact_module, 'capture', side_effect=capture), \
+             patch.object(Benchmark, 'client', side_effect=AssertionError('no QA after lost checkpoint')):
+            job.run()
+        result = job.snapshot()
+        self.assertEqual(result['status'], 'failed')
+        self.assertEqual(compressor.call_count, 1)
+        self.assertEqual(len(result['memories']), 1)
+        self.assertEqual(result['memories'][0]['ingestion']['memory_tokens'], 7)
+        self.assertFalse(result['memories'][0]['formation_complete'])
 
     def test_resume_reuses_frozen_memory_and_preserves_original_cost(self):
         previous = self.run_job().snapshot()

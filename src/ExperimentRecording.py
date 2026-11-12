@@ -187,6 +187,24 @@ def check_compatibility(previous, current):
                            hashlib.sha256(normalized_source.replace(b'\n', b'\r\n')).hexdigest()}
                 if current_hash == scheduler and result.get('src/Benchmark.py') in audited:
                     result['src/Benchmark.py'] = 'bounded-question-pool-compatible-v1'
+                # Audited compaction repair: accepted outputs still obey the
+                # same source, prompt, tokenizer and hard-budget contracts.
+                # Only rejected generations change, including outputs that
+                # cannot fit an oversized write's trigger. Durability failures
+                # stop paid work. Preserve frozen work across these exact
+                # migrations; arbitrary compaction edits must still fail closed.
+                compaction = Path(__file__).with_name('Compaction.py').read_bytes().replace(b'\r\n', b'\n')
+                repaired = '83392d9b0b1edf6b0e346c7b7f4e4ee899201c77c5c770505a2b390cb6907c58'
+                compaction_versions = {
+                    'a4917866f7b34aa71a46bc950e865952bb9e675f9c7da3ee5ccd6136703ec59c',
+                    '45b40b2412d0514983a9364aa1f012a385029510f471adb5b83345d601debdbd',
+                    'b3d53abd2b8d5751b263d85118a13697d84d6ed6cd0a69fc2ba31515766b5234',
+                    '081b437c33667986e0287977130e1d3b07fbe5ed58fe59edb78c3b3a13f930c6',
+                    'beb160157b02bbb0a8437e2b461a8669a7afb735b52ee9a2f78f7ad576dc7968',
+                    'c2c68668e43e1f284ef1fba9899d5bdea869713dfb855bc4bb5082d0cef50ff4',
+                    repaired, hashlib.sha256(compaction.replace(b'\n', b'\r\n')).hexdigest()}
+                if hashlib.sha256(compaction).hexdigest() == repaired and result.get('src/Compaction.py') in compaction_versions:
+                    result['src/Compaction.py'] = 'measured-compaction-retry-compatible-v1'
                 return result
             before, after = execution_sources(before), execution_sources(after)
         if before != after:
